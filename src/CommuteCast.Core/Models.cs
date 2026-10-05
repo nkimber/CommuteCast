@@ -1,0 +1,68 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+
+namespace CommuteCast.Core;
+
+public enum JobStage { Queued, Preparing, WaitingForService, Synthesizing, Assembling, Validating, Generated, Exporting, Exported, Failed, Cancelled, Deleting }
+public record SourceSpan(int Start, int Length, string Kind, string Original, string Narration);
+public record PreparedText(string Script, IReadOnlyList<SourceSpan> Spans, string Version = "prepare-v1");
+public record TextChunk(int Index, int Start, int Length, string Text, bool HardSplit);
+public record NarrationSettings(string Engine, string Voice, double Speed, bool ExcludeCode, string Pronunciation, string ProviderFingerprint);
+public sealed class Job
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public DateTimeOffset CreatedUtc { get; set; } = DateTimeOffset.UtcNow;
+    public string Title { get; set; } = "";
+    public string Source { get; set; } = "";
+    public PreparedText Prepared { get; set; } = new("", []);
+    public NarrationSettings Settings { get; set; } = new("kokoro", "af_heart", 1, false, "", "");
+    public string Destination { get; set; } = "";
+    public JobStage Stage { get; set; } = JobStage.Queued;
+    public List<TextChunk> Chunks { get; set; } = [];
+    public List<ChunkReceipt> Receipts { get; set; } = [];
+    public int CompletedChunks { get; set; }
+    public string Error { get; set; } = "";
+    public string FinalHash { get; set; } = "";
+    public double DurationSeconds { get; set; }
+    public string ExportName { get; set; } = "";
+    public string ExportHash { get; set; } = "";
+    public bool ExportCommitted { get; set; }
+    public bool DeletionRequested { get; set; }
+    public bool DeleteExportRequested { get; set; }
+    public string Fingerprint => Hash(JsonSerializer.Serialize(Settings) + Prepared.Version + Prepared.Script);
+    public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+}
+public record ChunkReceipt(int Index, string Hash, string Fingerprint, double Duration);
+public record ProviderInfo(string Engine, string Fingerprint, string[] Voices, string State, int Active);
+public record AudioInfo(double Duration, int SampleRate, int Channels, long Samples, double Peak, double Rms);
+public sealed class AppSettings
+{
+    public string Destination { get; set; } = "";
+    public string Engine { get; set; } = "kokoro";
+    public string Voice { get; set; } = "af_heart";
+    public double Speed { get; set; } = 1;
+    public string Pronunciation { get; set; } = "";
+    public bool ExcludeCode { get; set; }
+    public bool QueuePaused { get; set; }
+    public string Ffmpeg { get; set; } = "ffmpeg";
+    public string Ffprobe { get; set; } = "ffprobe";
+    public Dictionary<string, ProviderInfo> Providers { get; set; } = [];
+}
+public interface IJobStore
+{
+    Task SaveAsync(Job job, CancellationToken ct = default);
+    Task<IReadOnlyList<Job>> LoadAsync(CancellationToken ct = default);
+    Task RemoveAsync(string id, CancellationToken ct = default);
+}
+public interface ISpeechProvider
+{
+    Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct);
+    Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct);
+}
+public interface IAudioPipeline
+{
+    Task<AudioInfo> ValidateChunkAsync(string path, string text, CancellationToken ct);
+    Task AssembleAsync(Job job, string directory, CancellationToken ct);
+    Task<AudioInfo> ValidateFinalAsync(Job job, string path, CancellationToken ct);
+}

@@ -1,0 +1,46 @@
+name: commutecast
+services:
+  kokoro:
+    image: commutecast-speech:1
+    container_name: commutecast-kokoro
+    network_mode: bridge
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8765/health',timeout=3))['state']=='ready'"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+    environment:
+      COMMUTECAST_ENGINE: kokoro
+    ports:
+      - "127.0.0.1:8765:8765"
+    labels:
+      com.commutecast.owner: "CommuteCast"
+      com.commutecast.contract: "1"
+    cpus: 2
+    mem_limit: 2g
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+  piper:
+    image: commutecast-speech:1
+    container_name: commutecast-piper
+    network_mode: bridge
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8765/health',timeout=3))['state']=='ready'"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+    environment:
+      COMMUTECAST_ENGINE: piper
+    ports:
+      - "127.0.0.1:8766:8765"
+    labels:
+      com.commutecast.owner: "CommuteCast"
+      com.commutecast.contract: "1"
+    cpus: 2
+    mem_limit: 1g
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"

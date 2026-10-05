@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+.vs/
+artifacts/
+TestResults/
+**/__pycache__/
+.env
+*.db
+*.db-shm
+*.db-wal
+*.wav
+*.mp3
+*.onnx
+*.bin
+*.user
+provider-lock.local.json
