@@ -165,6 +165,7 @@ public class PublicationRaceTests
     {
         public Task SaveAsync(Job job, CancellationToken ct = default) => (ownership ? job.ExportStagingOwned : job.ExportCommitted) ? throw new IOException("Injected checkpoint failure") : inner.SaveAsync(job, ct);
         public Task<IReadOnlyList<Job>> LoadAsync(CancellationToken ct = default) => inner.LoadAsync(ct);
+        public Task<IReadOnlyDictionary<string, bool>> RequestDeletionAsync(IReadOnlyList<string> ids, bool deleteExports, CancellationToken ct = default) => inner.RequestDeletionAsync(ids, deleteExports, ct);
         public Task SaveQueueOrderAsync(IReadOnlyDictionary<string, long> positions, CancellationToken ct = default) => inner.SaveQueueOrderAsync(positions, ct);
         public Task RemoveAsync(string id, CancellationToken ct = default) => inner.RemoveAsync(id, ct);
     }

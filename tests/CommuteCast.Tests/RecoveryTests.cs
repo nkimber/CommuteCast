@@ -21,6 +21,7 @@ public class RecoveryTests
         public bool Fail { get; set; }
         public bool FailQueued { get; set; }
         public Task SaveAsync(Job job, CancellationToken ct = default) => (Fail && job.Stage is JobStage.Validating or JobStage.Failed) || (FailQueued && job.Stage == JobStage.Queued) ? throw new IOException("Simulated checkpoint write failure") : inner.SaveAsync(job, ct);
+        public Task<IReadOnlyDictionary<string, bool>> RequestDeletionAsync(IReadOnlyList<string> ids, bool deleteExports, CancellationToken ct = default) => inner.RequestDeletionAsync(ids, deleteExports, ct);
         public Task SaveQueueOrderAsync(IReadOnlyDictionary<string, long> positions, CancellationToken ct = default) => inner.SaveQueueOrderAsync(positions, ct);
         public Task<IReadOnlyList<Job>> LoadAsync(CancellationToken ct = default) => inner.LoadAsync(ct);
         public Task RemoveAsync(string id, CancellationToken ct = default) => inner.RemoveAsync(id, ct);

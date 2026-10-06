@@ -153,6 +153,33 @@ public sealed class SqliteJobStore : IJobStore
         catch (SqliteException error) { throw StorageError(error); }
         finally { gate.Release(); }
     }
+    public async Task<IReadOnlyDictionary<string, bool>> RequestDeletionAsync(IReadOnlyList<string> ids, bool deleteExports, CancellationToken ct = default)
+    {
+        var selected = ids.ToArray();
+        if (selected.Length is < 1 or > 100000 || selected.Any(id => id is null || id.Length != 32 || !id.All(Uri.IsHexDigit)) || selected.Distinct(StringComparer.Ordinal).Count() != selected.Length)
+            throw new ArgumentException("Choose a bounded set of distinct narration identities.");
+        await gate.WaitAsync(ct);
+        try
+        {
+            await using var connection = await OpenAsync(ct); using var transaction = connection.BeginTransaction();
+            var scopes = new Dictionary<string, bool>(StringComparer.Ordinal);
+            foreach (var id in selected)
+            {
+                await using var command = connection.CreateCommand(); command.Transaction = transaction;
+                // Preserve immutable content and any settled publication receipt. All intents commit together.
+                command.CommandText = "UPDATE jobs SET payload=json_set(payload,'$.DeletionRequested',json('true'),'$.DeleteExportRequested',json(CASE WHEN $exports=1 OR json_extract(payload,'$.DeleteExportRequested')=1 THEN 'true' ELSE 'false' END),'$.Stage',$deleting,'$.Error','','$.FailureCategory',0,'$.FailedStage',NULL) WHERE id=$id RETURNING json_extract(payload,'$.DeleteExportRequested');";
+                command.Parameters.AddWithValue("$id", id); command.Parameters.AddWithValue("$exports", deleteExports ? 1 : 0); command.Parameters.AddWithValue("$deleting", (int)JobStage.Deleting);
+                var scope = await command.ExecuteScalarAsync(ct);
+                if (scope is null) throw new IOException("The selected narration records changed. Refresh the library before retrying deletion.");
+                scopes.Add(id, Convert.ToInt64(scope) == 1);
+                command.CommandText = "INSERT INTO events(job_id,stage,timestamp) VALUES($id,'Deleting',$now);";
+                command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O")); await command.ExecuteNonQueryAsync(ct);
+            }
+            ct.ThrowIfCancellationRequested(); transaction.Commit(); return scopes;
+        }
+        catch (SqliteException error) { throw StorageError(error); }
+        finally { gate.Release(); }
+    }
     public async Task<IReadOnlyList<Job>> LoadAsync(CancellationToken ct = default)
     {
         await gate.WaitAsync(ct);

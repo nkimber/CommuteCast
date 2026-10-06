@@ -43,16 +43,20 @@ public sealed class DeleteWindow : Window
 {
     private readonly CheckBox exports = new() { Content = "Also remove matching managed MP3s in the output folder", Margin = new(0, 16, 0, 16) };
     public bool DeleteExports => exports.IsChecked == true;
-    public DeleteWindow(int count)
+    public DeleteWindow(int count, int recordedExportRemovals = 0, int pendingRequests = 0)
     {
         Title = "Remove managed narrations · CommuteCast"; Width = 540; SizeToContent = SizeToContent.Height; ResizeMode = ResizeMode.NoResize; WindowStartupLocation = WindowStartupLocation.CenterOwner;
         var panel = new StackPanel { Margin = new(26) };
         panel.Children.Add(new TextBlock { Text = $"Delete {count} narration{(count == 1 ? "" : "s")}?", FontSize = 24, FontWeight = FontWeights.SemiBold });
         panel.Children.Add(new TextBlock { Text = "Local source, prepared text, history, and audio for these items will be removed. Active generation stops first. Unrelated output files and speech models are preserved.", TextWrapping = TextWrapping.Wrap, Margin = new(0, 14, 0, 0) });
         panel.Children.Add(exports);
-        panel.Children.Add(new TextBlock { Text = "Local migration backups and recovered draft copies are retained separately. Removing an exported file may synchronize its deletion through OneDrive. Cloud retention, recycle bins, and phone copies cannot be erased here.", TextWrapping = TextWrapping.Wrap, FontSize = 12 });
+        if (pendingRequests > 0)
+            panel.Children.Add(new TextBlock { Text = $"{pendingRequests} selected item{(pendingRequests == 1 ? " already has" : "s already have")} removal recorded. Closing this dialog leaves those requests pending; they can finish when CommuteCast restarts.", TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 14) });
+        if (recordedExportRemovals > 0)
+            panel.Children.Add(new TextBlock { Text = $"{recordedExportRemovals} selected item{(recordedExportRemovals == 1 ? " already has" : "s already have")} export removal recorded. Retrying completes that existing request even with the box unchecked; checking it adds export removal for the other selected items.", TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 14) });
+        panel.Children.Add(new TextBlock { Text = "Your current editor draft, local migration backups and recovered copies are retained separately. Removing an exported file may synchronize its deletion through OneDrive. Cloud retention, recycle bins, and phone copies cannot be erased here.", TextWrapping = TextWrapping.Wrap, FontSize = 12 });
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 24, 0, 0) };
-        buttons.Children.Add(new Button { Content = "Keep narrations", IsCancel = true, Padding = new(16, 9, 16, 9), Margin = new(0, 0, 10, 0) });
+        buttons.Children.Add(new Button { Content = pendingRequests > 0 ? "Close" : "Keep narrations", IsCancel = true, Padding = new(16, 9, 16, 9), Margin = new(0, 0, 10, 0) });
         var delete = new Button { Content = "Delete managed items", Padding = new(16, 9, 16, 9) };
         delete.Click += (_, _) => DialogResult = true;
         buttons.Children.Add(delete); panel.Children.Add(buttons); Content = panel;

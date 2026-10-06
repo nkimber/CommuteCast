@@ -13,7 +13,8 @@ public class QueueRaceTests
         await using var reopened = new QueueCoordinator(test.Workspace, store, provider, new(new()), new(test.Workspace, store));
         await reopened.InitializeAsync(); await Task.Delay(450);
         var restored = Assert.Single(await store.LoadAsync()); Assert.Equal(JobStage.Cancelled, restored.Stage); Assert.True(restored.CancellationRequested); Assert.Equal(0, provider.Syntheses);
-        await reopened.RetryAsync(job.Id); await WaitUntilAsync(() => reopened.Snapshot().Single().Stage == JobStage.Exported);
+        await reopened.RetryAsync(job.Id); await WaitUntilAsync(() => reopened.Snapshot().Single().Stage == JobStage.Exported,
+            () => System.Text.Json.JsonSerializer.Serialize(new { jobs = reopened.Snapshot().Select(j => new { j.Stage, j.Error, j.FailedStage }), reopened.PersistenceError, provider.Syntheses }));
         Assert.False(Assert.Single(await store.LoadAsync()).CancellationRequested);
     }
     [Fact] public async Task CancellationPersistenceFailurePausesDispatchAndReportsAnUnacknowledgedRequest()
@@ -106,9 +107,11 @@ public class QueueRaceTests
         var text = string.Join("\n\n", Enumerable.Range(0, 3).Select(i => $"Marker {i}. " + new string('x', 410) + "."));
         return new() { Title = "Queue race fixture", Source = text, Prepared = TextPreparation.Prepare(text), Settings = new("kokoro", "af_heart", 1, false, "", "fixture"), Destination = test.Destination };
     }
-    private static async Task WaitUntilAsync(Func<bool> predicate)
+    private static async Task WaitUntilAsync(Func<bool> predicate, Func<string>? diagnose = null)
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25)); while (!predicate()) await Task.Delay(50, deadline.Token);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        try { while (!predicate()) await Task.Delay(50, deadline.Token); }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested) { throw new Xunit.Sdk.XunitException("Queue fixture did not complete within 25 seconds. " + diagnose?.Invoke()); }
     }
     private sealed class Gate
     {
@@ -140,6 +143,7 @@ public class QueueRaceTests
         public bool Fail { get; set; }
         public Task SaveAsync(Job job, CancellationToken ct = default) => Fail && job.CancellationRequested ? throw new IOException("Injected cancellation persistence failure") : inner.SaveAsync(job, ct);
         public Task<IReadOnlyList<Job>> LoadAsync(CancellationToken ct = default) => inner.LoadAsync(ct);
+        public Task<IReadOnlyDictionary<string, bool>> RequestDeletionAsync(IReadOnlyList<string> ids, bool deleteExports, CancellationToken ct = default) => inner.RequestDeletionAsync(ids, deleteExports, ct);
         public Task SaveQueueOrderAsync(IReadOnlyDictionary<string, long> positions, CancellationToken ct = default) => inner.SaveQueueOrderAsync(positions, ct);
         public Task RemoveAsync(string id, CancellationToken ct = default) => inner.RemoveAsync(id, ct);
     }

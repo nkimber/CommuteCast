@@ -66,6 +66,7 @@ public sealed class AppSettings
 public interface IJobStore
 {
     Task SaveAsync(Job job, CancellationToken ct = default);
+    Task<IReadOnlyDictionary<string, bool>> RequestDeletionAsync(IReadOnlyList<string> ids, bool deleteExports, CancellationToken ct = default);
     Task SaveQueueOrderAsync(IReadOnlyDictionary<string, long> positions, CancellationToken ct = default);
     Task<IReadOnlyList<Job>> LoadAsync(CancellationToken ct = default);
     Task RemoveAsync(string id, CancellationToken ct = default);

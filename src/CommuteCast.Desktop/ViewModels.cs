@@ -160,7 +160,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         store = new SqliteJobStore(Workspace);
         provider = new(Workspace); publisher = new(Workspace, store);
         queue = new(Workspace, store, provider, new(settings), publisher) { Paused = settings.QueuePaused, CacheQuotaMiB = settings.CacheQuotaMiB, ScratchRetentionDays = settings.ScratchRetentionDays, PrivateStorageLimitMiB = settings.PrivateStorageLimitMiB };
-        queue.Changed += snapshots => Application.Current.Dispatcher.InvokeAsync(() => RefreshJobs(snapshots));
+        queue.Changed += _ => Application.Current.Dispatcher.InvokeAsync(() => RefreshJobs(queue.Snapshot()));
         player.MediaFailed += (_, _) => StatusMessage = "Playback failed. Check that the local audio exists and is decodable.";
         Voices.Add(settings.Voice);
         NavigateCommand = Command(p => { Navigate(p?.ToString() ?? "compose"); return Task.CompletedTask; });
@@ -180,7 +180,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         SaveSettingsCommand = Command(async _ => { TextPreparation.ParseDictionary(Pronunciation); await SaveSettingsAsync(); StatusMessage = "Settings saved for future submissions."; });
         CheckEncoderCommand = Command(_ => CheckEncoderAsync());
         ThemeCommand = Command(_ => { App.ToggleTheme(); return Task.CompletedTask; });
-        PauseCommand = Command(async _ => { queue.Paused = !queue.Paused; settings.QueuePaused = queue.Paused; Raise(nameof(PauseLabel)); await SaveSettingsAsync(); StatusMessage = queue.Paused ? "Future dispatch paused. The current narration can finish." : "Queue resumed."; });
+        PauseCommand = Command(async _ => { if (queue.Paused && queue.PersistenceError.Length > 0) throw new IOException(queue.PersistenceError); queue.Paused = !queue.Paused; settings.QueuePaused = queue.Paused; Raise(nameof(PauseLabel)); await SaveSettingsAsync(); StatusMessage = queue.Paused ? "Future dispatch paused. The current narration can finish." : "Queue resumed."; });
         MoveEarlierCommand = Command(_ => queue.MovePendingAsync(RequireSelected().Id, -1, shutdown.Token));
         MoveLaterCommand = Command(_ => queue.MovePendingAsync(RequireSelected().Id, 1, shutdown.Token));
         PlayCommand = Command(async _ => { var job = RequireSelected(); var file = Workspace.FinalPath(job); if (!File.Exists(file) || job.FinalHash.Length == 0 || await Infrastructure.Workspace.HashFileAsync(file) != job.FinalHash) throw new IOException("No validated local audio is available for this narration."); player.Open(new Uri(file)); player.Play(); StatusMessage = "Playing local audio. Use Stop playback to stop."; });
@@ -333,19 +333,15 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     {
         var ids = all ? Jobs.Select(j => j.Id).ToArray() : [RequireSelected().Id];
         if (ids.Length == 0) { StatusMessage = "There are no managed narrations to delete."; return; }
-        var choice = new DeleteWindow(ids.Length) { Owner = Application.Current.MainWindow };
+        var review = await Task.Run(() => queue.ReviewDeletionAsync(ids));
+        var choice = new DeleteWindow(review.Items, review.RecordedExportRemovals, review.PendingRequests) { Owner = Application.Current.MainWindow };
         if (choice.ShowDialog() != true) return;
         player.Stop(); player.Close();
-        var pausedBefore = queue.Paused;
-        queue.Paused = true;
-        var errors = new List<string>();
-        try
-        {
-            foreach (var id in ids)
-                try { await queue.DeleteAsync(id, choice.DeleteExports); } catch (Exception error) { errors.Add(QueueCoordinator.FriendlyError(error)); }
-        }
-        finally { queue.Paused = pausedBefore; }
-        StatusMessage = errors.Count == 0 ? $"Deleted {ids.Length} managed narrations. Unrelated files were preserved. External retention and phone copies remain outside this app's control." : $"{errors.Count} items could not be fully removed: {string.Join(" ", errors.Distinct())}";
+        var deleteExports = choice.DeleteExports;
+        var result = await Task.Run(() => queue.DeleteManyAsync(ids, deleteExports));
+        Raise(nameof(PauseLabel));
+        StatusMessage = result.Failed == 0 ? $"Deleted {result.Removed} managed narrations. Unrelated files were preserved. External retention and phone copies remain outside this app's control." :
+            $"Deleted {result.Removed} of {result.Items.Count} narrations. {result.Failed} remain pending removal: {string.Join(" ", result.Items.Where(i => !i.Removed).Select(i => $"{i.Title} ({i.Id[..8]}): {i.Error}"))}";
     }
     private async Task DiagnosticsAsync()
     {

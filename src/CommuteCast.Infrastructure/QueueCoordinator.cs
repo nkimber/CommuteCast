@@ -3,6 +3,14 @@ using System.Text.Json;
 
 namespace CommuteCast.Infrastructure;
 
+public record DeletionItemResult(string Id, string Title, bool Removed, string Error);
+public record DeletionReview(int Items, int PendingRequests, int RecordedExportRemovals);
+public record DeletionResult(IReadOnlyList<DeletionItemResult> Items)
+{
+    public int Removed => Items.Count(i => i.Removed);
+    public int Failed => Items.Count - Removed;
+}
+
 public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpeechProvider provider, AudioPipeline audio, ExportPublisher publisher) : IAsyncDisposable
 {
     private readonly List<Job> jobs = [];
@@ -13,6 +21,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     private string? activeId;
     private TaskCompletionSource? activeFinished;
     private Task? worker;
+    private string? deletionCheckpointError;
     public SemaphoreSlim InferenceGate { get; } = new(1);
     public bool Paused { get; set; }
     public int CacheQuotaMiB { get; set; } = 1024;
@@ -139,7 +148,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             {
                 lock (sync)
                 {
-                    job = Paused || lifetime.IsCancellationRequested ? null : jobs.FirstOrDefault(j => j.Stage == JobStage.Queued && !j.DeletionRequested && !j.CancellationRequested);
+                    job = Paused || PersistenceError.Length > 0 || lifetime.IsCancellationRequested ? null : jobs.FirstOrDefault(j => j.Stage == JobStage.Queued && !j.DeletionRequested && !j.CancellationRequested);
                     if (job is not null)
                     {
                         activeId = job.Id;
@@ -345,14 +354,14 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         Task? settling = null;
         lock (sync)
         {
-            var current = jobs.First(j => j.Id == id);
+            var current = jobs.FirstOrDefault(j => j.Id == id) ?? throw new ArgumentException("This narration no longer exists. Refresh the library.");
             if (activeId == id && current.Stage is JobStage.Failed or JobStage.Cancelled) settling = activeFinished!.Task;
         }
         if (settling is not null) await settling;
         Job job;
         lock (sync)
         {
-            job = jobs.First(j => j.Id == id);
+            job = jobs.FirstOrDefault(j => j.Id == id) ?? throw new ArgumentException("This narration no longer exists. Refresh the library.");
             if (activeId == id || job.Stage == JobStage.Queued) throw new ArgumentException("This job is already queued or running.");
             if (job.ExportCommitted) throw new ArgumentException("This job was exported. Submit a new job to regenerate it.");
             if (job.DeletionRequested) throw new ArgumentException("This narration is pending deletion. Retry its deletion to finish removal.");
@@ -376,22 +385,89 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     }
     public async Task DeleteAsync(string id, bool deleteExport)
     {
+        var result = await DeleteManyAsync([id], deleteExport);
+        if (result.Failed > 0) throw new IOException(result.Items[0].Error);
+    }
+    public async Task<DeletionReview> ReviewDeletionAsync(IReadOnlyList<string> ids)
+    {
+        var selectedIds = ids.ToHashSet(StringComparer.Ordinal);
+        if (selectedIds.Count != ids.Count || selectedIds.Count is < 1 or > 100000) throw new ArgumentException("Review distinct selected narrations.");
         await dispatchGate.WaitAsync();
-        try { await DeleteCoreAsync(id, deleteExport); }
+        try
+        {
+            var recorded = (await store.LoadAsync()).Where(j => selectedIds.Contains(j.Id)).ToDictionary(j => j.Id, StringComparer.Ordinal);
+            if (recorded.Count != selectedIds.Count) throw new ArgumentException("The selected library changed. Review the remaining narrations before deletion.");
+            lock (sync)
+                foreach (var job in jobs.Where(j => selectedIds.Contains(j.Id)))
+                {
+                    job.DeleteExportRequested |= recorded[job.Id].DeleteExportRequested;
+                    if (recorded[job.Id].DeletionRequested) { job.DeletionRequested = true; job.Stage = JobStage.Deleting; }
+                }
+            Notify();
+            return new(recorded.Count, recorded.Values.Count(j => j.DeletionRequested), recorded.Values.Count(j => j.DeleteExportRequested));
+        }
         finally { dispatchGate.Release(); }
     }
-    private async Task DeleteCoreAsync(string id, bool deleteExport)
+    public async Task<DeletionResult> DeleteManyAsync(IReadOnlyList<string> ids, bool deleteExports)
     {
-        await CancelCoreAsync(id);
-        Job job;
-        lock (sync) job = jobs.First(j => j.Id == id);
-        job.DeletionRequested = true;
-        job.DeleteExportRequested |= deleteExport;
-        job.Stage = JobStage.Deleting;
-        await store.SaveAsync(job);
-        await FinishDeletionAsync(job);
-        lock (sync) jobs.Remove(job);
-        Notify();
+        var selectedIds = ids.ToArray();
+        if (selectedIds.Length == 0) return new([]);
+        if (selectedIds.Length > 100000 || selectedIds.Distinct(StringComparer.Ordinal).Count() != selectedIds.Length) throw new ArgumentException("Select distinct narrations before deletion.");
+        await dispatchGate.WaitAsync();
+        try
+        {
+            Job[] selected; string? selectedActive;
+            lock (sync)
+            {
+                var byId = jobs.ToDictionary(j => j.Id, StringComparer.Ordinal);
+                selected = selectedIds.Select(id => byId.TryGetValue(id, out var job) ? job : throw new ArgumentException("The selected library changed. Review the remaining narrations before deletion.")).ToArray();
+                selectedActive = selected.Any(j => j.Id == activeId) ? activeId : null;
+            }
+            // Stop the selected worker before touching any selected item's files, irrespective of display order.
+            if (selectedActive is not null) await CancelCoreAsync(selectedActive);
+            IReadOnlyDictionary<string, bool> effectiveScopes;
+            try
+            {
+                effectiveScopes = await store.RequestDeletionAsync(selectedIds, deleteExports);
+                if (effectiveScopes.Count != selected.Length || selected.Any(j => !effectiveScopes.TryGetValue(j.Id, out var scope) || (deleteExports || j.DeleteExportRequested) && !scope))
+                    throw new IOException("Recorded deletion scopes could not be verified. Narration removal was not started.");
+            }
+            catch (Exception error) { PauseForDeletionCheckpoint(error); Notify(); throw new IOException(PersistenceError, error); }
+            if (ReferenceEquals(PersistenceError, deletionCheckpointError)) PersistenceError = "";
+            deletionCheckpointError = null;
+            lock (sync)
+                foreach (var job in selected)
+                {
+                    job.DeletionRequested = true; job.DeleteExportRequested = effectiveScopes[job.Id]; job.Stage = JobStage.Deleting;
+                    job.Error = ""; job.FailureCategory = FailureCategory.None; job.FailedStage = null;
+                }
+            Notify();
+            var results = new List<DeletionItemResult>();
+            foreach (var job in selected)
+            {
+                try
+                {
+                    await FinishDeletionAsync(job); lock (sync) jobs.Remove(job);
+                    results.Add(new(job.Id, job.Title, true, ""));
+                }
+                catch (Exception error)
+                {
+                    job.Stage = JobStage.Deleting; job.Error = FriendlyError(error); job.FailureCategory = Categorize(error, JobStage.Deleting);
+                    try { await store.SaveAsync(job); }
+                    catch (Exception checkpointError) { PauseForDeletionCheckpoint(checkpointError); }
+                    results.Add(new(job.Id, job.Title, false, job.Error));
+                }
+                Notify();
+            }
+            return new(results.ToArray());
+        }
+        finally { dispatchGate.Release(); }
+    }
+    private void PauseForDeletionCheckpoint(Exception error)
+    {
+        Paused = true;
+        PersistenceError = "Queue paused because deletion requests or results could not be confirmed. Repair storage and retry deletion. Recorded requests can finish on relaunch. " + FriendlyError(error);
+        deletionCheckpointError = PersistenceError;
     }
     private async Task FinishDeletionAsync(Job job)
     {
