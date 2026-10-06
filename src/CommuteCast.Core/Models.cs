@@ -66,7 +66,8 @@ public record ChunkReceipt(int Index, string Hash, string Fingerprint, double Du
 public record PrivateArtifactReceipt(string RelativePath, string Hash);
 public record ExportStagingIdentity(int FormatVersion, ulong VolumeSerialNumber, string FileId, long CreationFileTime);
 public record ProviderInfo(string Engine, string Fingerprint, string[] Voices, string State, int Active,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ImageId = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ImageId = null,
+    string? InstanceId = null, long? AdmissionSequence = null);
 public record AudioInfo(double Duration, int SampleRate, int Channels, long Samples, double Peak, double Rms);
 public sealed class AppSettings
 {

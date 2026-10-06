@@ -154,7 +154,7 @@ public partial class ProviderContractTests
         using var provider = fixture.Provider(); await provider.ReadyAsync("kokoro", default);
         Assert.Equal(3, fixture.Http.Gets); Assert.Equal(0, fixture.Runtime.Starts); Assert.Equal(0, fixture.Runtime.Launches);
         fixture.Http.Health = index => fixture.Health("ready", index < 6 ? 1 : 0);
-        await provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default); Assert.Equal(6, fixture.Http.Gets); Assert.Equal(1, fixture.Http.Posts);
+        await provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default); Assert.Equal(7, fixture.Http.Gets); Assert.Equal(1, fixture.Http.Posts);
     }
     [Fact] public async Task LoadingTimeoutDoesNotCreateANewAllowanceForNextJob()
     {
@@ -191,7 +191,10 @@ public partial class ProviderContractTests
     {
         using var fixture = new Fixture(); fixture.Http.Speech = (index, _) => Task.FromResult(index == 1 ? new HttpResponseMessage((HttpStatusCode)status) { Content = new StringContent("Private response echo") } : fixture.Audio());
         using var provider = fixture.Provider(); await provider.SynthesizeAsync(fixture.Settings, "original text", fixture.Output, default);
-        Assert.Equal(2, fixture.Http.Posts); Assert.Equal(fixture.Http.Bodies[0], fixture.Http.Bodies[1]); Assert.Equal(0, fixture.Runtime.Starts);
+        Assert.Equal(2, fixture.Http.Posts);
+        using var first = JsonDocument.Parse(fixture.Http.Bodies[0]); using var second = JsonDocument.Parse(fixture.Http.Bodies[1]);
+        Assert.Equal(first.RootElement.GetProperty("text").GetString(), second.RootElement.GetProperty("text").GetString());
+        Assert.True(second.RootElement.GetProperty("sequence").GetInt64() > first.RootElement.GetProperty("sequence").GetInt64()); Assert.Equal(0, fixture.Runtime.Starts);
     }
     [Fact] public async Task RetryExhaustionStopsAfterThreeRequestsAndDiscardsPartials()
     {
@@ -273,7 +276,7 @@ public partial class ProviderContractTests
         public string Engine { get; } public string Fingerprint => Engine + ":contract-v1:" + new string('c', 64);
         public NarrationSettings Settings => new(Engine, Engine == "kokoro" ? "af_heart" : "en_US-lessac-medium", 1, false, "", Fingerprint);
         public string Output => Path.Combine(Test.Workspace.Root, "response.wav"); public byte[] Wave { get; }
-        public static SpeechProviderLimits ShortLimits => new() { Readiness = TimeSpan.FromSeconds(2), Health = TimeSpan.FromSeconds(1), Synthesis = TimeSpan.FromSeconds(3), Poll = TimeSpan.FromMilliseconds(5), RetryBackoff = TimeSpan.FromMilliseconds(5) };
+        public static SpeechProviderLimits ShortLimits => new() { Readiness = TimeSpan.FromSeconds(2), Health = TimeSpan.FromSeconds(1), Synthesis = TimeSpan.FromSeconds(3), Quiescence = TimeSpan.FromMilliseconds(200), Poll = TimeSpan.FromMilliseconds(5), RetryBackoff = TimeSpan.FromMilliseconds(5) };
         public Fixture(string engine = "kokoro")
         {
             Engine = engine; Runtime = new(engine); Http = new(this);
@@ -281,7 +284,7 @@ public partial class ProviderContractTests
             var wave = Path.Combine(Test.Workspace.Root, "fixture.wav"); TestWorkspace.WriteWave(wave); Wave = File.ReadAllBytes(wave);
         }
         public LocalSpeechProvider Provider(SpeechProviderLimits? limits = null) => new(Test.Workspace, Runtime, Http, limits ?? ShortLimits);
-        public string Health(string state = "ready", int active = 0) => JsonSerializer.Serialize(new { service = "CommuteCast", contract = 1, engine = Engine, fingerprint = state == "loading" ? "" : Fingerprint, voices = state == "loading" ? Array.Empty<string>() : new[] { Settings.Voice }, state, active });
+        public string Health(string state = "ready", int active = 0) => JsonSerializer.Serialize(new { service = "CommuteCast", contract = 1, engine = Engine, fingerprint = state == "loading" ? "" : Fingerprint, voices = state == "loading" ? Array.Empty<string>() : new[] { Settings.Voice }, state, active, admission = 1, instance = Http.Instance, sequence = Http.Sequence });
         public HttpResponseMessage Audio(byte[]? bytes = null) => AudioContent(new ByteArrayContent(bytes ?? Wave));
         public HttpResponseMessage AudioContent(HttpContent content) { content.Headers.ContentType = new("audio/wav"); return new(HttpStatusCode.OK) { Content = content }; }
         public void Dispose() => Test.Dispose();
@@ -291,10 +294,22 @@ public partial class ProviderContractTests
         public int Gets { get; private set; } public int Posts { get; private set; } public List<Uri> Uris { get; } = []; public List<string> Bodies { get; } = [];
         public Func<int, string>? Health { get; set; } public Func<int, CancellationToken, Task<HttpResponseMessage>>? Speech { get; set; }
         public Func<CancellationToken, Task>? BeforeHealth { get; set; }
+        public string Instance { get; set; } = new('d', 32); public long Sequence { get; set; }
+        public Func<string, JsonElement, CancellationToken, Task<HttpResponseMessage>>? Control { get; set; }
+        public int Settles { get; private set; } public int Reserves { get; private set; }
+        public HttpResponseMessage ControlResponse(JsonElement body, string state) => new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(new { service = "CommuteCast", contract = 1, engine = fixture.Engine, instance = Instance, sequence = body.GetProperty("sequence").GetInt64(), state }), System.Text.Encoding.UTF8, "application/json") };
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Uris.Add(request.RequestUri!);
             if (request.Method == HttpMethod.Get) { Gets++; if (BeforeHealth is not null) await BeforeHealth(ct); return new(HttpStatusCode.OK) { Content = new StringContent(Health?.Invoke(Gets) ?? fixture.Health(), System.Text.Encoding.UTF8, "application/json") }; }
+            if (request.RequestUri!.AbsolutePath is "/reserve" or "/settle")
+            {
+                using var document = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct)); var body = document.RootElement;
+                if (request.RequestUri.AbsolutePath == "/reserve") Reserves++; else Settles++;
+                if (Control is not null) return await Control(request.RequestUri.AbsolutePath, body, ct);
+                Sequence = Math.Max(Sequence, body.GetProperty("sequence").GetInt64());
+                return ControlResponse(body, request.RequestUri.AbsolutePath == "/reserve" ? "reserved" : "settled");
+            }
             Posts++; Bodies.Add(await request.Content!.ReadAsStringAsync(ct)); return await (Speech?.Invoke(Posts, ct) ?? Task.FromResult(fixture.Audio()));
         }
     }

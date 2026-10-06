@@ -12,6 +12,7 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
     private readonly SpeechProviderLimits limits;
     private readonly HttpClient http;
     private readonly SemaphoreSlim recoveryGate = new(1);
+    private readonly SemaphoreSlim admissionGate = new(1);
     private const int MaximumAudioBytes = 64 * 1024 * 1024;
     public LocalSpeechProvider(Workspace workspace, ILocalSpeechRuntime? runtime = null, HttpMessageHandler? handler = null, SpeechProviderLimits? limits = null)
     {
@@ -75,9 +76,11 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
     {
         DockerContainerPolicy.Name(engine);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Readiness);
-        var entered = false;
+        var entered = false; var admissionEntered = false;
         try
         {
+            await admissionGate.WaitAsync(deadline.Token); admissionEntered = true;
+            await ReconcileAdmissionAsync(deadline.Token);
             await recoveryGate.WaitAsync(deadline.Token); entered = true;
             var budget = new RecoveryBudget(workspace);
             if (explicitRetry) await budget.ResetAsync(engine);
@@ -99,7 +102,7 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException("Speech readiness exceeded its bounded allowance. Repair Docker Desktop, then check readiness or retry. Saved audio is retained."); }
         catch (TimeoutException error) { throw new TimeoutException(error.Message + " Repair Docker Desktop, then check speech readiness or retry. Validated local audio is preserved.", error); }
-        finally { if (entered) recoveryGate.Release(); }
+        finally { if (entered) recoveryGate.Release(); if (admissionEntered) admissionGate.Release(); }
     }
     private async Task<string> ReadPinnedImageAsync(CancellationToken ct)
     {
@@ -177,7 +180,14 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
             var active = root.GetProperty("active").GetInt32(); var voices = root.GetProperty("voices").EnumerateArray().Select(v => v.GetString() ?? "").ToArray();
             if (state is not ("ready" or "loading" or "failed") || active is < 0 or > 1 || voices.Length > 256 || voices.Distinct().Count() != voices.Length || voices.Any(v => !Regex.IsMatch(v, "^[a-zA-Z0-9_-]{1,80}$", RegexOptions.CultureInvariant))) throw new IOException("Speech health contains incompatible state or voice metadata. No text has been sent.");
             if (state == "ready" && (voices.Length == 0 || !Regex.IsMatch(fingerprint, "^" + engine + ":contract-v1:[a-fA-F0-9]{64}$", RegexOptions.CultureInvariant))) throw new IOException("Speech model fingerprint or voice inventory is invalid. No text has been sent.");
-            return new(engine, fingerprint, voices, state, active);
+            string? instance = null; long? sequence = null;
+            if (root.TryGetProperty("admission", out var admission))
+            {
+                instance = root.GetProperty("instance").GetString(); sequence = root.GetProperty("sequence").GetInt64();
+                if (admission.GetInt32() != 1 || instance is null || !Regex.IsMatch(instance, "^[a-f0-9]{32}$") || sequence is < 0 or >= 9007199254740991)
+                    throw new IOException("Speech reservation metadata is incompatible. Reprovision the local service explicitly.");
+            }
+            return new(engine, fingerprint, voices, state, active, InstanceId: instance, AdmissionSequence: sequence);
         }
         catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException) { throw new IOException("Speech health returned incomplete or incompatible metadata. No text has been sent.", error); }
     }
@@ -197,6 +207,19 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
     }
     public async Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Synthesis);
+        var entered = false;
+        try
+        {
+            await admissionGate.WaitAsync(deadline.Token); entered = true;
+            await SynthesizeCoreAsync(settings, text, output, deadline.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        { throw new TimeoutException("Speech synthesis exceeded its five-minute admission/request/retry budget. Validated chunks and any unresolved reservation are retained; check readiness and retry."); }
+        finally { if (entered) admissionGate.Release(); }
+    }
+    private async Task SynthesizeCoreAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
+    {
         settings.ValidateProviderImage();
         settings.Profile?.Validate(settings.Engine);
         if (string.IsNullOrWhiteSpace(text) || text.Length > 900 || settings.Speed is < .7 or > 1.4 || !double.IsFinite(settings.Speed)) throw new ArgumentException("Choose valid text within the 900-character provider limit and a supported speaking pace.");
@@ -206,8 +229,11 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
         if (File.Exists(output) && File.GetAttributes(output).HasFlag(FileAttributes.ReparsePoint)) throw new IOException("Speech output is a symbolic link. Generation was refused.");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Synthesis);
         var temporary = output + ".attempt-" + Guid.NewGuid().ToString("N") + ".partial";
+        var settlementAttempted = true;
+        async Task SettleAttemptAsync() { settlementAttempted = true; await ReconcileAdmissionAsync(CancellationToken.None); }
         try
         {
+            await ReconcileAdmissionAsync(deadline.Token);
             for (var attempt = 0; ; attempt++)
             {
                 try
@@ -222,8 +248,13 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
                         await Task.Delay(limits.Poll, deadline.Token); info = await HealthAsync(settings.Engine, deadline.Token);
                         if (info.State != "ready" || info.Fingerprint != settings.ProviderFingerprint || !info.Voices.Contains(settings.Voice)) throw new IOException("Speech identity, voice, or readiness changed while waiting. Restore the configured service, then retry.");
                     }
+                    RequireAdmission(info);
                     await RequireUnchangedPinAsync(image, deadline.Token);
-                    using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(settings.Engine, "speech")) { Content = JsonContent.Create(new { text, voice = settings.Voice, speed = settings.Speed, fingerprint = settings.ProviderFingerprint }) };
+                    var admission = new PendingSpeechAdmission(1, settings.Engine, image, settings.ProviderFingerprint, info.InstanceId!, info.AdmissionSequence!.Value + 1);
+                    settlementAttempted = false;
+                    await admission.SaveAsync(workspace, deadline.Token);
+                    if (await AdmissionControlAsync(admission, "reserve", deadline.Token) != "reserved") throw new IOException("Speech reservation was not admitted. No source text was sent.");
+                    using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(settings.Engine, "speech")) { Content = JsonContent.Create(new { text, voice = settings.Voice, speed = settings.Speed, fingerprint = settings.ProviderFingerprint, instance = admission.Instance, sequence = admission.Sequence }) };
                     using var response = await SendAsync(request, deadline.Token);
                     if ((int)response.StatusCode is 429 or 500 or 502 or 503 or 504) throw new HttpRequestException("The local speech service returned a transient failure.", null, response.StatusCode);
                     if (!response.IsSuccessStatusCode) throw new IOException($"Local speech returned {(int)response.StatusCode}. Validated chunks are preserved; repair settings or service readiness and retry.");
@@ -238,10 +269,12 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
                     WaveAudio.DataRegion(temporary, false);
                     deadline.Token.ThrowIfCancellationRequested();
                     File.Move(temporary, output, true);
+                    await SettleAttemptAsync();
                     return;
                 }
                 catch (HttpRequestException) when (attempt < limits.TransientRetries && !deadline.IsCancellationRequested)
                 {
+                    await SettleAttemptAsync();
                     if (File.Exists(temporary)) File.Delete(temporary);
                     await Task.Delay(TimeSpan.FromTicks(limits.RetryBackoff.Ticks * (1L << attempt)), deadline.Token);
                 }
@@ -249,7 +282,79 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
         }
         catch (ServiceUnavailableException error) { throw new IOException(error.Message, error); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException("Speech synthesis exceeded its five-minute request/retry budget. Validated chunks are retained; check the local service and retry."); }
-        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        finally
+        {
+            try { if (File.Exists(temporary)) File.Delete(temporary); }
+            finally
+            {
+                // Cancellation can end HTTP while ONNX is still running. Keep the
+                // caller's gate until a bounded settlement attempt finishes. If it
+                // cannot finish, the durable fence blocks both engines on retry.
+                if (!settlementAttempted && File.Exists(PendingSpeechAdmission.PathFor(workspace)))
+                    try { await ReconcileAdmissionAsync(CancellationToken.None); }
+                    catch (Exception error) when (error is IOException or HttpRequestException or OperationCanceledException or TimeoutException) { }
+            }
+        }
     }
-    public void Dispose() { http.Dispose(); recoveryGate.Dispose(); }
+    private static void RequireAdmission(ProviderInfo info)
+    {
+        if (info.InstanceId is null || info.AdmissionSequence is null)
+            throw new IOException("The local speech service lacks cancellation reservations. Reprovision the updated speech image before generating; no source text was sent.");
+    }
+    private async Task<string> AdmissionControlAsync(PendingSpeechAdmission admission, string route, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(limits.Health);
+        using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(admission.Engine, route))
+        { Content = JsonContent.Create(new { instance = admission.Instance, sequence = admission.Sequence, fingerprint = admission.Fingerprint }) };
+        using var response = await SendAsync(request, timeout.Token);
+        response.EnsureSuccessStatusCode();
+        if (response.Content.Headers.ContentType?.MediaType != "application/json" || response.Content.Headers.ContentLength > 16384) throw new IOException("Speech reservation response has an invalid type or size.");
+        await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token); using var bytes = new MemoryStream();
+        await CopyBoundedAsync(stream, bytes, 16384, timeout.Token);
+        try
+        {
+            using var document = JsonDocument.Parse(bytes.ToArray()); var data = document.RootElement;
+            var state = data.GetProperty("state").GetString();
+            if (data.GetProperty("service").GetString() != "CommuteCast" || data.GetProperty("contract").GetInt32() != 1 || data.GetProperty("engine").GetString() != admission.Engine ||
+                data.GetProperty("instance").GetString() != admission.Instance || data.GetProperty("sequence").GetInt64() != admission.Sequence || state is not ("reserved" or "active" or "settled"))
+                throw new IOException("Speech reservation response does not match its saved identity.");
+            return state;
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+        { throw new IOException("Speech reservation response is incomplete or incompatible.", error); }
+    }
+    private async Task ReconcileAdmissionAsync(CancellationToken ct)
+    {
+        var pending = await PendingSpeechAdmission.LoadAsync(workspace, ct);
+        if (pending is null) return;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Quiescence);
+        var (admission, hash) = pending.Value;
+        try
+        {
+            var image = await VerifyContainerAsync(admission.Engine, false, deadline.Token);
+            while (true)
+            {
+                var info = await HealthAsync(admission.Engine, deadline.Token); RequireAdmission(info);
+                if (info.InstanceId != admission.Instance)
+                {
+                    // Delayed callbacks carry the old process identity and cannot
+                    // reserve or start speech in this replacement process.
+                    if (info.Active != 0) throw new IOException("The replacement speech process is active. Wait for it to settle, then retry.");
+                    break;
+                }
+                if (image != admission.Image) throw new IOException("The unresolved speech reservation belongs to another image. Preserve it for inspection; no service was restarted.");
+                if (info.Fingerprint != admission.Fingerprint) throw new IOException("The unresolved speech model identity changed. Preserve the reservation for inspection; generation is blocked.");
+                var state = await AdmissionControlAsync(admission, "settle", deadline.Token);
+                if (state == "settled") break;
+                if (state != "active") throw new IOException("The speech reservation did not settle. Generation remains blocked.");
+                await Task.Delay(limits.Poll, deadline.Token);
+            }
+            await RequireUnchangedPinAsync(image, deadline.Token);
+            if (!await OwnedFileRemoval.DeleteByHashAsync(workspace.Root, PendingSpeechAdmission.FileName, hash))
+                throw new IOException("The pending speech reservation changed during settlement. It was preserved; generation remains blocked.");
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        { throw new TimeoutException("Speech cancellation is still settling. The saved reservation blocks both engines; wait for local inference to finish, then check readiness or retry. No service was restarted."); }
+    }
+    public void Dispose() { http.Dispose(); recoveryGate.Dispose(); admissionGate.Dispose(); }
 }

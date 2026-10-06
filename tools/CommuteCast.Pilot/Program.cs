@@ -6,8 +6,8 @@ using System.Reflection;
 
 var engine = args.FirstOrDefault() ?? "kokoro";
 if (engine is not ("kokoro" or "piper")) throw new ArgumentException("Use kokoro or piper.");
-if (args.Length > 3 || args.Length == 3 && args[2] is not ("--verify-private-removal" or "--verify-audition"))
-    throw new ArgumentException("Use an engine, an optional fresh folder under artifacts/pilot, and optional --verify-private-removal or --verify-audition.");
+if (args.Length > 3 || args.Length == 3 && args[2] is not ("--verify-private-removal" or "--verify-audition" or "--verify-cancellation"))
+    throw new ArgumentException("Use an engine, an optional fresh folder under artifacts/pilot, and optional --verify-private-removal, --verify-audition or --verify-cancellation.");
 var verifyPrivateRemoval = args.ElementAtOrDefault(2) == "--verify-private-removal";
 var verifyAudition = args.ElementAtOrDefault(2) == "--verify-audition";
 var pilotParent = Path.GetFullPath(Path.Combine("artifacts", "pilot"));
@@ -47,6 +47,11 @@ var text = "# A better commute\n\n" + string.Join("\n\n", new[]
 var profile = new PronunciationProfile(Numbers: NumberReading.ScientificWords, Acronyms: AcronymReading.SpellUppercaseWords, Dates: DateReading.IsoYearMonthDay);
 const string dictionary = "CommuteCast=Commute Cast\nSQLite=S Q Lite\n.NET=dot net";
 var job = new Job { Title = "A better commute — " + engine + " pilot", Source = text, Prepared = TextPreparation.Prepare(text, pronunciation: dictionary, profile: profile), Settings = new(engine, engine == "kokoro" ? "af_heart" : "en_US-lessac-medium", 1, false, dictionary, info.Fingerprint, profile, info.ImageId), Destination = destination };
+if (args.ElementAtOrDefault(2) == "--verify-cancellation")
+{
+    await SpeechCancellationAcceptance.RunAsync(root, workspace, provider, job.Settings, timeout.Token);
+    return;
+}
 if (verifyAudition)
 {
     using var auditionGate = new SemaphoreSlim(1);

@@ -38,12 +38,13 @@ public sealed record SpeechProviderLimits
     public TimeSpan Readiness { get; init; } = TimeSpan.FromSeconds(120);
     public TimeSpan Health { get; init; } = TimeSpan.FromSeconds(5);
     public TimeSpan Synthesis { get; init; } = TimeSpan.FromMinutes(5);
+    public TimeSpan Quiescence { get; init; } = TimeSpan.FromSeconds(8);
     public TimeSpan Poll { get; init; } = TimeSpan.FromMilliseconds(1500);
     public TimeSpan RetryBackoff { get; init; } = TimeSpan.FromSeconds(1);
     public int TransientRetries { get; init; } = 2;
     public void Validate()
     {
-        if (Readiness <= TimeSpan.Zero || Readiness > TimeSpan.FromSeconds(120) || Health <= TimeSpan.Zero || Health > TimeSpan.FromSeconds(5) || Synthesis <= TimeSpan.Zero || Synthesis > TimeSpan.FromMinutes(5) || Poll <= TimeSpan.Zero || RetryBackoff <= TimeSpan.Zero || TransientRetries is < 0 or > 2)
+        if (Readiness <= TimeSpan.Zero || Readiness > TimeSpan.FromSeconds(120) || Health <= TimeSpan.Zero || Health > TimeSpan.FromSeconds(5) || Synthesis <= TimeSpan.Zero || Synthesis > TimeSpan.FromMinutes(5) || Quiescence <= TimeSpan.Zero || Quiescence > TimeSpan.FromSeconds(8) || Poll <= TimeSpan.Zero || RetryBackoff <= TimeSpan.Zero || TransientRetries is < 0 or > 2)
             throw new ArgumentException("Provider limits must remain within the approved recovery/request budgets.");
     }
 }

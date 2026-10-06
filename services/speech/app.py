@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import wave
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,6 +24,10 @@ fingerprint = ""
 active = 0
 execution = None
 gate = threading.Lock()
+instance = uuid.uuid4().hex
+sequence = 0
+retired = 0
+reserved = False
 logging.getLogger("kokoro_onnx").setLevel(logging.CRITICAL)
 logging.getLogger("phonemizer").setLevel(logging.CRITICAL)
 
@@ -88,11 +93,61 @@ app = FastAPI(title="CommuteCast Speech", version="1", lifespan=lifespan)
 
 @app.get("/health")
 def health():
+    with gate:
+        return {"service": "CommuteCast", "contract": 1, "engine": ENGINE,
+                "fingerprint": fingerprint, "voices": voices, "state": state, "active": active, "execution": execution,
+                "admission": 1, "instance": instance, "sequence": sequence}
+
+
+class AdmissionRequest(BaseModel):
+    instance: str = Field(pattern=r"^[a-f0-9]{32}$")
+    sequence: int = Field(ge=1, le=9007199254740991)
+    fingerprint: str
+
+
+def admission_identity(request):
+    if request.instance != instance or request.fingerprint != fingerprint:
+        raise HTTPException(409, "Speech process or model identity changed")
+
+
+def admission_result(request, phase):
     return {"service": "CommuteCast", "contract": 1, "engine": ENGINE,
-            "fingerprint": fingerprint, "voices": voices, "state": state, "active": active, "execution": execution}
+            "instance": instance, "sequence": request.sequence, "state": phase}
 
 
-class SpeechRequest(BaseModel):
+@app.post("/reserve")
+def reserve(request: AdmissionRequest):
+    global sequence, reserved
+    with gate:
+        admission_identity(request)
+        if state != "ready":
+            raise HTTPException(503, "Model is not ready")
+        if active or reserved:
+            raise HTTPException(429, "An inference reservation is active")
+        if request.sequence != sequence + 1:
+            raise HTTPException(409, "Inference reservation is stale")
+        sequence = request.sequence
+        reserved = True
+        return admission_result(request, "reserved")
+
+
+@app.post("/settle")
+def settle(request: AdmissionRequest):
+    global sequence, retired, reserved
+    with gate:
+        admission_identity(request)
+        if request.sequence > sequence + 1:
+            raise HTTPException(409, "Inference reservation is incompatible")
+        # Retire even a reservation whose HTTP request has not arrived yet. This
+        # high-water mark permanently rejects delayed reserve/speech callbacks.
+        retired = max(retired, request.sequence)
+        sequence = max(sequence, request.sequence)
+        if not active and request.sequence >= sequence:
+            reserved = False
+        return admission_result(request, "active" if active else "settled")
+
+
+class SpeechRequest(AdmissionRequest):
     text: str = Field(min_length=1, max_length=900)
     voice: str
     speed: float = Field(ge=0.7, le=1.4)
@@ -101,14 +156,18 @@ class SpeechRequest(BaseModel):
 
 @app.post("/speech")
 def speech(request: SpeechRequest):
-    global active
-    if state != "ready":
-        raise HTTPException(503, "Model is not ready")
-    if request.fingerprint != fingerprint or request.voice not in voices:
-        raise HTTPException(409, "Voice or model identity changed")
-    if not gate.acquire(blocking=False):
-        raise HTTPException(429, "Inference is active; wait for quiescence")
-    active = 1
+    global active, retired, reserved
+    with gate:
+        admission_identity(request)
+        if state != "ready":
+            raise HTTPException(503, "Model is not ready")
+        if request.voice not in voices:
+            raise HTTPException(409, "Voice or model identity changed")
+        if active:
+            raise HTTPException(429, "Inference is active; wait for quiescence")
+        if not reserved or request.sequence != sequence or request.sequence <= retired:
+            raise HTTPException(409, "Inference reservation is retired or missing")
+        active = 1
     try:
         output = io.BytesIO()
         if ENGINE == "kokoro":
@@ -124,5 +183,7 @@ def speech(request: SpeechRequest):
     except Exception:
         raise HTTPException(500, "Local synthesis failed; source is not logged") from None
     finally:
-        active = 0
-        gate.release()
+        with gate:
+            retired = max(retired, request.sequence)
+            active = 0
+            reserved = False

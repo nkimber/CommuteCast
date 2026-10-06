@@ -18,6 +18,8 @@ On first use, choose your actual corporate OneDrive folder, audition Kokoro and 
 
 Use **Play standard sample**, or select a short passage in the editor and choose **Play selected text**. The sample uses the captured voice, pace and pronunciation options and waits for current narration. **Stop audition** stops playback and requests cancellation of a waiting/generating sample. Selections and prepared scripts must fit 900 characters; nothing is silently shortened. A cropped selection inside excluded code is refused. Audition audio stays private and does not create a library item or export. Completed samples are removed on replacement, Stop and normal shutdown; changed, legacy or incomplete files are retained for inspection.
 
+Speech cancellation retires a reservation tied to the exact running service process. The app waits up to eight seconds for active inference to finish; if it remains active or cannot be verified, a source-free `speech-admission.json` record blocks new speech on both engines until a later readiness check settles it. No container is restarted to clear an active reservation. This current-runtime record survives restoring narration history. Do not remove it to bypass settlement. Updated desktop builds require the reservation-capable speech image: run the provisioning build after updating the application. Existing narrations retain their original model/image fingerprints and require their original compatible service for regeneration.
+
 Pending narrations can be moved earlier/later in the library; their order survives relaunch. Settings provides storage usage, intermediate-cache quota (default 1024 MiB), scratch retention (7 days), and private storage budget (10240 MiB). Eligible cache is cleaned after each job and before submission; manual cleanup is also available. Cleanup preserves sources/history, finished MP3s, active artifacts, and chunks needed for retry. New submissions are refused if their conservative storage estimate exceeds the budget or free-space floor. Delete older narrations explicitly to remove protected data.
 
 Storage admission reserves estimated audio for all pending jobs, subtracts their existing private files, and applies on retry as well as submission. If a durable checkpoint write fails, dispatch pauses with a repair instruction; existing records are retained. Repair storage, retry the affected narration, then resume the queue. A failed retry does not change the saved stage or destination.
@@ -40,6 +42,9 @@ dotnet test CommuteCast.slnx
 # Real Docker speech → normalized PCM → one MP3 → verified local export.
 dotnet run --project tools\CommuteCast.Pilot -- kokoro
 dotnet run --project tools\CommuteCast.Pilot -- piper
+# Active real inference cancellation, followed by the opposite engine.
+dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-cancellation-example --verify-cancellation
+dotnet run --project tools\CommuteCast.Pilot -- piper artifacts/pilot/piper-cancellation-example --verify-cancellation
 ```
 
 Tests cover source span accounting, chunk ordering, Unicode boundaries, frozen settings, SQLite relaunch, cancellation, export collisions, rename reconciliation, changed-file deletion guards, cache corruption, and export-only retry. Pipeline tests require FFmpeg and FFprobe. Pilot output and reports are private, ignored files in `artifacts/pilot`; they do not upload to OneDrive.
