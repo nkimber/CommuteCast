@@ -69,6 +69,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private readonly LocalSpeechProvider provider;
     private readonly ExportPublisher publisher;
     private readonly QueueCoordinator queue;
+    private readonly SqliteJobStore store;
     private readonly MediaPlayer player = new();
     private readonly CancellationTokenSource shutdown = new();
     private CancellationTokenSource? draftSave;
@@ -148,7 +149,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public MainViewModel(AppSettings saved)
     {
         settings = saved;
-        var store = new SqliteJobStore(Workspace);
+        store = new SqliteJobStore(Workspace);
         provider = new(Workspace); publisher = new(Workspace, store);
         queue = new(Workspace, store, provider, new(settings), publisher) { Paused = settings.QueuePaused, CacheQuotaMiB = settings.CacheQuotaMiB, ScratchRetentionDays = settings.ScratchRetentionDays };
         queue.Changed += snapshots => Application.Current.Dispatcher.InvokeAsync(() => RefreshJobs(snapshots));
@@ -336,8 +337,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     {
         var dialog = new SaveFileDialog { Title = "Export redacted diagnostics", FileName = "CommuteCast-diagnostics.json", Filter = "JSON file|*.json" };
         if (dialog.ShowDialog(Application.Current.MainWindow) != true) return;
-        var package = new { application = "CommuteCast 0.1.0", runtime = Environment.Version.ToString(), exportedUtc = DateTimeOffset.UtcNow, encoder = encoderVersion, jobs = queue.Snapshot().Select(j => new { stage = j.Stage.ToString(), j.CompletedChunks, chunks = j.Chunks.Count, j.DurationSeconds, errorCategory = j.Error.Length > 0 ? "action-required" : "none" }) };
-        await File.WriteAllTextAsync(dialog.FileName, JsonSerializer.Serialize(package, new JsonSerializerOptions { WriteIndented = true }));
+        var package = await Task.Run(() => new DiagnosticExporter(Workspace, store).BuildAsync(queue.Snapshot(), encoderVersion, shutdown.Token));
+        await File.WriteAllTextAsync(dialog.FileName, package, shutdown.Token);
         StatusMessage = "Redacted diagnostics exported. No source, script, title, audio, or corporate path is included.";
     }
     public async ValueTask DisposeAsync()

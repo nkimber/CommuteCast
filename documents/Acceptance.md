@@ -24,8 +24,10 @@ Capture/title/timestamp/durable submission (FR-01–04); deterministic inspectab
 - **FR-18 (P1):** Pending jobs can be moved earlier/later. Order is saved transactionally and survives relaunch; dispatched/cancelled/completed jobs cannot be reordered. Frozen source/settings/destination and creation time are preserved.
 - **FR-31 / NFR-15 (P1):** Storage measurement, configurable intermediate-cache quota and scratch age, explicit cleanup, and automatic cleanup after jobs/before submission are implemented. Cleanup is interruptible, fenced against dispatch/deletion, and skips active work/tombstones. Retry receipts, source/history, completed private MP3s and exports are protected. A conservative per-submission storage estimate and free-space floor refuse new submissions above the private budget while retaining the draft. Protected artifacts may exceed the cache quota; deleting narrations is explicit. Aggregate reservation for many pending jobs remains to be hardened.
 - **FR-08 (P1):** Literal dictionary is supported; additional number/acronym engine controls are not exposed because candidate capabilities are not certified.
-- **FR-33 (P1):** Redacted state/counter/version export exists; richer timings, event-transition diagnostics and failure taxonomy remain refinements.
+- **FR-33 (P1):** Diagnostic export contains up to 2,000 persisted stage events, elapsed checkpoint timings (explicitly distinguished from isolated inference timings), job IDs, attempts, failed stages/categories, valid provider fingerprints, runtime/OS/encoder versions and storage totals. Source/script/audio/title/dictionary/error messages/content fingerprints/corporate paths are excluded. Diagnostic redaction and deletion of associated event history are tested. Release build and 46 tests pass after this increment.
 - **NFR-13:** Portable packaging is implemented; signing, corporate installer, fresh-machine install/rollback and complete redistribution legal review remain release gates. Model checksums/image IDs prevent silent model drift.
+
+Portable publish was executed successfully and produced a self-contained x64 application and approximately 66.5 MB ZIP under ignored `artifacts/release`. Native packaged launch and fresh-machine acceptance remain unverified.
 
 ## Stationary Android pilot checklist
 

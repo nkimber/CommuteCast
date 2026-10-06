@@ -157,4 +157,26 @@ public sealed class SqliteJobStore : IJobStore
         }
         finally { gate.Release(); }
     }
+    public async Task<IReadOnlyList<DiagnosticEvent>> ReadDiagnosticEventsAsync(CancellationToken ct = default)
+    {
+        await gate.WaitAsync(ct);
+        try
+        {
+            await using var connection = await OpenAsync(ct);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT job_id,stage,timestamp FROM (SELECT sequence,job_id,stage,timestamp FROM events ORDER BY sequence DESC LIMIT 2000) ORDER BY sequence";
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            var events = new List<DiagnosticEvent>();
+            var previous = new Dictionary<string, DateTimeOffset>();
+            while (await reader.ReadAsync(ct))
+            {
+                var id = reader.GetString(0);
+                if (id.Length != 32 || !id.All(Uri.IsHexDigit) || !Enum.TryParse<JobStage>(reader.GetString(1), out var stage) || !Enum.IsDefined(stage) || !DateTimeOffset.TryParse(reader.GetString(2), out var timestamp)) continue;
+                var elapsed = previous.TryGetValue(id, out var prior) ? Math.Max(0, (timestamp - prior).TotalMilliseconds) : (double?)null;
+                events.Add(new(id, stage, timestamp, elapsed)); previous[id] = timestamp;
+            }
+            return events;
+        }
+        finally { gate.Release(); }
+    }
 }

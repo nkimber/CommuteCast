@@ -131,15 +131,20 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                 continue;
             }
             var cancellation = activeCancellation!;
+            job.Attempts++;
             try { await RunAsync(job, cancellation.Token); }
             catch (OperationCanceledException)
             {
                 if (!job.ExportCommitted) job.Stage = lifetime.IsCancellationRequested ? JobStage.Queued : JobStage.Cancelled;
                 job.Error = "";
+                job.FailureCategory = lifetime.IsCancellationRequested ? FailureCategory.None : FailureCategory.Cancelled;
+                job.FailedStage = null;
                 await store.SaveAsync(job, CancellationToken.None);
             }
             catch (Exception error)
             {
+                job.FailedStage = job.Stage;
+                job.FailureCategory = Categorize(error, job.Stage);
                 job.Stage = job.ExportCommitted ? JobStage.Exported : JobStage.Failed;
                 job.Error = FriendlyError(error);
                 await store.SaveAsync(job, CancellationToken.None);
@@ -168,6 +173,19 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         HttpRequestException => "The local speech connection failed. Check service readiness and retry; validated chunks are retained.",
         _ => $"The operation failed ({error.GetType().Name}). Your local job is preserved. Check prerequisites and retry."
     };
+    public static FailureCategory Categorize(Exception error, JobStage stage) => error switch
+    {
+        OperationCanceledException => FailureCategory.Cancelled,
+        TimeoutException => FailureCategory.Timeout,
+        UnauthorizedAccessException => FailureCategory.AccessDenied,
+        System.ComponentModel.Win32Exception => FailureCategory.Prerequisite,
+        HttpRequestException => FailureCategory.ServiceConnection,
+        _ when stage is JobStage.WaitingForService or JobStage.Synthesizing => FailureCategory.ServiceContract,
+        _ when stage is JobStage.Assembling or JobStage.Validating => FailureCategory.AudioValidation,
+        _ when stage is JobStage.Exporting => FailureCategory.Export,
+        IOException => FailureCategory.Storage,
+        _ => FailureCategory.Unexpected
+    };
     private async Task StageAsync(Job job, JobStage stage, CancellationToken ct)
     {
         job.Stage = stage;
@@ -180,6 +198,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         Workspace.RejectReparsePoints(directory);
         Directory.CreateDirectory(directory);
         job.Error = "";
+        job.FailureCategory = FailureCategory.None; job.FailedStage = null;
         lock (sync) if (job.Chunks.Count == 0) job.Chunks = Chunker.Split(job.Prepared.Script, 450);
         if (string.Concat(job.Chunks.Select(c => c.Text)) != job.Prepared.Script) throw new IOException("Chunk coverage is invalid. No audio was exported.");
         await StageAsync(job, JobStage.Preparing, ct);

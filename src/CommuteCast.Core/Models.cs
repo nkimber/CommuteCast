@@ -5,6 +5,8 @@ using System.Text.Json;
 namespace CommuteCast.Core;
 
 public enum JobStage { Queued, Preparing, WaitingForService, Synthesizing, Assembling, Validating, Generated, Exporting, Exported, Failed, Cancelled, Deleting }
+public enum FailureCategory { None, Cancelled, Timeout, Prerequisite, ServiceConnection, ServiceContract, AccessDenied, AudioValidation, Export, Storage, Unexpected }
+public record DiagnosticEvent(string JobId, JobStage Stage, DateTimeOffset Timestamp, double? ElapsedSincePreviousMs);
 public record SourceSpan(int Start, int Length, string Kind, string Original, string Narration);
 public record PreparedText(string Script, IReadOnlyList<SourceSpan> Spans, string Version = "prepare-v1");
 public record TextChunk(int Index, int Start, int Length, string Text, bool HardSplit);
@@ -24,6 +26,9 @@ public sealed class Job
     public List<ChunkReceipt> Receipts { get; set; } = [];
     public int CompletedChunks { get; set; }
     public string Error { get; set; } = "";
+    public FailureCategory FailureCategory { get; set; }
+    public JobStage? FailedStage { get; set; }
+    public int Attempts { get; set; }
     public string FinalHash { get; set; } = "";
     public double DurationSeconds { get; set; }
     public string ExportName { get; set; } = "";
