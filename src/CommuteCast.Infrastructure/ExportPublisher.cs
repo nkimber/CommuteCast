@@ -4,7 +4,7 @@ using System.Security.Cryptography;
 
 namespace CommuteCast.Infrastructure;
 
-public enum ExportCheckpoint { IntentSaved, CopyStarted, CopyProgress, CopyFlushed, CopyVerified, BeforeRename, Renamed, Committed }
+public enum ExportCheckpoint { IntentSaved, CopyStarted, CopyProgress, CopyFlushed, CopyVerified, BeforeRename, Renamed, Committed, RemovalValidated }
 public interface IExportObserver
 {
     Task ReachedAsync(ExportCheckpoint checkpoint, CancellationToken ct);
@@ -173,11 +173,11 @@ public sealed class ExportPublisher(Workspace workspace, IJobStore store, IExpor
         workspace.GuardLocalDestination(job.Destination);
         if (job.ExportName != Filename(job)) throw new IOException("Unrecognized export name. Removal was refused.");
         var final = Path.Combine(job.Destination, job.ExportName);
-        if (File.Exists(final))
-        {
-            if (File.GetAttributes(final).HasFlag(FileAttributes.ReparsePoint) || job.ExportHash.Length == 0 || await Workspace.HashFileAsync(final, ct) != job.ExportHash) throw new IOException("The exported file changed or is no longer owned. It was preserved.");
-            File.Delete(final);
-        }
+        if (job.ExportHash.Length == 0)
+        { if (File.Exists(final)) throw new IOException("The exported file has no recorded identity. It was preserved."); }
+        else
+            await OwnedFileRemoval.DeleteByHashAsync(job.Destination, job.ExportName, job.ExportHash,
+                observer is null ? null : new RemovalObserver(this), ct);
         var temporary = Path.Combine(job.Destination, $".commutecast-{job.Id}.partial");
         await RemoveStagingAsync(job, temporary, ct);
     }
@@ -204,5 +204,10 @@ public sealed class ExportPublisher(Workspace workspace, IJobStore store, IExpor
             job.ExportStagingOwned = false;
         }
         else job.ExportStagingOwned = false;
+    }
+
+    private sealed class RemovalObserver(ExportPublisher publisher) : IFileRemovalObserver
+    {
+        public Task ValidatedAsync(string path, CancellationToken ct) => publisher.ReachedAsync(ExportCheckpoint.RemovalValidated, ct);
     }
 }

@@ -20,11 +20,19 @@ public static class OwnedFileRemoval
         if (!Workspace.IsWithin(root, path)) throw new IOException("A managed removal path escapes its recorded root. Files were preserved.");
         SqliteSchema.RejectLink(path); return path;
     }
-    public static async Task<bool> DeleteAsync(string root, ReleaseFile receipt, IFileRemovalObserver? observer = null, CancellationToken ct = default)
+    public static Task<bool> DeleteAsync(string root, ReleaseFile receipt, IFileRemovalObserver? observer = null, CancellationToken ct = default) =>
+        DeleteCoreAsync(root, receipt.RelativePath, receipt.Sha256, receipt.Bytes, observer, ct);
+
+    public static Task<bool> DeleteByHashAsync(string root, string relativePath, string sha256, IFileRemovalObserver? observer = null, CancellationToken ct = default) =>
+        DeleteCoreAsync(root, relativePath, sha256, null, observer, ct);
+
+    private static async Task<bool> DeleteCoreAsync(string root, string relativePath, string sha256, long? bytes, IFileRemovalObserver? observer, CancellationToken ct)
     {
-        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Managed installation removal requires Windows.");
-        ct.ThrowIfCancellationRequested(); var path = Resolve(root, receipt.RelativePath);
-        if (path.StartsWith("\\\\", StringComparison.Ordinal)) throw new IOException("Managed installation removal requires a local file.");
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Managed file removal requires Windows.");
+        ct.ThrowIfCancellationRequested();
+        if (sha256.Length != 64 || !sha256.All(Uri.IsHexDigit) || bytes < 0) throw new IOException("The recorded file identity is invalid. Files were preserved.");
+        var path = Resolve(root, relativePath);
+        if (path.StartsWith("\\\\", StringComparison.Ordinal)) throw new IOException("Managed file removal requires a local file.");
         using var handle = CreateFile("\\\\?\\" + path, 0x80010000, 1, IntPtr.Zero, 3, 0x00200080, IntPtr.Zero); // READ|DELETE; share READ; open the reparse point itself, including long paths.
         if (handle.IsInvalid)
         {
@@ -34,7 +42,7 @@ public static class OwnedFileRemoval
         if (!GetFileInformationByHandleEx(handle, 9, out var attributes, 8) || (attributes.Attributes & (0x400 | 0x10)) != 0)
             throw new IOException("A managed removal item is a directory or reparse point. Files were preserved.");
         await using var input = new FileStream(handle, FileAccess.Read, 81920, false);
-        if (input.Length != receipt.Bytes || Convert.ToHexString(await SHA256.HashDataAsync(input, ct)) != receipt.Sha256)
+        if ((bytes is not null && input.Length != bytes) || Convert.ToHexString(await SHA256.HashDataAsync(input, ct)) != sha256)
             throw new IOException("A recorded file changed. It was preserved rather than removed.");
         if (observer is not null) await observer.ValidatedAsync(path, ct);
         ct.ThrowIfCancellationRequested();
