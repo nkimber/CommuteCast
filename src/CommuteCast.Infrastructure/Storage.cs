@@ -8,6 +8,8 @@ namespace CommuteCast.Infrastructure;
 public sealed class Workspace
 {
     private readonly SemaphoreSlim settingsGate = new(1);
+    // Bounded per-path serialization across Workspace instances, without retaining private paths.
+    private static readonly SemaphoreSlim[] atomicWriteGates = Enumerable.Range(0, 64).Select(_ => new SemaphoreSlim(1)).ToArray();
     public string Root { get; }
     public Workspace(string? root = null)
     {
@@ -66,14 +68,27 @@ public sealed class Workspace
     }
     public static async Task AtomicWriteAsync(string path, string text)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var temporary = path + ".tmp";
-        await using (var file = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+        path = Path.GetFullPath(path); SqliteSchema.RejectLink(path);
+        var gate = atomicWriteGates[(uint)StringComparer.OrdinalIgnoreCase.GetHashCode(path) % (uint)atomicWriteGates.Length];
+        await gate.WaitAsync();
+        var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        var ownsTemporary = false;
+        try
         {
-            await file.WriteAsync(System.Text.Encoding.UTF8.GetBytes(text));
-            file.Flush(true);
+            SqliteSchema.RejectLink(path); Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                ownsTemporary = true;
+                await file.WriteAsync(System.Text.Encoding.UTF8.GetBytes(text));
+                file.Flush(true);
+            }
+            SqliteSchema.RejectLink(path); File.Move(temporary, path, true);
         }
-        File.Move(temporary, path, true);
+        finally
+        {
+            try { if (ownsTemporary && File.Exists(temporary)) File.Delete(temporary); }
+            finally { gate.Release(); }
+        }
     }
 }
 

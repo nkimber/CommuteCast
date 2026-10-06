@@ -20,7 +20,7 @@ Pending narrations can be moved earlier/later in the library; their order surviv
 
 Storage admission reserves estimated audio for all pending jobs, subtracts their existing private files, and applies on retry as well as submission. If a durable checkpoint write fails, dispatch pauses with a repair instruction; existing records are retained. Repair storage, retry the affected narration, then resume the queue. A failed retry does not change the saved stage or destination.
 
-Queue files carry an application identity, schema version and migration history. Before migrating a legacy queue, the app creates a verified SQLite online backup under private `schema-backups`; it refuses foreign, newer or corrupt records without resetting them. These snapshots include committed WAL data. Local migration backups and recovered unreadable-draft copies remain separately retained when narrations are deleted. Full workspace backup/restore and installer rollback are still release work; a database snapshot alone is not a backup of all private audio/settings.
+Queue files carry an application identity, schema version and migration history. Before migrating a legacy queue, the app creates a verified SQLite online backup under private `schema-backups`; it refuses foreign, newer or corrupt records without resetting them. These snapshots include committed WAL data. Local migration backups and recovered unreadable-draft copies remain separately retained when narrations are deleted. Complete current-state backup and restore are available through the packaged maintenance tool below; installer update/rollback integration remains release work.
 
 The input limit is 250,000 characters, with no editor truncation. Default preparation removes common Markdown formatting while preserving content. Links retain labels and URLs; tables retain cells; fenced code is spoken unless explicitly excluded. Numbers are preserved for the selected engine to pronounce. Pronunciation substitutions use literal, whole-term `term=spoken words` rules and are visible in the preparation map. Oversized sentences use a deterministic word/Unicode-safe fallback. Automatic checks establish source/chunk accounting and audio integrity, **not exact spoken fidelity**.
 
@@ -43,6 +43,7 @@ Tests cover source span accounting, chunk ordering, Unicode boundaries, frozen s
 - `src/CommuteCast.Desktop`: WPF/MVVM capture, settings, library, preparation review, auditions, local playback, deletion, diagnostics.
 - `services/speech`: pinned CPU Kokoro ONNX and Piper packages/models; a versioned CommuteCast HTTP contract; no runtime downloads or content logging.
 - `tools/CommuteCast.Pilot`: reproducible real-service acceptance runner.
+- `tools/CommuteCast.Maintenance`: offline verified current-state backup, restore and interruption recovery.
 
 See [implementation decisions](documents/Implementation-Decisions.md), [acceptance record](documents/Acceptance.md), [full verification matrix](documents/Verification-Matrix.md), and [third-party notices](THIRD-PARTY-NOTICES.md).
 
@@ -61,3 +62,21 @@ Deletion stops the selected worker before removing tracked local artifacts. Expo
 ## Packaging and acceptance
 
 `.\scripts\Publish-Portable.ps1` creates an unpackaged, self-contained Windows x64 folder and ZIP under `artifacts/release`. Docker, models, and FFmpeg are separate prerequisites. The app does not install them or elevate privileges. Code signing, a corporate installer, fresh-machine acceptance, listening approval, and actual corporate Android playback with the laptop off are release gates recorded separately. No evidence from a build or unit suite substitutes for those checks.
+
+## Back up and restore local state
+
+Close CommuteCast first. From the portable package's `app` directory:
+
+```powershell
+.\CommuteCast.Maintenance.exe backup
+# Use the completed folder reported by backup; retain it in private nonsynced storage.
+.\CommuteCast.Maintenance.exe validate-backup --backup '<completed backup folder>'
+.\CommuteCast.Maintenance.exe restore --backup '<completed backup folder>' --confirm-replace-local-data
+.\CommuteCast.Maintenance.exe recover
+```
+
+Backups stay under `%LOCALAPPDATA%\CommuteCast\backups`. They contain private source, draft, queue/history, settings, locally approved provider identity, recovery allowance and current job audio/artifacts. A manifest records app/schema versions, file lengths and SHA256 checksums. The queue is captured through SQLite's online backup API; copying `queue.db` alone may miss committed WAL data. Backups exclude historical backup/recovery copies, audition audio, diagnostic exports, provisioning models and Docker images. Exported MP3s are separate files; maintenance never changes them. A backup does not install prerequisites or guarantee the approved provider image is available on another machine.
+
+Restore validates the entire backup and stages another verified copy before replacing local managed state. Previous files remain under `recovery\restores\<restore ID>\previous`. An unfinished restore is recovered by desktop startup or `recover`; before its durable commit, recovery returns to the verified original state. Incompatible, changed or unsafe artifacts are refused and retained for inspection. Recovery copies and backups can contain private data and consume disk space; narration deletion and cache cleanup do not remove them. Keep the previous state until the restored application has been checked. Failed preparation can also leave retained copies for inspection.
+
+For a reproducible isolated command-line acceptance run, use `.\scripts\Test-Maintenance.ps1` after publishing, or supply `-Executable` with the built maintenance executable. Its synthetic fixtures and report stay under ignored `artifacts\maintenance-acceptance`; it never restores the live user workspace. Native backup controls, installer integration and fresh-machine acceptance remain open.

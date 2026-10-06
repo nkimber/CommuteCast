@@ -4,6 +4,8 @@ $release = Join-Path $projectRoot 'artifacts\release\CommuteCast-win-x64'
 $application = Join-Path $release 'app'
 & dotnet publish (Join-Path $projectRoot 'src\CommuteCast.Desktop') -c Release -r win-x64 --self-contained true -o $application
 if ($LASTEXITCODE -ne 0) { throw 'Portable publish failed.' }
+& dotnet publish (Join-Path $projectRoot 'tools\CommuteCast.Maintenance') -c Release -r win-x64 --self-contained true -o $application
+if ($LASTEXITCODE -ne 0) { throw 'Maintenance publish failed.' }
 New-Item -ItemType Directory -Force -Path (Join-Path $release 'scripts'), (Join-Path $release 'services'), (Join-Path $release 'documents') | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md'), (Join-Path $projectRoot 'THIRD-PARTY-NOTICES.md') -Destination $release
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Start-CommuteCast.ps1'), (Join-Path $projectRoot 'scripts\Provision-Speech.ps1') -Destination (Join-Path $release 'scripts')

@@ -25,6 +25,7 @@ public partial class App : Application
         {
             var workspace = new Workspace();
             workspaceLease = WorkspaceLease.Acquire(workspace);
+            await WorkspaceBackup.RecoverInterruptedAsync(workspaceLease);
             var settings = await workspace.LoadSettingsAsync();
             var window = new MainWindow(new MainViewModel(settings, workspace));
             MainWindow = window; window.Show();
