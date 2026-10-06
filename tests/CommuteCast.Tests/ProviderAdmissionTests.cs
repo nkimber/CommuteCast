@@ -131,7 +131,10 @@ public partial class ProviderContractTests
         using var fixture = new Fixture(); WriteAdmission(fixture); fixture.Http.Instance = new('e', 32);
         var revised = "sha256:" + new string('b', 64); fixture.Runtime.Container["Image"] = revised;
         File.WriteAllText(Path.Combine(fixture.Test.Workspace.Root, "provider-lock.local.json"), JsonSerializer.Serialize(new { ImageId = revised, Contract = 1 }));
-        using var provider = fixture.Provider(); var ready = await provider.ReadyAsync("kokoro", default);
+        // This verifies replacement identity, not a subsecond deadline. The
+        // 200ms default can expire during fixture file I/O under a full-suite load.
+        using var provider = fixture.Provider(Fixture.ShortLimits with { Quiescence = TimeSpan.FromSeconds(2) });
+        var ready = await provider.ReadyAsync("kokoro", default);
         Assert.Equal(revised, ready.ImageId); Assert.False(File.Exists(AdmissionPath(fixture))); Assert.Equal(0, fixture.Http.Settles); Assert.Equal(0, fixture.Runtime.Starts);
     }
     [Fact] public async Task RestorePreservesCurrentRuntimeAdmissionFenceOutsideBackedUpHistory()

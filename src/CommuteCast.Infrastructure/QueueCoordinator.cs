@@ -58,6 +58,12 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         var retained = new List<Job>();
         foreach (var job in loaded)
         {
+            try { await PrivateJobFiles.ReconcilePromotionsAsync(job, workspace.JobDirectory(job.Id), () => store.SaveAsync(job, ct), ct); }
+            catch (IOException error)
+            {
+                job.Stage = job.DeletionRequested ? JobStage.Deleting : JobStage.Failed;
+                job.Error = FriendlyError(error); retained.Add(job); await store.SaveAsync(job, ct); continue;
+            }
             if (job.DeletionRequested)
             {
                 try { await FinishDeletionAsync(job); }
@@ -242,6 +248,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         var directory = workspace.JobDirectory(job.Id);
         Workspace.RejectReparsePoints(directory);
         Directory.CreateDirectory(directory);
+        await PrivateJobFiles.ReconcilePromotionsAsync(job, directory, () => store.SaveAsync(job, ct), ct);
         job.Error = "";
         job.FailureCategory = FailureCategory.None; job.FailedStage = null;
         lock (sync) if (job.Chunks.Count == 0) job.Chunks = Chunker.Split(job.Prepared.Script, 450);
@@ -301,12 +308,15 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                         var hash = await Workspace.HashFileAsync(normalized, ct);
                         ct.ThrowIfCancellationRequested();
                         var chunkName = Path.GetFileName(workspace.ChunkPath(job, chunk.Index));
-                        await PrivateJobFiles.PrepareOutputAsync(job, directory, chunkName, ct, preserveChangedChunk: true);
-                        File.Move(normalized, workspace.ChunkPath(job, chunk.Index), false);
-                        job.PrivateArtifacts.Add(new(chunkName, hash));
-                        lock (sync) job.Receipts.Add(new(chunk.Index, hash, job.Fingerprint, checkedAudio.Duration));
-                        job.CompletedChunks = job.Receipts.Count;
-                        await store.SaveAsync(job, ct);
+                        await PrivateJobFiles.MoveRecordedAsync(job, directory, Path.GetFileName(normalized), chunkName, async () =>
+                        {
+                            lock (sync)
+                            {
+                                if (!job.Receipts.Any(r => r.Index == chunk.Index)) job.Receipts.Add(new(chunk.Index, hash, job.Fingerprint, checkedAudio.Duration));
+                                job.CompletedChunks = job.Receipts.Count;
+                            }
+                            await store.SaveAsync(job, ct);
+                        }, ct, preserveChangedChunk: true);
                         Notify();
                         await OwnedFileRemoval.DeleteByHashAsync(directory, Path.GetFileName(raw), job.PrivateArtifacts.Single(r => r.RelativePath == Path.GetFileName(raw)).Hash, ct: ct);
                     }

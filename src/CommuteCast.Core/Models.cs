@@ -63,7 +63,8 @@ public sealed class Job
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 public record ChunkReceipt(int Index, string Hash, string Fingerprint, double Duration);
-public record PrivateArtifactReceipt(string RelativePath, string Hash);
+public record PrivateArtifactReceipt(string RelativePath, string Hash,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ExportStagingIdentity? PromotionIdentity = null);
 public record ExportStagingIdentity(int FormatVersion, ulong VolumeSerialNumber, string FileId, long CreationFileTime);
 public record ProviderInfo(string Engine, string Fingerprint, string[] Voices, string State, int Active,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ImageId = null,

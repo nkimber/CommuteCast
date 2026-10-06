@@ -107,6 +107,7 @@ public static class WorkspaceBackup
         await RecoverInterruptedAsync(lease, ct); GuardState(workspace);
         var database = Path.Combine(workspace.Root, "queue.db");
         if (!File.Exists(database)) await new SqliteJobStore(workspace).LoadAsync(ct);
+        await RequireSettledPrivatePromotionsAsync(database, ct);
         var files = new List<(string Relative, string Path)>();
         foreach (var file in StateFiles(workspace))
         {
@@ -169,7 +170,21 @@ public static class WorkspaceBackup
         var actual = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Select(p => Path.GetRelativePath(directory, p).Replace(Path.DirectorySeparatorChar, '/')).Where(p => p != "manifest.json").ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (!actual.SetEquals(manifest.Files.Select(f => f.RelativePath))) throw new IOException("The backup contains unlisted files. Nothing was restored.");
         if (await SqliteSchema.ValidateDatabaseAsync(Path.Combine(directory, "queue.db"), ct) != manifest.SchemaVersion) throw new IOException("The backup schema differs from its manifest. Nothing was restored.");
+        await RequireSettledPrivatePromotionsAsync(Path.Combine(directory, "queue.db"), ct);
         return manifest;
+    }
+    private static async Task RequireSettledPrivatePromotionsAsync(string database, CancellationToken ct)
+    {
+        await using var connection = new SqliteConnection(SqliteSchema.ConnectionString(database, SqliteOpenMode.ReadOnly));
+        await connection.OpenAsync(ct);
+        await using var command = connection.CreateCommand(); command.CommandText = "SELECT payload FROM jobs";
+        await using var records = await command.ExecuteReaderAsync(ct);
+        while (await records.ReadAsync(ct))
+        {
+            var job = JsonSerializer.Deserialize<CommuteCast.Core.Job>(records.GetString(0));
+            if (job?.PrivateArtifacts?.Any(r => r.PromotionIdentity is not null) == true)
+                throw new IOException("An interrupted private audio rename must be reconciled in the original workspace before backup or restore. Open CommuteCast there, inspect any reported changed files, then retry maintenance. Files were preserved.");
+        }
     }
     private static bool Exists(string path) => File.Exists(path) || Directory.Exists(path);
     private static async Task<string?> DigestAsync(string path, CancellationToken ct)

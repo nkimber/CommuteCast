@@ -10,6 +10,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
     public const string ContractVersion = "pcm24k-s16le-mono-mp3128-gap150-v1";
     private static void ValidateManifest(Job job)
     {
+        if (job.PrivateArtifacts.Any(r => r.PromotionIdentity is not null)) throw new IOException("An interrupted private audio rename must be reconciled before assembly or validation.");
         if (job.AudioContractVersion != ContractVersion || job.ChunkingVersion != "chunk450-v1") throw new IOException("Unsupported audio/chunk contract. Publication is blocked.");
         Chunker.ValidateManifest(job.Chunks, job.Prepared.Script);
         if (job.Receipts.Count != job.Chunks.Count || !job.Receipts.OrderBy(r => r.Index).Select(r => r.Index).SequenceEqual(Enumerable.Range(0, job.Chunks.Count)) ||
@@ -75,10 +76,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
         await PrivateJobFiles.RecordAsync(job, directory, "encoded.partial.mp3", ct);
         if (checkpoint is not null) await checkpoint();
         ct.ThrowIfCancellationRequested();
-        await PrivateJobFiles.PrepareOutputAsync(job, directory, "complete.mp3", ct);
-        File.Move(temporary, Path.Combine(directory, "complete.mp3"), false);
-        await PrivateJobFiles.RecordAsync(job, directory, "complete.mp3", ct);
-        if (checkpoint is not null) await checkpoint();
+        await PrivateJobFiles.MoveRecordedAsync(job, directory, "encoded.partial.mp3", "complete.mp3", checkpoint ?? (() => Task.CompletedTask), ct);
     }
 
     public async Task<AudioInfo> ValidateFinalAsync(Job job, string path, CancellationToken ct)
