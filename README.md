@@ -63,6 +63,8 @@ Deletion stops the selected worker before removing tracked local artifacts. Expo
 
 `.\scripts\Publish-Portable.ps1` creates an unpackaged, self-contained Windows x64 folder and ZIP under `artifacts/release`. Docker, models, and FFmpeg are separate prerequisites. The app does not install them or elevate privileges. Code signing, a corporate installer, fresh-machine acceptance, listening approval, and actual corporate Android playback with the laptop off are release gates recorded separately. No evidence from a build or unit suite substitutes for those checks.
 
+Publishing also writes `release-manifest.json`: a sorted file inventory with sizes/SHA256, app and binary build versions, bundled runtime, target architecture, supported schema range and provider contract. From the package's `app` directory, run `.\CommuteCast.Maintenance.exe verify-package --package '..'` before a deliberate update. Missing/changed/unlisted files, incompatible declarations and known private-state artifacts are refused. `seal-package` is a build action that regenerates the inventory; do not use it to approve an altered downloaded package. Checksums establish integrity against the supplied manifest; they do not establish trusted authorship or corporate signing approval. Automated installation, activation, rollback and uninstall remain implementation work.
+
 ## Back up and restore local state
 
 Close CommuteCast first. From the portable package's `app` directory:

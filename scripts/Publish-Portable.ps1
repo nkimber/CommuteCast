@@ -13,5 +13,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'services\compose.yaml') -Destina
 Copy-Item -LiteralPath (Join-Path $projectRoot 'services\speech') -Destination (Join-Path $release 'services') -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'documents\Acceptance.md') -Destination (Join-Path $release 'documents')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'documents\Implementation-Decisions.md'), (Join-Path $projectRoot 'documents\Verification-Matrix.md') -Destination (Join-Path $release 'documents')
+& (Join-Path $application 'CommuteCast.Maintenance.exe') seal-package --package $release
+if ($LASTEXITCODE -ne 0) { throw 'Release inventory or integrity verification failed.' }
 Compress-Archive -Path (Join-Path $release '*') -DestinationPath (Join-Path $projectRoot 'artifacts\release\CommuteCast-win-x64.zip') -Force
 Write-Host "Portable application: $application"

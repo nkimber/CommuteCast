@@ -2,7 +2,7 @@
 
 October 6, 2026. This audits the PRD's T-01–T-30 catalog; its FR/NFR traceability maps to these tests. **No catalog row is treated as fully accepted solely because a narrower automated test passes.** The full goal remains open.
 
-Current reproducible commands: `dotnet build CommuteCast.slnx -c Release --no-restore` and a fresh `--artifacts-path artifacts\fresh-build` build (zero warnings/errors), `dotnet test tests\CommuteCast.Tests -c Release --no-restore` (257 passed), `scripts/Publish-Portable.ps1` (self-contained x64 package), and `scripts/Test-Maintenance.ps1` (isolated real-process backup/restore checks). Native launch/settings/draft/usage/theme/exit and an older pinned Piper image's synthetic export have observed evidence. The current locked image has not been rebuilt/accepted because Docker Desktop cannot initialize its stale runtime socket; the October 6 authorized restart also hung.
+Current reproducible commands: `dotnet build CommuteCast.slnx -c Release --no-restore` (zero warnings/errors), `dotnet test tests\CommuteCast.Tests -c Release --no-restore` (279 passed), `scripts/Publish-Portable.ps1` (self-contained x64 package and 427-file release inventory), and `scripts/Test-Maintenance.ps1` (isolated real-process backup/restore checks). A prior fresh `--artifacts-path artifacts\fresh-build` build and its 257 tests also passed. Native launch/settings/draft/usage/theme/exit and an older pinned Piper image's synthetic export have observed evidence. The current locked image has not been rebuilt/accepted because Docker Desktop cannot initialize its stale runtime socket; the October 6 authorized restart also hung.
 
 | Catalog test | Current evidence | Still required for the full pass condition |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ Current reproducible commands: `dotnet build CommuteCast.slnx -c Release --no-re
 | T-25 | Typed arguments, bounded output, safe identity/path checks, PCM validation, proxy/redirect disabled | Full malformed WAV/reparse/markup/provider-identity adversarial matrix |
 | T-26 | Native editor/settings/review/scrolling/theme/usage/exit; focus/hover resource repair | Narrator, high contrast, supported DPI, resizing and full keyboard/cancel/load journeys |
 | T-27 | Piper 1,526-character/4-chunk pilot measured under contention | Actual laptop CPU/work-app corpus, cold/warm timings, resource/thermal/battery/UI latency and agreed thresholds |
-| T-28 | Self-contained portable build, ZIP contents and native packaged launch | Corporate signed installer choice, fresh-user/machine, prerequisite checks, queued upgrade, backup/rollback/uninstall and complete notices |
+| T-28 | Self-contained portable build, ZIP contents and native packaged launch; complete package checksum/version/runtime/schema/contract inventory and verification; changed/incompatible/unsafe/private artifact refusal fixtures | Corporate signed installer choice, fresh-user/machine, prerequisite checks, queued upgrade/activation, compatible state-and-artifact rollback/uninstall and complete notices |
 | T-29 | Local verified MP3 exists; cloud status unknown | Corporate upload and actual Android full playback/seek with laptop off; approved player/account and observed offline/background/resume |
 | T-30 | Implementation checkpoints and synthetic evidence recorded | Multi-day representative 20-job pilot, planned faults, issue closure and user approval |
 

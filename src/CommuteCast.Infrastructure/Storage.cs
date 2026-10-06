@@ -82,7 +82,14 @@ public sealed class Workspace
                 await file.WriteAsync(System.Text.Encoding.UTF8.GetBytes(text));
                 file.Flush(true);
             }
-            SqliteSchema.RejectLink(path); File.Move(temporary, path, true);
+            for (var attempt = 0; ; attempt++)
+            {
+                SqliteSchema.RejectLink(path); SqliteSchema.RejectLink(temporary);
+                try { File.Move(temporary, path, true); break; }
+                catch (Exception error) when (OperatingSystem.IsWindows() && error is IOException or UnauthorizedAccessException &&
+                    attempt < 5 && (error.HResult & 0xffff) is 5 or 32 or 33)
+                { await Task.Delay(50 * (1 << attempt)); }
+            }
         }
         finally
         {

@@ -142,6 +142,23 @@ public class WorkspaceBackupTests
         Assert.Contains(await File.ReadAllTextAsync(path), snapshots);
         Assert.Empty(Directory.EnumerateFiles(test.Workspace.Root, "state.json.tmp-*"));
     }
+    [Fact] public async Task TemporaryDestinationReadLockAllowsBoundedAtomicReplacementAfterRelease()
+    {
+        using var test = new TestWorkspace(); var path = Path.Combine(test.Workspace.Root, "state.json"); await File.WriteAllTextAsync(path, "Original durable state");
+        using var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var pending = Workspace.AtomicWriteAsync(path, "Complete replacement"); await Task.Delay(200);
+        Assert.False(pending.IsCompleted); Assert.Equal("Original durable state", await File.ReadAllTextAsync(path));
+        reader.Dispose(); await pending.WaitAsync(TimeSpan.FromSeconds(5)); Assert.Equal("Complete replacement", await File.ReadAllTextAsync(path));
+        Assert.Empty(Directory.EnumerateFiles(test.Workspace.Root, "state.json.tmp-*"));
+    }
+    [Fact] public async Task UnreleasedDestinationLockFailsWithoutChangingOriginalOrLeavingOwnedStaging()
+    {
+        using var test = new TestWorkspace(); var path = Path.Combine(test.Workspace.Root, "state.json"); await File.WriteAllTextAsync(path, "Original durable state");
+        using var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var error = await Record.ExceptionAsync(() => Workspace.AtomicWriteAsync(path, "Blocked replacement"));
+        Assert.True(error is IOException or UnauthorizedAccessException); Assert.Equal("Original durable state", await File.ReadAllTextAsync(path));
+        Assert.Empty(Directory.EnumerateFiles(test.Workspace.Root, "state.json.tmp-*"));
+    }
     private static async Task<Job> SeedAsync(TestWorkspace test, string source)
     {
         var job = new Job { Title = source, Source = source, Prepared = TextPreparation.Prepare(source), Destination = test.Destination, Stage = JobStage.Failed, Settings = new("piper", "en_US-lessac-medium", 1.1, false, "API=A P I", "immutable-fixture") };
