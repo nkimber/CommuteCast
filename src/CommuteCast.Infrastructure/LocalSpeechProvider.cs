@@ -12,13 +12,23 @@ public sealed class LocalSpeechProvider(Workspace workspace) : ISpeechProvider, 
     private static string Container(string engine) => engine switch { "kokoro" => "commutecast-kokoro", "piper" => "commutecast-piper", _ => throw new ArgumentException("Choose Kokoro or Piper.") };
     private static Uri Endpoint(string engine, string route) => new($"http://127.0.0.1:{(engine == "kokoro" ? 8765 : engine == "piper" ? 8766 : throw new ArgumentException("Unsupported engine."))}/{route}");
 
-    public async Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct)
+    public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct) => ReadyAsync(engine, ct, false);
+    public async Task ResetRecoveryBudgetAsync(string engine, CancellationToken ct = default)
+    {
+        await recoveryGate.WaitAsync(ct);
+        try { await new RecoveryBudget(workspace).ResetAsync(engine); }
+        finally { recoveryGate.Release(); }
+    }
+    public async Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct, bool explicitRetry)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(120));
         await recoveryGate.WaitAsync(deadline.Token);
         try
         {
+            var budget = new RecoveryBudget(workspace);
+            if (explicitRetry) await budget.ResetAsync(engine);
+            await budget.BeginAsync(engine, deadline.Token);
             await VerifyContainerAsync(engine, true, deadline.Token);
             var watch = Stopwatch.StartNew();
             while (watch.Elapsed < TimeSpan.FromSeconds(110))
@@ -27,7 +37,7 @@ public sealed class LocalSpeechProvider(Workspace workspace) : ISpeechProvider, 
                 try
                 {
                     var info = await HealthAsync(engine, deadline.Token);
-                    if (info.State == "ready" && info.Active == 0) return info;
+                    if (info.State == "ready" && info.Active == 0) { await budget.ResetAsync(engine); return info; }
                     if (info.State == "failed") throw new IOException("The model could not load. Check available memory and reprovision the speech service.");
                     // Loading and active inference are waited on, never restarted.
                 }
@@ -48,7 +58,7 @@ public sealed class LocalSpeechProvider(Workspace workspace) : ISpeechProvider, 
         using var pinned = JsonDocument.Parse(await File.ReadAllTextAsync(lockPath, ct));
         var image = pinned.RootElement.GetProperty("ImageId").GetString();
         var context = await ProcessRunner.RunAsync("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], TimeSpan.FromSeconds(30), ct);
-        if (context.ExitCode != 0 || !context.Output.Trim().StartsWith("npipe://", StringComparison.Ordinal)) throw new IOException("Select the local Docker Desktop context. Remote Docker engines are not permitted.");
+        if (context.ExitCode != 0 || !IsLocalContext(context.Output.Trim())) throw new IOException("Select the local Docker Desktop Linux context. Remote Docker engines are not permitted.");
         var daemon = await ProcessRunner.RunAsync("docker", ["version", "--format", "{{.Server.Version}}"], TimeSpan.FromSeconds(15), ct);
         if (daemon.ExitCode != 0 && startIfStopped)
         {
@@ -95,8 +105,11 @@ public sealed class LocalSpeechProvider(Workspace workspace) : ISpeechProvider, 
         var root = data.RootElement;
         if (root.GetProperty("service").GetString() != "CommuteCast" || root.GetProperty("contract").GetInt32() != 1 || root.GetProperty("engine").GetString() != engine)
             throw new IOException("Unexpected service on the speech port. No text has been sent.");
+        if (root.GetProperty("state").GetString() == "ready" && !System.Text.RegularExpressions.Regex.IsMatch(root.GetProperty("fingerprint").GetString() ?? "", "^" + engine + ":contract-v1:[a-fA-F0-9]{64}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+            throw new IOException("Speech model fingerprint is invalid. No text has been sent.");
         return new(engine, root.GetProperty("fingerprint").GetString()!, root.GetProperty("voices").EnumerateArray().Select(v => v.GetString()!).ToArray(), root.GetProperty("state").GetString()!, root.GetProperty("active").GetInt32());
     }
+    public static bool IsLocalContext(string endpoint) => endpoint.Equals("npipe:////./pipe/dockerDesktopLinuxEngine", StringComparison.OrdinalIgnoreCase);
 
     public async Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
     {

@@ -160,7 +160,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         ReviewCommand = Command(async _ => { var text = Source; var omit = ExcludeCode; var dictionary = Pronunciation; var prepared = await Task.Run(() => TextPreparation.Prepare(text, omit, dictionary)); ShowPreparation(prepared, text); });
         ChooseFolderCommand = Command(async _ => { var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); settings.Destination = path; Raise(nameof(DestinationDisplay)); await SaveSettingsAsync(); StatusMessage = "Output folder saved. Only completed MP3s will be exported here."; } });
         TestFolderCommand = Command(async _ => { await publisher.TestDestinationAsync(settings.Destination); StatusMessage = "Local write access passed. OneDrive cloud upload is still unknown."; });
-        ReadinessCommand = Command(_ => CheckReadinessAsync());
+        ReadinessCommand = Command(_ => CheckReadinessAsync(true));
         AuditionCommand = Command(_ => AuditionAsync());
         SaveSettingsCommand = Command(async _ => { TextPreparation.ParseDictionary(Pronunciation); await SaveSettingsAsync(); StatusMessage = "Settings saved for future submissions."; });
         CheckEncoderCommand = Command(_ => CheckEncoderAsync());
@@ -172,7 +172,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         StopCommand = Command(_ => { player.Stop(); return Task.CompletedTask; });
         OpenFolderCommand = Command(_ => { var job = RequireSelected(); if (!Directory.Exists(job.Destination)) throw new IOException("The recorded output folder is missing."); Process.Start(new ProcessStartInfo(job.Destination) { UseShellExecute = true }); return Task.CompletedTask; });
         InspectCommand = Command(_ => { var job = RequireSelected(); ShowPreparation(job.Prepared, job.Source); return Task.CompletedTask; });
-        RetryCommand = Command(async _ => await queue.RetryAsync(RequireSelected().Id));
+        RetryCommand = Command(async _ => { var job = RequireSelected(); await provider.ResetRecoveryBudgetAsync(job.Settings.Engine, shutdown.Token); await queue.RetryAsync(job.Id); });
         ReplaceDestinationCommand = Command(async _ => { var job = RequireSelected(); var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); await queue.RetryAsync(job.Id, path); } });
         CancelCommand = Command(async _ => { var id = RequireSelected().Id; await queue.CancelAsync(id); StatusMessage = "Cancellation settled. Exported files remain exported; validated chunks are retained for retry."; });
         ReuseCommand = Command(_ => { var job = RequireSelected(); DraftTitle = job.Title; Source = job.Source; Engine = job.Settings.Engine; Voice = job.Settings.Voice; Speed = job.Settings.Speed; ExcludeCode = job.Settings.ExcludeCode; Pronunciation = job.Settings.Pronunciation; Navigate("compose"); return Task.CompletedTask; });
@@ -241,11 +241,11 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         if (queue.MaintenanceError.Length > 0) storageSummary += "\nAutomatic cleanup needs attention: " + queue.MaintenanceError;
         Raise(nameof(StorageDetails));
     }
-    private async Task<ProviderInfo> CheckReadinessAsync()
+    private async Task<ProviderInfo> CheckReadinessAsync(bool explicitRetry = false)
     {
         var engine = Engine;
         ServiceStatus = "Checking " + engine + " locally…";
-        var info = await provider.ReadyAsync(engine, shutdown.Token);
+        var info = await provider.ReadyAsync(engine, shutdown.Token, explicitRetry);
         settings.Providers[engine] = info;
         await SaveSettingsAsync();
         if (engine == Engine)
@@ -291,7 +291,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         await queue.InferenceGate.WaitAsync(shutdown.Token);
         try
         {
-            var info = await provider.ReadyAsync(engine, shutdown.Token);
+            var info = await provider.ReadyAsync(engine, shutdown.Token, true);
             var path = Path.Combine(Workspace.Root, "audition.wav");
             player.Stop(); player.Close();
             await provider.SynthesizeAsync(new(engine, voice, speed, false, "", info.Fingerprint), "Welcome to CommuteCast. A good idea deserves a little more time. Let's take this one on the road. The API processes twenty-four requests per second.", path, shutdown.Token);

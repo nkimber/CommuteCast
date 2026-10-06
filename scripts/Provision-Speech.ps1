@@ -2,7 +2,7 @@ param([switch]$Build)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $context = (& docker context inspect --format '{{.Endpoints.docker.Host}}')
-if ($LASTEXITCODE -ne 0 -or $context -notlike 'npipe://*') { throw 'Use the local Docker Desktop context.' }
+if ($LASTEXITCODE -ne 0 -or $context.Trim() -ne 'npipe:////./pipe/dockerDesktopLinuxEngine') { throw 'Use the local Docker Desktop Linux context.' }
 if ($Build) {
     $modelCache = Join-Path $env:LOCALAPPDATA 'CommuteCast\provisioning-models'
     $modelSources = @{
