@@ -7,7 +7,7 @@ using System.Text.Json.Nodes;
 
 namespace CommuteCast.Tests;
 
-public class ProviderContractTests
+public partial class ProviderContractTests
 {
     [Fact] public async Task ReadOnlyProbeLeavesSpentRecoveryAllowanceAndRequestsNoSpeech()
     {
@@ -290,10 +290,11 @@ public class ProviderContractTests
     {
         public int Gets { get; private set; } public int Posts { get; private set; } public List<Uri> Uris { get; } = []; public List<string> Bodies { get; } = [];
         public Func<int, string>? Health { get; set; } public Func<int, CancellationToken, Task<HttpResponseMessage>>? Speech { get; set; }
+        public Func<CancellationToken, Task>? BeforeHealth { get; set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Uris.Add(request.RequestUri!);
-            if (request.Method == HttpMethod.Get) { Gets++; return new(HttpStatusCode.OK) { Content = new StringContent(Health?.Invoke(Gets) ?? fixture.Health(), System.Text.Encoding.UTF8, "application/json") }; }
+            if (request.Method == HttpMethod.Get) { Gets++; if (BeforeHealth is not null) await BeforeHealth(ct); return new(HttpStatusCode.OK) { Content = new StringContent(Health?.Invoke(Gets) ?? fixture.Health(), System.Text.Encoding.UTF8, "application/json") }; }
             Posts++; Bodies.Add(await request.Content!.ReadAsStringAsync(ct)); return await (Speech?.Invoke(Posts, ct) ?? Task.FromResult(fixture.Audio()));
         }
     }

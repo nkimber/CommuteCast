@@ -46,6 +46,8 @@ The real-service pilot uses a fresh isolated folder, the locally pinned image, a
 
 ## Architecture
 
+New submissions bind their model fingerprint to the current verified speech image. Metadata from an older image is refreshed for the engine selected when submission began. Compatible saved metadata supports queuing while speech is busy or unavailable; saved jobs retain their original configuration and receipts. If an image changes, unfinished generation requires the original compatible service or a new submission. Existing completed audio can still be exported without regenerating it.
+
 - `src/CommuteCast.Core`: domain records, deterministic preparation, coverage and chunking; no WPF or provider JSON dependency.
 - `src/CommuteCast.Infrastructure`: SQLite with FULL synchronous WAL writes, bounded process execution, verified loopback provider, PCM/MP3 validation, recoverable export, serial queue.
 - `src/CommuteCast.Desktop`: WPF/MVVM capture, settings, library, preparation review, auditions, local playback, deletion, diagnostics.

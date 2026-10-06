@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace CommuteCast.Core;
 
@@ -10,7 +12,15 @@ public record DiagnosticEvent(string JobId, JobStage Stage, DateTimeOffset Times
 public record SourceSpan(int Start, int Length, string Kind, string Original, string Narration);
 public record PreparedText(string Script, IReadOnlyList<SourceSpan> Spans, string Version = "prepare-v1", PronunciationReview? ProfileReview = null);
 public record TextChunk(int Index, int Start, int Length, string Text, bool HardSplit);
-public record NarrationSettings(string Engine, string Voice, double Speed, bool ExcludeCode, string Pronunciation, string ProviderFingerprint, PronunciationProfile? Profile = null);
+public record NarrationSettings(string Engine, string Voice, double Speed, bool ExcludeCode, string Pronunciation, string ProviderFingerprint, PronunciationProfile? Profile = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProviderImageId = null)
+{
+    public void ValidateProviderImage()
+    {
+        if (ProviderImageId is not null && !Regex.IsMatch(ProviderImageId, "^sha256:[a-f0-9]{64}$", RegexOptions.CultureInvariant))
+            throw new ArgumentException("The captured speech image identity is invalid. Check readiness and submit a new narration.");
+    }
+}
 public sealed class Job
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -44,14 +54,16 @@ public sealed class Job
     public bool DeletionRequested { get; set; }
     public bool DeleteExportRequested { get; set; }
     public string Fingerprint => Hash(JsonSerializer.Serialize(new { Settings = FingerprintSettings(), Prepared.Version, Prepared.Script, AudioContractVersion, ChunkingVersion }));
-    private object FingerprintSettings() => Settings.Profile is null
+    // Preserve the exact six-field legacy and seven-field pronunciation snapshots when no image was captured.
+    private object FingerprintSettings() => Settings.Profile is null && Settings.ProviderImageId is null
         ? new { Settings.Engine, Settings.Voice, Settings.Speed, Settings.ExcludeCode, Settings.Pronunciation, Settings.ProviderFingerprint }
         : Settings;
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 public record ChunkReceipt(int Index, string Hash, string Fingerprint, double Duration);
 public record ExportStagingIdentity(int FormatVersion, ulong VolumeSerialNumber, string FileId, long CreationFileTime);
-public record ProviderInfo(string Engine, string Fingerprint, string[] Voices, string State, int Active);
+public record ProviderInfo(string Engine, string Fingerprint, string[] Voices, string State, int Active,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ImageId = null);
 public record AudioInfo(double Duration, int SampleRate, int Channels, long Samples, double Peak, double Rms);
 public sealed class AppSettings
 {

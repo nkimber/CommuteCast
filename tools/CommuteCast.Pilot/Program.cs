@@ -25,6 +25,13 @@ using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
 var readiness = Stopwatch.StartNew();
 var info = await provider.ReadyAsync(engine, timeout.Token);
 readiness.Stop();
+var capture = Stopwatch.StartNew();
+var refreshed = await provider.CaptureForSubmissionAsync(engine, info with { ImageId = null }, timeout.Token);
+var retainedMetadata = JsonSerializer.Deserialize<ProviderInfo>(JsonSerializer.Serialize(refreshed))!;
+info = await provider.CaptureForSubmissionAsync(engine, retainedMetadata, timeout.Token);
+capture.Stop();
+if (info.Engine != engine || info.ImageId != imageId || info.Fingerprint != refreshed.Fingerprint || !info.Voices.SequenceEqual(refreshed.Voices) || ReferenceEquals(info.Voices, retainedMetadata.Voices))
+    throw new IOException("Fresh and persisted provider metadata did not retain the approved image identity.");
 var text = "# A better commute\n\n" + string.Join("\n\n", new[]
 {
     "First, preserve the original idea. CommuteCast turns substantial text into an ordered narration for listening on the road. A trustworthy result contains every paragraph you approved, in its original order. It should never silently summarize your source or skip a section just because the submission is long.",
@@ -36,7 +43,7 @@ var text = "# A better commute\n\n" + string.Join("\n\n", new[]
 });
 var profile = new PronunciationProfile(Numbers: NumberReading.ScientificWords, Acronyms: AcronymReading.SpellUppercaseWords, Dates: DateReading.IsoYearMonthDay);
 const string dictionary = "CommuteCast=Commute Cast\nSQLite=S Q Lite\n.NET=dot net";
-var job = new Job { Title = "A better commute — " + engine + " pilot", Source = text, Prepared = TextPreparation.Prepare(text, pronunciation: dictionary, profile: profile), Settings = new(engine, engine == "kokoro" ? "af_heart" : "en_US-lessac-medium", 1, false, dictionary, info.Fingerprint, profile), Destination = destination };
+var job = new Job { Title = "A better commute — " + engine + " pilot", Source = text, Prepared = TextPreparation.Prepare(text, pronunciation: dictionary, profile: profile), Settings = new(engine, engine == "kokoro" ? "af_heart" : "en_US-lessac-medium", 1, false, dictionary, info.Fingerprint, profile, info.ImageId), Destination = destination };
 var watch = Stopwatch.StartNew();
 await using var queue = new QueueCoordinator(workspace, store, provider, new(new()), new(workspace, store));
 var previous = "";
@@ -64,6 +71,6 @@ if (retained.Source != text || retained.Settings != job.Settings || retained.Pre
     throw new IOException("Durable completed narration differs from the approved snapshot.");
 var exported = Path.Combine(destination, finished.ExportName);
 if (await Workspace.HashFileAsync(exported) != finished.FinalHash) throw new IOException("Pilot export checksum failed.");
-var report = new { engine, imageId, applicationBuild = typeof(Job).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion, provider = info.Fingerprint, profile, dictionaryRevision = finished.Prepared.ProfileReview!.DictionaryRevision, pronunciationChanges = finished.Prepared.ProfileReview.Changes.Count, submittedCharacters = text.Length, preparedCharacters = finished.Prepared.Script.Length, sourceAccounted = true, scriptCoverage = true, durableSnapshotVerified = true, chunks = finished.Chunks.Count, finished.CompletedChunks, finished.DurationSeconds, readinessSeconds = readiness.Elapsed.TotalSeconds, wallSeconds = watch.Elapsed.TotalSeconds, realTimeFactor = watch.Elapsed.TotalSeconds / finished.DurationSeconds, timingScope = "generation, validation and local export; model readiness recorded separately", mp3 = exported, sha256 = finished.FinalHash, generation = "passed", localExport = "passed", cloudUpload = "unknown", listeningQuality = "requires user audition", phonePlayback = "not performed" };
+var report = new { engine, imageId, applicationBuild = typeof(Job).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion, provider = info.Fingerprint, capturedImageId = finished.Settings.ProviderImageId, metadataCaptureVerified = true, metadataCaptureSeconds = capture.Elapsed.TotalSeconds, profile, dictionaryRevision = finished.Prepared.ProfileReview!.DictionaryRevision, pronunciationChanges = finished.Prepared.ProfileReview.Changes.Count, submittedCharacters = text.Length, preparedCharacters = finished.Prepared.Script.Length, sourceAccounted = true, scriptCoverage = true, durableSnapshotVerified = true, chunks = finished.Chunks.Count, finished.CompletedChunks, finished.DurationSeconds, readinessSeconds = readiness.Elapsed.TotalSeconds, wallSeconds = watch.Elapsed.TotalSeconds, realTimeFactor = watch.Elapsed.TotalSeconds / finished.DurationSeconds, timingScope = "generation, validation and local export; model readiness and metadata capture recorded separately", mp3 = exported, sha256 = finished.FinalHash, generation = "passed", localExport = "passed", cloudUpload = "unknown", listeningQuality = "requires user audition", phonePlayback = "not performed" };
 await File.WriteAllTextAsync(Path.Combine(root, "pilot-report.json"), JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
 Console.WriteLine(JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));

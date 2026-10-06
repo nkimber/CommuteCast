@@ -310,9 +310,11 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         StorageBudget.EnsureFits(usage, prepared.Script, PrivateStorageLimitMiB, drive.AvailableFreeSpace);
         if (title.Length == 0) title = TextPreparation.SuggestTitle(text);
         await publisher.TestDestinationAsync(destination, shutdown.Token);
-        if (!settings.Providers.TryGetValue(engine, out var info)) info = await CheckReadinessAsync();
+        settings.Providers.TryGetValue(engine, out var cached);
+        var info = await provider.CaptureForSubmissionAsync(engine, cached, shutdown.Token);
         if (!info.Voices.Contains(voice)) throw new ArgumentException("Select an installed voice after checking readiness.");
-        var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint, profile), Destination = destination };
+        settings.Providers[engine] = info;
+        var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint, profile, info.ImageId), Destination = destination };
         await queue.AddAsync(job, shutdown.Token);
         if (Source == text) { Source = ""; DraftTitle = ""; }
         StatusMessage = "Narration saved to the durable queue. Follow progress in Your library, or paste your next narration here.";
@@ -330,7 +332,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
             var info = await provider.ReadyAsync(engine, shutdown.Token, true);
             var path = Path.Combine(Workspace.Root, "audition.wav");
             player.Stop(); player.Close();
-            await provider.SynthesizeAsync(new(engine, voice, speed, false, dictionary, info.Fingerprint, profile), sample.Script, path, shutdown.Token);
+            await provider.SynthesizeAsync(new(engine, voice, speed, false, dictionary, info.Fingerprint, profile, info.ImageId), sample.Script, path, shutdown.Token);
             player.Open(new Uri(path)); player.Play();
             StatusMessage = "Playing a short local voice audition. Choose the voice and pace that suit your listening.";
         }
