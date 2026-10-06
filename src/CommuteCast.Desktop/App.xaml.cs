@@ -16,17 +16,23 @@ public partial class App : Application
     private bool ownsMutex;
     private WorkspaceLease? workspaceLease;
     private Installation? installation;
+    private string? launchAfterExit;
     private static bool dark;
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         instance = new Mutex(true, "Local\\CommuteCast-" + Environment.UserName, out ownsMutex);
-        if (!ownsMutex) { MessageBox.Show("CommuteCast is already open for this Windows user.", "CommuteCast"); Shutdown(); return; }
+        if (!ownsMutex) { MessageBox.Show("CommuteCast or its setup is already open for this Windows user. Close it before launching another mode.", "CommuteCast"); Shutdown(); return; }
         SetTheme();
         try
         {
-            if (e.Args.Length > 0 && !e.Args.SequenceEqual(new[] { "--maintenance" })) throw new IOException("Use CommuteCast.Desktop.exe with no arguments, or --maintenance for offline backup and restore.");
-            var maintenance = e.Args.Length == 1;
+            var startup = DesktopStartup.Parse(e.Args, string.Equals(Path.GetFileName(Environment.ProcessPath), "CommuteCast.Setup.exe", StringComparison.OrdinalIgnoreCase));
+            if (startup.Mode == DesktopMode.Setup)
+            {
+                var package = Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))!.FullName;
+                var setup = new SetupWindow(package, startup.InstallRoot, startup.PrivateRoot); MainWindow = setup; setup.Show(); return;
+            }
+            var maintenance = startup.Mode == DesktopMode.Maintenance;
             var installationRoot = Installation.FindRoot(AppContext.BaseDirectory);
             installation = installationRoot is null ? null : new Installation(installationRoot);
             var owner = installation is null ? null : await installation.ReadOwnerAsync();
@@ -65,6 +71,7 @@ public partial class App : Application
     }
     internal async Task ReturnToEditorAsync(MaintenanceWindow previous)
     { await ShowEditorAsync(); previous.CloseAfterTransition(); }
+    internal void LaunchAfterExit(string executable) { launchAfterExit = executable; Shutdown(); }
     public static void ToggleTheme() { dark = !dark; SetTheme(); }
     private static void SetTheme()
     {
@@ -89,5 +96,8 @@ public partial class App : Application
         if (ownsMutex) instance?.ReleaseMutex();
         instance?.Dispose();
         base.OnExit(e);
+        if (launchAfterExit is not null)
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(launchAfterExit) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(launchAfterExit)!, WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden }); }
+            catch (Exception error) { MessageBox.Show(QueueCoordinator.FriendlyError(error), "CommuteCast launch"); }
     }
 }

@@ -9,6 +9,7 @@ public record InstallationPrevious(string PackageId, InstallationSnapshot Snapsh
 public record InstallationState(int FormatVersion, string InstallationId, string? CurrentPackageId, string? AppVersion,
     InstallationPrevious? Previous, IReadOnlyList<string> KnownPackages, DateTimeOffset ChangedUtc);
 public record InstallationResult(InstallationState State, string? Executable, bool AlreadyCurrent = false);
+public record InstallationOverview(InstallationOwner? Owner, InstallationState? State, bool PendingRecovery, string StateHash, string PendingHash, string? PendingOperation);
 public enum InstallationCheckpoint { BackupCreated, StageVerified, PackageStaged, Prepared, StateMigrated, StateRestored, BeforeActivation, Activated, BeforeRemoval, ItemRemoved }
 public interface IInstallationObserver { Task ReachedAsync(InstallationCheckpoint checkpoint, string? item, CancellationToken ct); }
 internal record RemovalScope(string Kind, string Name, bool Directory, IReadOnlyList<ReleaseFile> Files);
@@ -22,6 +23,7 @@ public sealed class Installation
     private static readonly string[] PrivateNames = ["queue.db", "queue.db-wal", "queue.db-shm", "queue.db-journal", "settings.json", "draft.json",
         "provider-lock.local.json", "recovery-kokoro.json", "recovery-piper.json", "jobs", "backups", "schema-backups", "recovery", "audition.wav", "last-shutdown-error.json"];
     private static readonly string[] PrivateDirectories = ["jobs", "backups", "schema-backups", "recovery"];
+    internal static IReadOnlyList<string> ManagedPrivateNames => PrivateNames;
     public static string DefaultRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "CommuteCast");
     public string Root { get; }
     private readonly ISchemaMigrationObserver? migrationObserver;
@@ -256,7 +258,7 @@ public sealed class Installation
             if (scope.Directory) OwnedFileRemoval.RemoveEmptyDirectories(path);
         }
     }
-    public async Task<InstallationResult> UninstallAsync(WorkspaceLease lease, bool removePrivateData, IInstallationObserver? observer = null, CancellationToken ct = default)
+    public async Task<InstallationResult> UninstallAsync(WorkspaceLease lease, bool removePrivateData, IInstallationObserver? observer = null, CancellationToken ct = default, string? reviewedPrivateFingerprint = null)
     {
         ct.ThrowIfCancellationRequested(); using var installationLease = Acquire(lease); var owner = await OwnerAsync(lease, false, ct);
         if (Workspace.IsWithin(Root, AppContext.BaseDirectory)) throw new IOException("Run uninstall from an extracted portable package outside the installation folder.");
@@ -282,6 +284,7 @@ public sealed class Installation
             }
         }
         if (scopes.Sum(s => s.Files.Count) > 100000) throw new IOException("There are too many recorded files for one bounded uninstall operation.");
+        await DeploymentSession.VerifyPrivateReviewAsync(lease, reviewedPrivateFingerprint, ct);
         var proposed = old with { CurrentPackageId = null, AppVersion = null, Previous = null, ChangedUtc = DateTimeOffset.UtcNow };
         var journal = new InstallationJournal(1, Guid.NewGuid().ToString("N"), "Uninstall", await Workspace.HashFileAsync(StatePath, ct), proposed, null, scopes);
         await SaveJournalAsync(journal); await Observe(observer, InstallationCheckpoint.Prepared, ct); await VerifyRemovalAsync(lease, scopes, ct);
@@ -327,6 +330,36 @@ public sealed class Installation
     public async Task<bool> RecoverAsync(WorkspaceLease lease, CancellationToken ct = default)
     { using var installationLease = Acquire(lease); var owner = await OwnerAsync(lease, false, ct); return await RecoverCoreAsync(lease, owner, ct); }
     public Task<InstallationResult> InspectAsync(WorkspaceLease lease, CancellationToken ct = default) => InspectCoreAsync(lease, true, ct);
+    /// <summary>Read-only setup preview. Does not create an installation/workspace or recover pending work.</summary>
+    public async Task<InstallationOverview> ReadOverviewAsync(CancellationToken ct = default)
+    {
+        Workspace.RejectReparsePoints(Root); ct.ThrowIfCancellationRequested();
+        if (!File.Exists(OwnerPath))
+        {
+            SqliteSchema.RejectLink(OwnerPath);
+            if (Directory.Exists(Root) && Directory.EnumerateFileSystemEntries(Root).Any(p => Path.GetFileName(p) != "instance.lease"))
+                throw new IOException("The installation folder contains unrecognized files. Choose a dedicated empty folder; no setup files were written.");
+            return new(null, null, false, "", "", null);
+        }
+        var owner = await ReadOwnerAsync(ct);
+        SqliteSchema.RejectLink(StatePath);
+        if (File.Exists(StatePath) && new FileInfo(StatePath).Length > 1024 * 1024) throw new IOException("Installation records exceed their safe limit. Existing files were preserved.");
+        var stateHash = File.Exists(StatePath) ? await Workspace.HashFileAsync(StatePath, ct) : "";
+        var state = await StateAsync(owner, ct);
+        if ((File.Exists(StatePath) ? await Workspace.HashFileAsync(StatePath, ct) : "") != stateHash) throw new IOException("Installation state changed during review. Review it again.");
+        var pending = HasPendingOperation;
+        if (pending && new FileInfo(JournalPath).Length > 32 * 1048576) throw new IOException("Deployment recovery records exceed their safe limit. Existing files were preserved.");
+        var pendingHash = pending ? await Workspace.HashFileAsync(JournalPath, ct) : "";
+        var journal = await ReadAsync<InstallationJournal>(JournalPath, 32 * 1048576, ct);
+        if (journal is not null && journal.Kind is not ("Activate" or "Rollback" or "Uninstall")) throw new IOException("Deployment recovery records are incompatible. Existing files were preserved.");
+        if ((File.Exists(JournalPath) ? await Workspace.HashFileAsync(JournalPath, ct) : "") != pendingHash) throw new IOException("Deployment recovery records changed during review. Review them again.");
+        if (!pending && state?.CurrentPackageId is not null)
+        {
+            var package = await ReleasePackage.ValidateAsync(PackagePath(state.CurrentPackageId), ct);
+            if (package.PackageId != state.CurrentPackageId || package.AppVersion != state.AppVersion) throw new IOException("The active release differs from its installation record.");
+        }
+        return new(owner, state, pending, stateHash, pendingHash, journal?.Kind);
+    }
     // Maintenance needs trusted active binaries even when the private queue needs repair.
     public Task<InstallationResult> InspectForMaintenanceAsync(WorkspaceLease lease, CancellationToken ct = default) => InspectCoreAsync(lease, false, ct);
     private async Task<InstallationResult> InspectCoreAsync(WorkspaceLease lease, bool validateQueue, CancellationToken ct)

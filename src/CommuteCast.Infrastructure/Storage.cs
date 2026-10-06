@@ -11,10 +11,10 @@ public sealed class Workspace
     // Bounded per-path serialization across Workspace instances, without retaining private paths.
     private static readonly SemaphoreSlim[] atomicWriteGates = Enumerable.Range(0, 64).Select(_ => new SemaphoreSlim(1)).ToArray();
     public string Root { get; }
-    public Workspace(string? root = null)
+    public Workspace(string? root = null, bool createRoot = true)
     {
         Root = Path.GetFullPath(root ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CommuteCast"));
-        Directory.CreateDirectory(Root);
+        if (createRoot) Directory.CreateDirectory(Root);
     }
     public string JobDirectory(string id)
     {

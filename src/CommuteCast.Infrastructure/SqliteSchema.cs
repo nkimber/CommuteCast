@@ -78,15 +78,19 @@ public static class SqliteSchema
         try
         {
             await using var connection = new SqliteConnection(ConnectionString(path, SqliteOpenMode.ReadOnly)); await connection.OpenAsync(ct);
-            var version = await ValidateSchemaAsync(connection, false, ct);
-            await CheckIntegrityAsync(connection, ct);
-            await using var records = connection.CreateCommand(); records.CommandText = "SELECT id,created,payload FROM jobs";
-            await using var items = await records.ExecuteReaderAsync(ct);
-            while (await items.ReadAsync(ct)) ValidateRecord(items.GetString(0), items.GetString(1), items.GetString(2));
-            return version;
+            return await ValidateDatabaseConnectionAsync(connection, ct);
         }
         catch (Exception error) when (error is SqliteException or JsonException or NotSupportedException)
         { throw new IOException("The queue is corrupt or unreadable. Preserve local files and restore a verified compatible backup; no reset was performed.", error); }
+    }
+    internal static async Task<int> ValidateDatabaseConnectionAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        var version = await ValidateSchemaAsync(connection, false, ct);
+        await CheckIntegrityAsync(connection, ct);
+        await using var records = connection.CreateCommand(); records.CommandText = "SELECT id,created,payload FROM jobs";
+        await using var items = await records.ExecuteReaderAsync(ct);
+        while (await items.ReadAsync(ct)) ValidateRecord(items.GetString(0), items.GetString(1), items.GetString(2));
+        return version;
     }
     internal static Job ValidateRecord(string id, string created, string payload)
     {

@@ -80,6 +80,8 @@ public static class ReleasePackage
             Build(root, "app/CommuteCast.Maintenance.exe"), Build(root, "app/coreclr.dll"), "win-x64", 0, SqliteSchema.CurrentVersion, 1, DateTimeOffset.UtcNow, files);
         if (manifest.DesktopBuild.Split('+')[0] != manifest.AppVersion || manifest.MaintenanceBuild.Split('+')[0] != manifest.AppVersion)
             throw new IOException("The application and maintenance binary versions differ from this packaging tool. Rebuild the entire package.");
+        if (inventory.Contains("app/CommuteCast.Setup.exe") && Build(root, "app/CommuteCast.Setup.exe") != manifest.DesktopBuild)
+            throw new IOException("The native setup entry point differs from the desktop build. Rebuild the entire package.");
         manifest = manifest with { PackageId = Identity(manifest) };
         ct.ThrowIfCancellationRequested(); await Workspace.AtomicWriteAsync(Path.Combine(root, ManifestName), JsonSerializer.Serialize(manifest, Json));
         return await ValidateAsync(root, ct);
