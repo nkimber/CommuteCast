@@ -51,6 +51,10 @@ dotnet run --project tools\CommuteCast.Pilot -- piper artifacts/pilot/piper-canc
 # Terminates only the verified owned service during its synthetic request.
 dotnet run --project tools\CommuteCast.Pilot -- piper artifacts/pilot/piper-active-loss-example --verify-active-service-loss
 dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-active-loss-example --verify-active-service-loss
+# Queue-host loss: terminates only its own child during second-chunk inference.
+# Run one acceptance case at a time with the desktop and other Pilot clients closed.
+dotnet run --project tools\CommuteCast.Pilot -- piper artifacts/pilot/piper-host-loss-example --verify-queue-host-loss
+dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-host-loss-example --verify-queue-host-loss
 ```
 
 Tests cover source span accounting, chunk ordering, Unicode boundaries, frozen settings, SQLite relaunch, cancellation, export collisions, rename reconciliation, changed-file deletion guards, cache corruption, and export-only retry. Pipeline tests require FFmpeg and FFprobe. Pilot output and reports are private, ignored files in `artifacts/pilot`; they do not upload to OneDrive.
