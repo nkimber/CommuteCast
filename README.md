@@ -20,7 +20,7 @@ Pending narrations can be moved earlier/later in the library; their order surviv
 
 Storage admission reserves estimated audio for all pending jobs, subtracts their existing private files, and applies on retry as well as submission. If a durable checkpoint write fails, dispatch pauses with a repair instruction; existing records are retained. Repair storage, retry the affected narration, then resume the queue. A failed retry does not change the saved stage or destination.
 
-Queue files carry an application identity, schema version and migration history. Before migrating a legacy queue, the app creates a verified SQLite online backup under private `schema-backups`; it refuses foreign, newer or corrupt records without resetting them. These snapshots include committed WAL data. Local migration backups and recovered unreadable-draft copies remain separately retained when narrations are deleted. Complete current-state backup and restore are available through the packaged maintenance tool below; installer update/rollback integration remains release work.
+Queue files carry an application identity, schema version and migration history. Before migrating a legacy queue, the app creates a verified SQLite online backup under private `schema-backups`; it refuses foreign, newer or corrupt records without resetting them. These snapshots include committed WAL data. Local migration backups and recovered unreadable-draft copies remain separately retained when narrations are deleted. Complete current-state backup and restore are available through the packaged maintenance tool below; explicit command-line installation/update/rollback is described below; corporate deployment and fresh-machine acceptance remain release work.
 
 The input limit is 250,000 characters, with no editor truncation. Default preparation removes common Markdown formatting while preserving content. Links retain labels and URLs; tables retain cells; fenced code is spoken unless explicitly excluded. Numbers are preserved for the selected engine to pronounce. Pronunciation substitutions use literal, whole-term `term=spoken words` rules and are visible in the preparation map. Oversized sentences use a deterministic word/Unicode-safe fallback. Automatic checks establish source/chunk accounting and audio integrity, **not exact spoken fidelity**.
 
@@ -63,7 +63,7 @@ Deletion stops the selected worker before removing tracked local artifacts. Expo
 
 `.\scripts\Publish-Portable.ps1` creates an unpackaged, self-contained Windows x64 folder and ZIP under `artifacts/release`. Docker, models, and FFmpeg are separate prerequisites. The app does not install them or elevate privileges. Code signing, a corporate installer, fresh-machine acceptance, listening approval, and actual corporate Android playback with the laptop off are release gates recorded separately. No evidence from a build or unit suite substitutes for those checks.
 
-Publishing also writes `release-manifest.json`: a sorted file inventory with sizes/SHA256, app and binary build versions, bundled runtime, target architecture, supported schema range and provider contract. From the package's `app` directory, run `.\CommuteCast.Maintenance.exe verify-package --package '..'` before a deliberate update. Missing/changed/unlisted files, incompatible declarations and known private-state artifacts are refused. `seal-package` is a build action that regenerates the inventory; do not use it to approve an altered downloaded package. Checksums establish integrity against the supplied manifest; they do not establish trusted authorship or corporate signing approval. Automated installation, activation, rollback and uninstall remain implementation work.
+Publishing also writes `release-manifest.json`: a sorted file inventory with sizes/SHA256, app and binary build versions, bundled runtime, target architecture, supported schema range and provider contract. From the package's `app` directory, run `.\CommuteCast.Maintenance.exe verify-package --package '..'` before a deliberate update. Missing/changed/unlisted files, incompatible declarations and known private-state artifacts are refused. `seal-package` is a build action that regenerates the inventory; do not use it to approve an altered downloaded package. Checksums establish integrity against the supplied manifest; they do not establish trusted authorship or corporate signing approval. Explicit installation, rollback and uninstall commands are described below.
 
 ## Back up and restore local state
 
@@ -81,4 +81,29 @@ Backups stay under `%LOCALAPPDATA%\CommuteCast\backups`. They contain private so
 
 Restore validates the entire backup and stages another verified copy before replacing local managed state. Previous files remain under `recovery\restores\<restore ID>\previous`. An unfinished restore is recovered by desktop startup or `recover`; before its durable commit, recovery returns to the verified original state. Incompatible, changed or unsafe artifacts are refused and retained for inspection. Recovery copies and backups can contain private data and consume disk space; narration deletion and cache cleanup do not remove them. Keep the previous state until the restored application has been checked. Failed preparation can also leave retained copies for inspection.
 
-For a reproducible isolated command-line acceptance run, use `.\scripts\Test-Maintenance.ps1` after publishing, or supply `-Executable` with the built maintenance executable. Its synthetic fixtures and report stay under ignored `artifacts\maintenance-acceptance`; it never restores the live user workspace. Native backup controls, installer integration and fresh-machine acceptance remain open.
+For a reproducible isolated command-line acceptance run, use `.\scripts\Test-Maintenance.ps1` after publishing, or supply `-Executable` with the built maintenance executable. Its synthetic fixtures and report stay under ignored `artifacts\maintenance-acceptance`; it never restores the live user workspace. Native backup controls and fresh-machine acceptance remain open.
+
+## Install, update, roll back and uninstall
+
+Close CommuteCast. Run these commands from an extracted portable package outside the installation folder:
+
+```powershell
+.\CommuteCast.Maintenance.exe install --package '<complete extracted portable folder>'
+.\CommuteCast.Maintenance.exe inspect-install
+.\CommuteCast.Maintenance.exe launch-installed
+# Restore the recorded previous release AND its pre-update local state.
+.\CommuteCast.Maintenance.exe rollback --confirm-replace-local-data
+.\CommuteCast.Maintenance.exe recover-install
+# Retain private data (default).
+.\CommuteCast.Maintenance.exe uninstall --confirm-uninstall
+# Deliberately remove recorded private source, queue, settings, audio and recovery copies.
+.\CommuteCast.Maintenance.exe uninstall --confirm-uninstall --local-data remove --confirm-remove-local-data
+```
+
+Binaries stay in immutable verified `releases\<package identity>` folders under `%LOCALAPPDATA%\Programs\CommuteCast`; private data stays in `%LOCALAPPDATA%\CommuteCast`. Installation records bind those separate roots. `--install-root` selects a dedicated local binary folder; `--root` is an explicit isolated-workspace testing override. Installed startup verifies the active release and its bound workspace, including case-insensitive Windows paths. Launching an archived release or one with pending deployment is refused. Run `launch-installed` from the external portable maintenance tool to select the current release. This command-line installer does not yet register a Start menu shortcut, Windows uninstall entry, GUI setup wizard or automatic prerequisite installation.
+
+An update verifies the complete package, snapshots current private state, stages and verifies the binaries, checks/migrates the recognized queue schema, then atomically commits the active release. Rollback verifies the previous binary and pinned snapshot before restoring both; work created after that snapshot moves to retained recovery storage. A recovery snapshot permits undoing the rollback through the same command. Docker images/models are retained separately, so compatible provider availability must also be checked. Recovery follows a bounded journal: before activation it restores the original private state; after activation it retains the committed release. Unexpected or changed deployment records are preserved for inspection.
+
+Uninstall defaults to retaining private data. Explicit removal covers recorded queue/settings/draft/provider recovery, job files and their backup/recovery folders. Exports, provisioning models, Docker artifacts and unknown root files remain separate. Removal locks and checks each file against its recorded checksum, deletes through that same Windows handle, and removes only empty directories. After uninstall commits, interrupted recorded removal resumes through `recover-install`; changed or unrecorded files stop removal for inspection. The small ownership/state/lease records remain to support safe recovery and reinstallation.
+
+`.\scripts\Test-Installation.ps1` runs real packaged commands against separate synthetic fixtures: update, rollback/undo, immutable queued data and PCM checksums, exclusion and both uninstall scopes. `-KeepInstalled` leaves a paused fixture for native checks. Fixtures stay under ignored `artifacts\installation-acceptance`. Signing, corporate deployment policy, prerequisite diagnostics and fresh-user/machine acceptance remain release work.

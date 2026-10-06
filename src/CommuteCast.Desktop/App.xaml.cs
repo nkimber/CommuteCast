@@ -1,6 +1,7 @@
 ﻿using System.Configuration;
 using System.Data;
 using System.Windows;
+using System.IO;
 
 namespace CommuteCast.Desktop;
 using System.Windows.Media;
@@ -23,9 +24,19 @@ public partial class App : Application
         SetTheme();
         try
         {
-            var workspace = new Workspace();
+            var installationRoot = Installation.FindRoot(AppContext.BaseDirectory);
+            var installation = installationRoot is null ? null : new Installation(installationRoot);
+            var owner = installation is null ? null : await installation.ReadOwnerAsync();
+            var workspace = new Workspace(owner?.WorkspaceRoot);
             workspaceLease = WorkspaceLease.Acquire(workspace);
+            if (installation?.HasPendingOperation == true) throw new IOException("Deployment is unfinished. Close CommuteCast and run recover-install from an extracted portable package before relaunching.");
             await WorkspaceBackup.RecoverInterruptedAsync(workspaceLease);
+            if (installation is not null)
+            {
+                var active = await installation.InspectAsync(workspaceLease);
+                if (active.Executable is null || !Path.GetFullPath(active.Executable).Equals(Environment.ProcessPath, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("This release is archived or uninstalled. Launch the current installed release instead.");
+            }
             var settings = await workspace.LoadSettingsAsync();
             var window = new MainWindow(new MainViewModel(settings, workspace));
             MainWindow = window; window.Show();
