@@ -6,9 +6,10 @@ using System.Reflection;
 
 var engine = args.FirstOrDefault() ?? "kokoro";
 if (engine is not ("kokoro" or "piper")) throw new ArgumentException("Use kokoro or piper.");
-if (args.Length > 3 || args.Length == 3 && args[2] != "--verify-private-removal")
-    throw new ArgumentException("Use an engine, an optional fresh folder under artifacts/pilot, and optional --verify-private-removal.");
-var verifyPrivateRemoval = args.Length == 3;
+if (args.Length > 3 || args.Length == 3 && args[2] is not ("--verify-private-removal" or "--verify-audition"))
+    throw new ArgumentException("Use an engine, an optional fresh folder under artifacts/pilot, and optional --verify-private-removal or --verify-audition.");
+var verifyPrivateRemoval = args.ElementAtOrDefault(2) == "--verify-private-removal";
+var verifyAudition = args.ElementAtOrDefault(2) == "--verify-audition";
 var pilotParent = Path.GetFullPath(Path.Combine("artifacts", "pilot"));
 var root = Path.GetFullPath(args.ElementAtOrDefault(1) ?? Path.Combine(pilotParent, engine + "-" + Guid.NewGuid().ToString("N")));
 if (!Workspace.IsWithin(pilotParent, root) || root.Equals(pilotParent, StringComparison.OrdinalIgnoreCase) || Directory.Exists(root) || File.Exists(root))
@@ -46,6 +47,42 @@ var text = "# A better commute\n\n" + string.Join("\n\n", new[]
 var profile = new PronunciationProfile(Numbers: NumberReading.ScientificWords, Acronyms: AcronymReading.SpellUppercaseWords, Dates: DateReading.IsoYearMonthDay);
 const string dictionary = "CommuteCast=Commute Cast\nSQLite=S Q Lite\n.NET=dot net";
 var job = new Job { Title = "A better commute — " + engine + " pilot", Source = text, Prepared = TextPreparation.Prepare(text, pronunciation: dictionary, profile: profile), Settings = new(engine, engine == "kokoro" ? "af_heart" : "en_US-lessac-medium", 1, false, dictionary, info.Fingerprint, profile, info.ImageId), Destination = destination };
+if (verifyAudition)
+{
+    using var auditionGate = new SemaphoreSlim(1);
+    var generator = new AuditionGenerator(workspace, provider, auditionGate, (selectedEngine, ct) => provider.ReadyAsync(selectedEngine, ct, true));
+    var legacy = Path.Combine(workspace.Root, "audition.wav"); await File.WriteAllTextAsync(legacy, "Preserve untracked legacy audition fixture");
+    const string selection = "The API processes 24 requests per second.";
+    var requests = new[] { AuditionRequest.Standard(job.Settings), AuditionRequest.Selection(text, text.IndexOf(selection, StringComparison.Ordinal), selection.Length, job.Settings) };
+    var samples = new List<object>();
+    foreach (var request in requests)
+    {
+        var auditionWatch = Stopwatch.StartNew();
+        var audio = await generator.GenerateAsync(request, timeout.Token); auditionWatch.Stop();
+        var audioPath = OwnedFileRemoval.Resolve(workspace.Root, audio.RelativePath);
+        var wavBytes = new FileInfo(audioPath).Length;
+        WaveAudio.DataRegion(audioPath, false);
+        if (audio.Settings.Engine != engine || audio.Settings.Voice != job.Settings.Voice || audio.Settings.Speed != job.Settings.Speed ||
+            audio.Settings.Profile != profile || audio.Settings.Pronunciation != dictionary || audio.Settings.ProviderFingerprint != info.Fingerprint || audio.Settings.ProviderImageId != imageId ||
+            string.Concat(audio.Prepared.Spans.Select(s => s.Original)) != request.Source || audio.Prepared.Script.Length > AuditionRequest.MaximumCharacters ||
+            await Workspace.HashFileAsync(audioPath) != audio.Hash || auditionGate.CurrentCount != 1)
+            throw new IOException("The audition differs from its captured selection, preferences or live provider identity.");
+        if (!await generator.RemoveAsync(audio) || File.Exists(audioPath) || await generator.RemoveAsync(audio)) throw new IOException("Completed audition removal or idempotency failed.");
+        samples.Add(new { kind = request.SelectionStart is null ? "standard" : "selected excerpt", sourceCharacters = request.Source.Length,
+            preparedCharacters = audio.Prepared.Script.Length, selectionStart = request.SelectionStart, sourceAccounted = true,
+            frozenSettingsVerified = true, capturedImageId = audio.Settings.ProviderImageId, nativeWavValidated = true, wavBytes,
+            sha256 = audio.Hash, wallSeconds = auditionWatch.Elapsed.TotalSeconds, ownedCleanupPassed = true, gateReleased = true });
+    }
+    if (File.Exists(Path.Combine(workspace.Root, "queue.db")) || Directory.Exists(Path.Combine(workspace.Root, "jobs")) || Directory.GetFiles(destination).Length != 0 ||
+        await File.ReadAllTextAsync(legacy) != "Preserve untracked legacy audition fixture" || Directory.GetFiles(Path.Combine(workspace.Root, "auditions")).Length != 0)
+        throw new IOException("Audition created queue/export content or failed to preserve the untracked legacy fixture.");
+    var auditionReport = new { engine, applicationBuild = typeof(Job).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+        imageId, provider = info.Fingerprint, samples, noQueueOrJobHistory = true, noExport = true, legacyUnknownSamplePreserved = true,
+        nativePlaybackAndSelection = "not performed", actualCancelledServerQuiescence = "not performed", listeningQuality = "requires user audition" };
+    await File.WriteAllTextAsync(Path.Combine(root, "audition-report.json"), JsonSerializer.Serialize(auditionReport, new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine(JsonSerializer.Serialize(auditionReport, new JsonSerializerOptions { WriteIndented = true }));
+    return;
+}
 var watch = Stopwatch.StartNew();
 await using var queue = new QueueCoordinator(workspace, store, provider, new(new()), new(workspace, store));
 var previous = "";

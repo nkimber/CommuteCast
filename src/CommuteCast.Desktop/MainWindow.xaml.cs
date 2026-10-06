@@ -32,6 +32,10 @@ public partial class MainWindow : Window
         try { await model.InitializeAsync(); }
         catch (Exception error) { if (!closing) MessageBox.Show(this, QueueCoordinator.FriendlyError(error), "CommuteCast"); }
     }
+    private void SourceSelectionChanged(object sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox input) model.UpdateAuditionSelection(input.Text, input.SelectionStart, input.SelectionLength);
+    }
     private async void OpenMaintenance(object sender, RoutedEventArgs e)
     {
         if (closing) return;

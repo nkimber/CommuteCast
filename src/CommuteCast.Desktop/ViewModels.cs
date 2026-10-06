@@ -76,6 +76,13 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private readonly SqliteJobStore store;
     private readonly DraftStore drafts;
     private readonly MediaPlayer player = new();
+    private readonly AuditionGenerator auditions;
+    private readonly SemaphoreSlim auditionCleanup = new(1);
+    private CancellationTokenSource? activeAudition;
+    private AuditionAudio? auditionAudio;
+    private long auditionGeneration;
+    private string selectionSource = "";
+    private int selectionStart, selectionLength;
     private readonly CancellationTokenSource shutdown = new();
     private CancellationTokenSource? draftSave;
     private readonly SemaphoreSlim draftGate = new(1);
@@ -108,6 +115,15 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     }
     public string DraftTitle { get => draftTitle; set { if (Set(ref draftTitle, value)) ScheduleDraftSave(); } }
     public string CharacterCount => $"{source.Length:N0} / {TextPreparation.MaximumCharacters:N0} characters";
+    public bool HasAuditionSelection => selectionLength is > 0 and <= AuditionRequest.MaximumCharacters;
+    public string AuditionSelectionSummary => selectionLength == 0 ? "Select a short passage in your text to hear it."
+        : selectionLength > AuditionRequest.MaximumCharacters ? $"{selectionLength:N0} selected. Shorten the selection to {AuditionRequest.MaximumCharacters} characters."
+        : $"{selectionLength:N0} selected · prepared as a short local sample";
+    public void UpdateAuditionSelection(string text, int start, int length)
+    {
+        selectionSource = text; selectionStart = start; selectionLength = length;
+        Raise(nameof(HasAuditionSelection)); Raise(nameof(AuditionSelectionSummary));
+    }
     public string Engine { get => settings.Engine; set { if (settings.Engine == value || value is null) return; settings.Engine = value; settings.Voice = value == "kokoro" ? "af_heart" : "en_US-lessac-medium"; Voices.Clear(); Voices.Add(settings.Voice); Raise(); Raise(nameof(Voice)); RaiseProfile(); ServiceStatus = "Check readiness to refresh voices"; } }
     public string Voice { get => settings.Voice; set { if (value is not null) { settings.Voice = value; Raise(); } } }
     public double Speed { get => settings.Speed; set { settings.Speed = Math.Round(value, 2); Raise(); Raise(nameof(SpeedLabel)); } }
@@ -179,6 +195,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         store = new SqliteJobStore(Workspace);
         provider = new(Workspace); publisher = new(Workspace, store);
         queue = new(Workspace, store, provider, new(settings), publisher) { Paused = settings.QueuePaused, CacheQuotaMiB = settings.CacheQuotaMiB, ScratchRetentionDays = settings.ScratchRetentionDays, PrivateStorageLimitMiB = settings.PrivateStorageLimitMiB };
+        auditions = new(Workspace, provider, queue.InferenceGate, (engine, ct) => provider.ReadyAsync(engine, ct, true));
         queue.Changed += _ => Application.Current.Dispatcher.InvokeAsync(() => RefreshJobs(queue.Snapshot()));
         player.MediaFailed += (_, _) => StatusMessage = "Playback failed. Check that the local audio exists and is decodable.";
         Voices.Add(settings.Voice);
@@ -195,7 +212,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
             SetupDetails = report.Display;
             StatusMessage = "Setup inspection finished. Corporate approval and real narration acceptance remain separate.";
         });
-        AuditionCommand = Command(_ => AuditionAsync());
+        AuditionCommand = Command(p => AuditionAsync(p?.ToString() == "selection"));
         SaveSettingsCommand = Command(async _ => { CaptureProfile(); TextPreparation.ValidateDictionary(Pronunciation); await SaveSettingsAsync(); StatusMessage = "Settings saved for future submissions."; });
         ResetPronunciationCommand = Command(_ => { settings.PronunciationProfile = new(); RaiseProfile(); StatusMessage = "English profile selected for new narrations. Save settings to retain it."; return Task.CompletedTask; });
         CheckEncoderCommand = Command(_ => CheckEncoderAsync());
@@ -203,8 +220,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         PauseCommand = Command(async _ => { if (queue.Paused && queue.PersistenceError.Length > 0) throw new IOException(queue.PersistenceError); queue.Paused = !queue.Paused; settings.QueuePaused = queue.Paused; Raise(nameof(PauseLabel)); await SaveSettingsAsync(); StatusMessage = queue.Paused ? "Future dispatch paused. The current narration can finish." : "Queue resumed."; });
         MoveEarlierCommand = Command(_ => queue.MovePendingAsync(RequireSelected().Id, -1, shutdown.Token));
         MoveLaterCommand = Command(_ => queue.MovePendingAsync(RequireSelected().Id, 1, shutdown.Token));
-        PlayCommand = Command(async _ => { var job = RequireSelected(); var file = Workspace.FinalPath(job); if (!File.Exists(file) || job.FinalHash.Length == 0 || await Infrastructure.Workspace.HashFileAsync(file) != job.FinalHash) throw new IOException("No validated local audio is available for this narration."); player.Open(new Uri(file)); player.Play(); StatusMessage = "Playing local audio. Use Stop playback to stop."; });
-        StopCommand = Command(_ => { player.Stop(); return Task.CompletedTask; });
+        PlayCommand = Command(async _ => { var job = RequireSelected(); await StopPlaybackAsync(false); var file = Workspace.FinalPath(job); if (!File.Exists(file) || job.FinalHash.Length == 0 || await Infrastructure.Workspace.HashFileAsync(file) != job.FinalHash) throw new IOException("No validated local audio is available for this narration."); player.Open(new Uri(file)); player.Play(); StatusMessage = "Playing local audio. Use Stop playback to stop."; });
+        StopCommand = Command(_ => StopPlaybackAsync(true));
         OpenFolderCommand = Command(_ => { var job = RequireSelected(); if (!Directory.Exists(job.Destination)) throw new IOException("The recorded output folder is missing."); Process.Start(new ProcessStartInfo(job.Destination) { UseShellExecute = true }); return Task.CompletedTask; });
         InspectCommand = Command(_ => { var job = RequireSelected(); ShowPreparation(job.Prepared, job.Source); return Task.CompletedTask; });
         RetryCommand = Command(async _ => { var job = RequireSelected(); await provider.ResetRecoveryBudgetAsync(job.Settings.Engine, shutdown.Token); await queue.RetryAsync(job.Id); });
@@ -322,22 +339,47 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         DraftQueued?.Invoke();
         await SaveSettingsAsync();
     }
-    private async Task AuditionAsync()
+    private async Task AuditionAsync(bool selection)
     {
-        var engine = Engine; var voice = Voice; var speed = Speed; var dictionary = Pronunciation; var profile = CaptureProfile();
-        var sample = await Task.Run(() => TextPreparation.Prepare("Welcome to CommuteCast. The API processes 24 requests per second. Version 2.10 costs 12.50 dollars. The measurement is 1.25e-3. Dates: 2026-10-06 and 03/04/2026.", false, dictionary, profile, shutdown.Token), shutdown.Token);
-        if (sample.Script.Length > 900) throw new ArgumentException("The dictionary expands the audition beyond the provider limit. Shorten its replacements and preview preparation.");
-        await queue.InferenceGate.WaitAsync(shutdown.Token);
+        var snapshot = new NarrationSettings(Engine, Voice, Speed, ExcludeCode, Pronunciation, "", CaptureProfile());
+        var request = selection ? AuditionRequest.Selection(selectionSource, selectionStart, selectionLength, snapshot) : AuditionRequest.Standard(snapshot);
+        var generation = ++auditionGeneration;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
+        activeAudition = cancellation;
         try
         {
-            var info = await provider.ReadyAsync(engine, shutdown.Token, true);
-            var path = Path.Combine(Workspace.Root, "audition.wav");
             player.Stop(); player.Close();
-            await provider.SynthesizeAsync(new(engine, voice, speed, false, dictionary, info.Fingerprint, profile, info.ImageId), sample.Script, path, shutdown.Token);
-            player.Open(new Uri(path)); player.Play();
-            StatusMessage = "Playing a short local voice audition. Choose the voice and pace that suit your listening.";
+            await CleanupAuditionAsync();
+            StatusMessage = "Preparing a local audition. It waits for current narration before using speech. Use Stop audition to cancel.";
+            var audio = await auditions.GenerateAsync(request, cancellation.Token);
+            if (generation != auditionGeneration || cancellation.IsCancellationRequested)
+            { await auditions.RemoveAsync(audio); return; }
+            auditionAudio = audio;
+            player.Open(new Uri(OwnedFileRemoval.Resolve(Workspace.Root, audio.RelativePath))); player.Play();
+            StatusMessage = selection ? "Playing the selected excerpt with its captured voice and pronunciation settings." : "Playing the standard voice sample with its captured pronunciation settings.";
         }
-        finally { queue.InferenceGate.Release(); }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        { if (!shutdown.IsCancellationRequested && generation == auditionGeneration) StatusMessage = "Audition stopped."; }
+        finally { if (ReferenceEquals(activeAudition, cancellation)) activeAudition = null; }
+    }
+    private async Task StopPlaybackAsync(bool showStatus)
+    {
+        ++auditionGeneration;
+        var pending = activeAudition is not null;
+        activeAudition?.Cancel(); player.Stop(); player.Close();
+        await CleanupAuditionAsync();
+        if (showStatus) StatusMessage = pending ? "Playback stopped. Audition cancellation requested." : "Playback stopped.";
+    }
+    private async Task CleanupAuditionAsync()
+    {
+        await auditionCleanup.WaitAsync();
+        try
+        {
+            if (auditionAudio is not { } audio) return;
+            await auditions.RemoveAsync(audio);
+            auditionAudio = null;
+        }
+        finally { auditionCleanup.Release(); }
     }
     private async Task CheckEncoderAsync()
     {
@@ -361,7 +403,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         var review = await Task.Run(() => queue.ReviewDeletionAsync(ids));
         var choice = new DeleteWindow(review.Items, review.RecordedExportRemovals, review.PendingRequests) { Owner = Application.Current.MainWindow };
         if (choice.ShowDialog() != true) return;
-        player.Stop(); player.Close();
+        await StopPlaybackAsync(false);
         var deleteExports = choice.DeleteExports;
         var result = await Task.Run(() => queue.DeleteManyAsync(ids, deleteExports));
         Raise(nameof(PauseLabel));
@@ -389,6 +431,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         try { if (!draftLoadFailed || draftDirty) await drafts.SaveAsync(new(DraftTitle, Source)); }
         finally { draftGate.Release(); }
         await SaveSettingsAsync();
-        provider.Dispose(); shutdown.Dispose();
+        try { await CleanupAuditionAsync(); }
+        finally { provider.Dispose(); shutdown.Dispose(); auditionCleanup.Dispose(); }
     }
 }
