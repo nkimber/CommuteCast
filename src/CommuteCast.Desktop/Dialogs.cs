@@ -50,7 +50,7 @@ public sealed class DeleteWindow : Window
         panel.Children.Add(new TextBlock { Text = $"Delete {count} narration{(count == 1 ? "" : "s")}?", FontSize = 24, FontWeight = FontWeights.SemiBold });
         panel.Children.Add(new TextBlock { Text = "Local source, prepared text, history, and audio for these items will be removed. Active generation stops first. Unrelated output files and speech models are preserved.", TextWrapping = TextWrapping.Wrap, Margin = new(0, 14, 0, 0) });
         panel.Children.Add(exports);
-        panel.Children.Add(new TextBlock { Text = "Removing an exported file may synchronize its deletion through OneDrive. Cloud retention, recycle bins, and phone copies cannot be erased here.", TextWrapping = TextWrapping.Wrap, FontSize = 12 });
+        panel.Children.Add(new TextBlock { Text = "Local migration backups and recovered draft copies are retained separately. Removing an exported file may synchronize its deletion through OneDrive. Cloud retention, recycle bins, and phone copies cannot be erased here.", TextWrapping = TextWrapping.Wrap, FontSize = 12 });
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 24, 0, 0) };
         buttons.Children.Add(new Button { Content = "Keep narrations", IsCancel = true, Padding = new(16, 9, 16, 9), Margin = new(0, 0, 10, 0) });
         var delete = new Button { Content = "Delete managed items", Padding = new(16, 9, 16, 9) };

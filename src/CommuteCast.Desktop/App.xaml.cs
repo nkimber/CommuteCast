@@ -13,6 +13,7 @@ public partial class App : Application
 {
     private Mutex? instance;
     private bool ownsMutex;
+    private WorkspaceLease? workspaceLease;
     private static bool dark;
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -22,8 +23,10 @@ public partial class App : Application
         SetTheme();
         try
         {
-            var settings = await new Workspace().LoadSettingsAsync();
-            var window = new MainWindow(new MainViewModel(settings));
+            var workspace = new Workspace();
+            workspaceLease = WorkspaceLease.Acquire(workspace);
+            var settings = await workspace.LoadSettingsAsync();
+            var window = new MainWindow(new MainViewModel(settings, workspace));
             MainWindow = window; window.Show();
         }
         catch (Exception error) { MessageBox.Show(QueueCoordinator.FriendlyError(error), "CommuteCast startup"); Shutdown(1); }
@@ -48,6 +51,7 @@ public partial class App : Application
     }
     protected override void OnExit(ExitEventArgs e)
     {
+        workspaceLease?.Dispose();
         if (ownsMutex) instance?.ReleaseMutex();
         instance?.Dispose();
         base.OnExit(e);

@@ -20,6 +20,8 @@ Pending narrations can be moved earlier/later in the library; their order surviv
 
 Storage admission reserves estimated audio for all pending jobs, subtracts their existing private files, and applies on retry as well as submission. If a durable checkpoint write fails, dispatch pauses with a repair instruction; existing records are retained. Repair storage, retry the affected narration, then resume the queue. A failed retry does not change the saved stage or destination.
 
+Queue files carry an application identity, schema version and migration history. Before migrating a legacy queue, the app creates a verified SQLite online backup under private `schema-backups`; it refuses foreign, newer or corrupt records without resetting them. These snapshots include committed WAL data. Local migration backups and recovered unreadable-draft copies remain separately retained when narrations are deleted. Full workspace backup/restore and installer rollback are still release work; a database snapshot alone is not a backup of all private audio/settings.
+
 The input limit is 250,000 characters, with no editor truncation. Default preparation removes common Markdown formatting while preserving content. Links retain labels and URLs; tables retain cells; fenced code is spoken unless explicitly excluded. Numbers are preserved for the selected engine to pronounce. Pronunciation substitutions use literal, whole-term `term=spoken words` rules and are visible in the preparation map. Oversized sentences use a deterministic word/Unicode-safe fallback. Automatic checks establish source/chunk accounting and audio integrity, **not exact spoken fidelity**.
 
 ## Validation

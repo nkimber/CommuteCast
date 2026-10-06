@@ -41,6 +41,12 @@ public sealed class Workspace
         for (var info = new DirectoryInfo(Path.GetFullPath(path)); info is not null; info = info.Parent)
             if (info.Exists && info.Attributes.HasFlag(FileAttributes.ReparsePoint)) throw new IOException("Directory junctions and symbolic links are not supported for managed storage.");
     }
+    public static void RejectFileReparsePoint(string path)
+    {
+        try { if (File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint)) throw new IOException("Symbolic links are not supported for managed files."); }
+        catch (FileNotFoundException) { }
+        catch (DirectoryNotFoundException) { }
+    }
     public static async Task<string> HashFileAsync(string path, CancellationToken ct = default)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
@@ -73,17 +79,33 @@ public sealed class Workspace
 
 public sealed class SqliteJobStore : IJobStore
 {
+    private readonly Workspace workspace;
+    private readonly ISchemaMigrationObserver? migrationObserver;
     private readonly string connectionString;
     private readonly SemaphoreSlim gate = new(1);
-    public SqliteJobStore(Workspace workspace) => connectionString = new SqliteConnectionStringBuilder { DataSource = Path.Combine(workspace.Root, "queue.db"), Pooling = false }.ToString();
+    private static IOException StorageError(SqliteException error) => new("The queue checkpoint or read failed. Check free disk space and permissions, then retry. Existing durable records were preserved.", error);
+    public SqliteJobStore(Workspace workspace, ISchemaMigrationObserver? migrationObserver = null)
+    {
+        this.workspace = workspace; this.migrationObserver = migrationObserver;
+        connectionString = SqliteSchema.ConnectionString(Path.Combine(workspace.Root, "queue.db"));
+    }
     private async Task<SqliteConnection> OpenAsync(CancellationToken ct)
     {
         var connection = new SqliteConnection(connectionString);
-        await connection.OpenAsync(ct);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, created TEXT NOT NULL, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, stage TEXT NOT NULL, timestamp TEXT NOT NULL);";
-        await command.ExecuteNonQueryAsync(ct);
-        return connection;
+        try
+        {
+            SqliteSchema.RejectLink(Path.Combine(workspace.Root, "queue.db"));
+            await connection.OpenAsync(ct);
+            await SqliteSchema.EnsureAsync(connection, workspace, migrationObserver, ct);
+            await using var command = connection.CreateCommand(); command.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL";
+            await command.ExecuteNonQueryAsync(ct); return connection;
+        }
+        catch (SqliteException error)
+        {
+            await connection.DisposeAsync();
+            throw new IOException("The queue could not be opened or migrated. Original files were preserved. Check storage and restore a verified compatible backup if needed.", error);
+        }
+        catch { await connection.DisposeAsync(); throw; }
     }
     public async Task SaveAsync(Job job, CancellationToken ct = default)
     {
@@ -106,6 +128,7 @@ public sealed class SqliteJobStore : IJobStore
             await command.ExecuteNonQueryAsync(ct);
             transaction.Commit();
         }
+        catch (SqliteException error) { throw StorageError(error); }
         finally { gate.Release(); }
     }
     public async Task<IReadOnlyList<Job>> LoadAsync(CancellationToken ct = default)
@@ -114,13 +137,26 @@ public sealed class SqliteJobStore : IJobStore
         try
         {
             await using var connection = await OpenAsync(ct);
+            await SqliteSchema.CheckIntegrityAsync(connection, ct);
             await using var command = connection.CreateCommand();
-            command.CommandText = "SELECT payload FROM jobs ORDER BY created";
+            command.CommandText = "SELECT id,created,payload FROM jobs ORDER BY created";
             await using var reader = await command.ExecuteReaderAsync(ct);
             var jobs = new List<Job>();
-            while (await reader.ReadAsync(ct)) jobs.Add(JsonSerializer.Deserialize<Job>(reader.GetString(0)) ?? throw new IOException("Queue record is unreadable. Private data is preserved."));
+            while (await reader.ReadAsync(ct)) jobs.Add(SqliteSchema.ValidateRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2)));
             return jobs;
         }
+        catch (SqliteException error) { throw StorageError(error); }
+        finally { gate.Release(); }
+    }
+    public async Task BackupDatabaseAsync(string destination, CancellationToken ct = default)
+    {
+        await gate.WaitAsync(ct);
+        try
+        {
+            await using var connection = await OpenAsync(ct);
+            await SqliteSchema.SnapshotAsync(connection, destination, ct);
+        }
+        catch (SqliteException error) { throw StorageError(error); }
         finally { gate.Release(); }
     }
     public async Task SaveQueueOrderAsync(IReadOnlyDictionary<string, long> positions, CancellationToken ct = default)
@@ -143,6 +179,7 @@ public sealed class SqliteJobStore : IJobStore
             }
             transaction.Commit();
         }
+        catch (SqliteException error) { throw StorageError(error); }
         finally { gate.Release(); }
     }
     public async Task RemoveAsync(string id, CancellationToken ct = default)
@@ -156,6 +193,7 @@ public sealed class SqliteJobStore : IJobStore
             command.Parameters.AddWithValue("$id", id);
             await command.ExecuteNonQueryAsync(ct);
         }
+        catch (SqliteException error) { throw StorageError(error); }
         finally { gate.Release(); }
     }
     public async Task<IReadOnlyList<DiagnosticEvent>> ReadDiagnosticEventsAsync(CancellationToken ct = default)
@@ -178,6 +216,7 @@ public sealed class SqliteJobStore : IJobStore
             }
             return events;
         }
+        catch (SqliteException error) { throw StorageError(error); }
         finally { gate.Release(); }
     }
 }

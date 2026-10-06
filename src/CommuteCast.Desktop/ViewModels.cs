@@ -65,12 +65,13 @@ public sealed class JobView(Job job, Workspace workspace)
 
 public sealed class MainViewModel : Observable, IAsyncDisposable
 {
-    public Workspace Workspace { get; } = new();
+    public Workspace Workspace { get; }
     private readonly AppSettings settings;
     private readonly LocalSpeechProvider provider;
     private readonly ExportPublisher publisher;
     private readonly QueueCoordinator queue;
     private readonly SqliteJobStore store;
+    private readonly DraftStore drafts;
     private readonly MediaPlayer player = new();
     private readonly CancellationTokenSource shutdown = new();
     private CancellationTokenSource? draftSave;
@@ -78,7 +79,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private string page = "compose", source = "", draftTitle = "", statusMessage = "Paste something worth listening to. Queue it when you're ready.", serviceStatus = "Checking local speech…";
     private string providerDetails = "", encoderVersion = "Not checked";
     private string storageSummary = "Usage has not been measured.";
-    private bool loading = true;
+    private bool loading = true, queueLoaded, draftLoadFailed, draftDirty;
     private JobView? selectedJob;
     public ObservableCollection<JobView> Jobs { get; } = [];
     public ObservableCollection<string> Voices { get; } = [];
@@ -110,14 +111,14 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public string Ffmpeg { get => settings.Ffmpeg; set { settings.Ffmpeg = value; Raise(); } }
     public string Ffprobe { get => settings.Ffprobe; set { settings.Ffprobe = value; Raise(); } }
     public string DestinationDisplay => settings.Destination.Length == 0 ? "Choose your local OneDrive folder" : settings.Destination;
-    public string StorageDetails => $"Private data: {Workspace.Root}\n{storageSummary}\nSource, history, finished MP3s, active artifacts and retryable chunks are retained. Delete narrations to remove those files.";
+    public string StorageDetails => $"Private data: {Workspace.Root}\n{storageSummary}\nSource, history, finished MP3s, active artifacts and retryable chunks are retained. Delete narrations to remove those files. Local migration backups and recovered draft copies are retained separately.";
     public int CacheQuotaMiB { get => settings.CacheQuotaMiB; set { settings.CacheQuotaMiB = value; Raise(); } }
     public int ScratchRetentionDays { get => settings.ScratchRetentionDays; set { settings.ScratchRetentionDays = value; Raise(); } }
     public int PrivateStorageLimitMiB { get => settings.PrivateStorageLimitMiB; set { settings.PrivateStorageLimitMiB = value; Raise(); } }
     public string ProviderDetails { get => providerDetails; private set => Set(ref providerDetails, value); }
     public string ServiceStatus { get => serviceStatus; private set => Set(ref serviceStatus, value); }
     public string StatusMessage { get => statusMessage; private set => Set(ref statusMessage, value); }
-    public string LibrarySummary => $"{Jobs.Count} narrations · {Jobs.Count(j => j.Job.Stage == JobStage.Queued)} queued · {Jobs.Count(j => j.Job.Stage == JobStage.Exported)} exported locally";
+    public string LibrarySummary => !queueLoaded ? "Local records have not loaded. Repair storage or restore a verified backup." : $"{Jobs.Count} narrations · {Jobs.Count(j => j.Job.Stage == JobStage.Queued)} queued · {Jobs.Count(j => j.Job.Stage == JobStage.Exported)} exported locally";
     public string PauseLabel => queue.Paused ? "Resume queue" : "Pause future jobs";
     public JobView? SelectedJob { get => selectedJob; set => Set(ref selectedJob, value); }
     public ICommand NavigateCommand { get; }
@@ -147,9 +148,10 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public ICommand MeasureStorageCommand { get; }
     public ICommand CleanCacheCommand { get; }
 
-    public MainViewModel(AppSettings saved)
+    public MainViewModel(AppSettings saved, Workspace? workspace = null)
     {
-        settings = saved;
+        settings = saved; Workspace = workspace ?? new();
+        drafts = new(Workspace);
         store = new SqliteJobStore(Workspace);
         provider = new(Workspace); publisher = new(Workspace, store);
         queue = new(Workspace, store, provider, new(settings), publisher) { Paused = settings.QueuePaused, CacheQuotaMiB = settings.CacheQuotaMiB, ScratchRetentionDays = settings.ScratchRetentionDays, PrivateStorageLimitMiB = settings.PrivateStorageLimitMiB };
@@ -198,19 +200,16 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     }
     public async Task InitializeAsync()
     {
-        await Task.Run(() => queue.InitializeAsync(shutdown.Token));
-        var draft = Path.Combine(Workspace.Root, "draft.json");
-        if (File.Exists(draft))
-        {
-            try { var saved = JsonSerializer.Deserialize<string[]>(await File.ReadAllTextAsync(draft)); if (saved?.Length == 2) { DraftTitle = saved[0]; Source = saved[1]; } }
-            catch (JsonException) { StatusMessage = "The saved draft is unreadable. The original draft file was preserved."; }
-        }
+        try { var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; }
+        catch (IOException error) { draftLoadFailed = true; StatusMessage = error.Message; }
         loading = false;
+        await Task.Run(() => queue.InitializeAsync(shutdown.Token)); queueLoaded = true; Raise(nameof(LibrarySummary));
         try { await CheckReadinessAsync(); } catch (Exception error) { ServiceStatus = "Speech needs setup"; StatusMessage = QueueCoordinator.FriendlyError(error); }
     }
     private void ScheduleDraftSave()
     {
         if (loading) return;
+        draftDirty = true;
         draftSave?.Cancel();
         draftSave = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
         _ = SaveDraftAsync(DraftTitle, Source, draftSave.Token);
@@ -221,7 +220,11 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         {
             await Task.Delay(500, ct);
             await draftGate.WaitAsync(ct);
-            try { ct.ThrowIfCancellationRequested(); await Infrastructure.Workspace.AtomicWriteAsync(Path.Combine(Workspace.Root, "draft.json"), JsonSerializer.Serialize(new[] { title, text })); }
+            try
+            {
+                ct.ThrowIfCancellationRequested(); var preserved = await drafts.SaveAsync(new(title, text), ct); draftLoadFailed = false;
+                if (preserved is not null) StatusMessage = "The unreadable original draft was preserved in local recovery storage. Your current draft is saved.";
+            }
             finally { draftGate.Release(); }
         }
         catch (OperationCanceledException) { }
@@ -263,6 +266,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     }
     private async Task SubmitAsync()
     {
+        if (!queueLoaded) throw new IOException("Local queue records have not loaded. Repair storage or restore a verified compatible backup before submitting. Your draft is retained.");
         var text = Source; var title = DraftTitle.Trim();
         var engine = Engine; var voice = Voice; var speed = Speed; var exclusion = ExcludeCode; var dictionary = Pronunciation; var destination = settings.Destination;
         var prepared = await Task.Run(() => TextPreparation.Prepare(text, exclusion, dictionary));
@@ -343,7 +347,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         draftSave?.Cancel(); shutdown.Cancel(); player.Close();
         await queue.DisposeAsync();
         await draftGate.WaitAsync();
-        try { await Infrastructure.Workspace.AtomicWriteAsync(Path.Combine(Workspace.Root, "draft.json"), JsonSerializer.Serialize(new[] { DraftTitle, Source })); }
+        try { if (!draftLoadFailed || draftDirty) await drafts.SaveAsync(new(DraftTitle, Source)); }
         finally { draftGate.Release(); }
         await SaveSettingsAsync();
         provider.Dispose(); shutdown.Dispose();
