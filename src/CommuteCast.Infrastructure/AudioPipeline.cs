@@ -37,13 +37,12 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
     {
         ValidateManifest(job);
         var assembled = Path.Combine(directory, "assembled.wav");
-        await PrivateJobFiles.PrepareOutputAsync(job, directory, "assembled.wav", ct);
         var samples = job.Receipts.Sum(r => (long)Math.Round(r.Duration * 24000));
         // Add 150ms between chunks ending a sentence/paragraph. Hard splits have no inserted gap.
         var gaps = job.Chunks.Take(job.Chunks.Count - 1).Select(c => c.Text.TrimEnd().EndsWith('.') || c.Text.EndsWith('\n') ? 3600 : 0).ToArray();
         var total = samples + gaps.Sum(g => (long)g);
         if (total * 2 > uint.MaxValue - 36) throw new IOException("This narration exceeds the supported WAV size. Split it into separate submissions.");
-        await using (var output = new FileStream(assembled, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, true))
+        await PrivateJobFiles.WriteRecordedAsync(job, directory, "assembled.wav", async output =>
         {
             WaveAudio.WriteHeader(output, total);
             foreach (var chunk in job.Chunks)
@@ -66,9 +65,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
                 }
                 if (chunk.Index < gaps.Length) await output.WriteAsync(new byte[gaps[chunk.Index] * 2], ct);
             }
-        }
-        await PrivateJobFiles.RecordAsync(job, directory, "assembled.wav", ct);
-        if (checkpoint is not null) await checkpoint();
+        }, checkpoint ?? (() => Task.CompletedTask), ct);
         var temporary = Path.Combine(directory, "encoded.partial.mp3");
         await PrivateJobFiles.PrepareOutputAsync(job, directory, "encoded.partial.mp3", ct);
         var encode = await ProcessRunner.RunAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-y", "-protocol_whitelist", "file,pipe", "-f", "wav", "-i", assembled, "-c:a", "libmp3lame", "-b:a", "128k", "-id3v2_version", "3", "-metadata", "title=" + job.Title, "-metadata", "artist=CommuteCast", "-metadata", "date=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_created_utc=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_job_id=" + job.Id, "-metadata", "comment=CommuteCast job " + job.Id, temporary], TimeSpan.FromMinutes(15), ct);

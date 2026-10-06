@@ -94,6 +94,33 @@ public static class PrivateJobFiles
         job.PrivateArtifacts.Add(new(name, hash));
     }
 
+    // Keep creation, writing and the completed receipt under the same exclusive
+    // handle. A handled write/checkpoint failure removes only this newly created
+    // file; a process loss before the checkpoint still requires inspection.
+    public static async Task WriteRecordedAsync(Job job, string directory, string name,
+        Func<Stream, Task> write, Func<Task> checkpoint, CancellationToken ct)
+    {
+        await PrepareOutputAsync(job, directory, name, ct);
+        ct.ThrowIfCancellationRequested();
+        await using var held = ExportStagingFile.Create(directory, name);
+        try
+        {
+            await write(held.Stream);
+            await held.Stream.FlushAsync(ct);
+            held.Stream.Flush(true);
+            var hash = await held.HashAsync(ct);
+            job.PrivateArtifacts.Add(new(name, hash));
+            await checkpoint();
+        }
+        catch
+        {
+            // Do not use the canceled token or reopen a path that may have changed.
+            held.Delete();
+            job.PrivateArtifacts.RemoveAll(r => r.RelativePath.Equals(name, StringComparison.OrdinalIgnoreCase));
+            throw;
+        }
+    }
+
     // Save the destination's expected bytes before moving them. Recovery can
     // recognize either side of a crash without adopting an existing filename.
     public static async Task MoveRecordedAsync(Job job, string directory, string source, string destination,

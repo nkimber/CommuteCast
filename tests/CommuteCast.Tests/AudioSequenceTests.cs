@@ -62,6 +62,26 @@ public class AudioSequenceTests
         }
         File.WriteAllBytes(path, bytes); Assert.Throws<IOException>(() => WaveAudio.DataRegion(path, false));
     }
+    [Fact] public async Task FailedAssemblyRemovesItsOwnPartialAndCanRetryFromRetainedChunks()
+    {
+        using var test = new TestWorkspace(); var job = await ToneJobAsync(test);
+        var directory = test.Workspace.JobDirectory(job.Id);
+        var chunk = test.Workspace.ChunkPath(job, 1); var original = await File.ReadAllBytesAsync(chunk);
+        var unknown = Path.Combine(directory, "notes.txt"); await File.WriteAllTextAsync(unknown, "Keep this");
+        TestWorkspace.WriteWave(chunk, 1);
+        await Assert.ThrowsAsync<IOException>(() => new AudioPipeline(new()).AssembleAsync(job, directory, default));
+        Assert.False(File.Exists(Path.Combine(directory, "assembled.wav")));
+        Assert.DoesNotContain(job.PrivateArtifacts, r => r.RelativePath == "assembled.wav");
+        Assert.Equal("Keep this", await File.ReadAllTextAsync(unknown));
+        await File.WriteAllBytesAsync(chunk, original);
+        var store = new SqliteJobStore(test.Workspace);
+        await new AudioPipeline(new()).AssembleAsync(job, directory, default, () => store.SaveAsync(job));
+        var reopened = Assert.Single(await store.LoadAsync());
+        Assert.Equal(await Workspace.HashFileAsync(Path.Combine(directory, "assembled.wav")),
+            PrivateJobFiles.Inventory(reopened)["assembled.wav"]);
+        Assert.InRange((await new AudioPipeline(new()).ValidateFinalAsync(reopened, test.Workspace.FinalPath(job), default)).Duration, 3.3, 3.5);
+    }
+
     [Fact] public void ChunkAndAudioVersionsInvalidateCacheFingerprint()
     {
         var job = new Job { Prepared = TextPreparation.Prepare("Faithful source.") }; var original = job.Fingerprint;
