@@ -117,7 +117,7 @@ public sealed class DeploymentSession(string packageRoot, string? installRoot = 
         reviewed = null; ct.ThrowIfCancellationRequested();
         using var lease = WorkspaceLease.Acquire(new Workspace(review.PrivateRoot));
         var overview = await installation.ReadOverviewAsync(ct); var currentRoot = ResolvePrivateRoot(overview);
-        if (currentRoot != review.PrivateRoot || overview.Owner != review.Overview.Owner || overview.StateHash != review.Overview.StateHash || overview.LauncherHash != review.Overview.LauncherHash || overview.PendingHash != review.Overview.PendingHash || overview.PendingRecovery != review.Overview.PendingRecovery ||
+        if (currentRoot != review.PrivateRoot || overview.Owner != review.Overview.Owner || overview.StateHash != review.Overview.StateHash || overview.LauncherHash != review.Overview.LauncherHash || overview.RegistrationHash != review.Overview.RegistrationHash || overview.PendingHash != review.Overview.PendingHash || overview.PendingRecovery != review.Overview.PendingRecovery ||
             (await InspectPrivateAsync(currentRoot, ct)).Fingerprint != review.State.Fingerprint || (await ReleasePackage.ValidateAsync(source, ct)).PackageId != review.Package.PackageId)
             throw new IOException("The reviewed package, installation or private data changed. Nothing was applied; review it again.");
         try

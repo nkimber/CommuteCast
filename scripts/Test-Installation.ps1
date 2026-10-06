@@ -28,6 +28,23 @@ function Fixture-State([string]$Command, [string]$Label) {
 }
 function Same($Actual, $Expected, [string]$Label) { if ($Actual -ne $Expected) { throw "$Label did not match." } }
 $hasLauncher = Test-Path -LiteralPath (Join-Path $portable 'app\CommuteCast.Launcher.exe')
+$hasWindowsIntegration = Test-Path -LiteralPath (Join-Path $portable 'app\windows-integration.json')
+function Verify-WindowsIntegration([bool]$Present) {
+    if (-not $hasWindowsIntegration) { return }
+    $owner = Get-Content -LiteralPath (Join-Path $installRoot 'installation.owner.json') -Raw | ConvertFrom-Json
+    $registryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CommuteCast-' + $owner.InstallationId
+    $shortcutRoot = Join-Path ([Environment]::GetFolderPath('Programs')) ('CommuteCast-' + $owner.InstallationId)
+    if ($Present) {
+        $entry = Get-ItemProperty -LiteralPath $registryPath
+        Same $entry.CommuteCastOwner $owner.InstallationId 'Windows registration owner'
+        Same $entry.InstallLocation $installRoot 'Windows registered root'
+        Same $entry.UninstallString ('"' + (Join-Path $installRoot 'CommuteCast.exe') + '" --setup') 'Reviewed Windows removal entry'
+        foreach ($name in @('CommuteCast.lnk','CommuteCast setup.lnk')) { if (-not (Test-Path -LiteralPath (Join-Path $shortcutRoot $name) -PathType Leaf)) { throw 'An owned Start Menu shortcut is missing.' } }
+    } else {
+        if (Test-Path -LiteralPath $registryPath) { throw 'Owned Installed Apps entry survived uninstall.' }
+        foreach ($name in @('CommuteCast.lnk','CommuteCast setup.lnk')) { if (Test-Path -LiteralPath (Join-Path $shortcutRoot $name)) { throw 'An owned Start Menu shortcut survived uninstall.' } }
+    }
+}
 function Launcher-Plan([switch]$Setup) {
     $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $installRoot 'CommuteCast.exe'))
     $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $start.WindowStyle = 'Hidden'
@@ -56,6 +73,7 @@ try { $refused = Invoke-Tool -Arguments @('install', '--root', $privateRoot, '--
 finally { $held.Dispose() }
 if ($refused -notmatch 'already holds') { throw 'Running workspace did not exclude installation.' }
 $first = Invoke-Tool -Arguments @('install', '--root', $privateRoot, '--install-root', $installRoot, '--package', $a)
+Verify-WindowsIntegration $true
 if ($hasLauncher) { Same (Launcher-Plan).Executable $first.Executable 'Stable launcher initial release' }
 $second = Invoke-Tool -Arguments @('install', '--install-root', $installRoot, '--package', $b)
 if ($hasLauncher) { Same (Launcher-Plan).Executable $second.Executable 'Stable launcher updated release' }
@@ -74,6 +92,7 @@ Same $restored.jobs[0].immutablePayloadHash $original.jobs[0].immutablePayloadHa
 Same $restored.jobs[0].chunks[0].hash $original.jobs[0].chunks[0].hash 'Original checked PCM bytes'
 foreach ($field in @('draftHash', 'settingsHash', 'providerPinHash')) { Same $restored.$field $original.$field $field }
 $undone = Invoke-Tool -Arguments @('rollback', '--install-root', $installRoot, '--confirm-replace-local-data')
+Verify-WindowsIntegration $true
 Same $undone.State.CurrentPackageId $second.State.CurrentPackageId 'Undo rollback binary identity'
 Same ((Fixture-State inspect).jobs.Count) 2 'Later queued jobs retained by undo snapshot'
 $externalSetup = $null
@@ -90,15 +109,18 @@ $note = Join-Path $privateRoot 'keep-unrelated.txt'; Set-Content -LiteralPath $n
 $model = Join-Path $privateRoot 'provisioning-models\keep.txt'; New-Item -ItemType Directory -Path (Split-Path -Parent $model) | Out-Null; Set-Content -LiteralPath $model -Value 'Separate model sentinel'
 if (-not $KeepInstalled) {
     $retained = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'retain')
+    Verify-WindowsIntegration $false
     if (Test-Path -LiteralPath $undone.Executable) { throw 'Tracked application binary survived uninstall.' }
     if ($hasLauncher -and (Test-Path -LiteralPath (Join-Path $installRoot 'CommuteCast.exe'))) { throw 'Owned stable launcher survived uninstall.' }
     if ($externalSetup -and -not (Test-Path -LiteralPath $externalSetup.Executable)) { throw 'External setup was removed while required for recovery.' }
     Same ((Fixture-State inspect).jobs.Count) 2 'Retain-data uninstall keeps queued jobs'
     $reinstalled = Invoke-Tool -Arguments @('install', '--install-root', $installRoot, '--package', $a)
+    Verify-WindowsIntegration $true
     if ($hasLauncher) { Same (Launcher-Plan).Executable $reinstalled.Executable 'Stable launcher reinstallation' }
     $removeRefused = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'remove') -ExpectedExit 1
     if ($removeRefused -notmatch 'requires.*confirm-remove') { throw 'Private data removal was not explicitly gated.' }
     $removed = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'remove', '--confirm-remove-local-data')
+    Verify-WindowsIntegration $false
     foreach ($name in @('queue.db', 'jobs', 'draft.json', 'settings.json', 'backups', 'recovery')) { if (Test-Path -LiteralPath (Join-Path $privateRoot $name)) { throw "Managed private scope $name survived requested removal." } }
     Same (Get-Content -LiteralPath $export -Raw).Trim() 'Separate export sentinel' 'Export preservation'
     Same (Get-Content -LiteralPath $note -Raw).Trim() 'Unrelated local sentinel' 'Unrelated-root preservation'
@@ -108,5 +130,6 @@ $report = [ordered]@{ passed = $true; fixture = $fixture; privateRoot = $private
 $report['launcherPlansExecuted'] = $hasLauncher
 $report['bundledRuntimeInspected'] = $hasLauncher
 $report['externalSetup'] = $externalSetup
+$report['windowsIntegrationInspected'] = $hasWindowsIntegration
 $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $fixture 'report.json') -Encoding utf8
 $report | ConvertTo-Json -Depth 5

@@ -9,8 +9,8 @@ public record InstallationPrevious(string PackageId, InstallationSnapshot Snapsh
 public record InstallationState(int FormatVersion, string InstallationId, string? CurrentPackageId, string? AppVersion,
     InstallationPrevious? Previous, IReadOnlyList<string> KnownPackages, DateTimeOffset ChangedUtc);
 public record InstallationResult(InstallationState State, string? Executable, bool AlreadyCurrent = false);
-public record InstallationOverview(InstallationOwner? Owner, InstallationState? State, bool PendingRecovery, string StateHash, string PendingHash, string? PendingOperation, string LauncherHash = "");
-public enum InstallationCheckpoint { BackupCreated, StageVerified, PackageStaged, Prepared, StateMigrated, StateRestored, BeforeActivation, Activated, BeforeRemoval, ItemRemoved, LauncherPrepared, LauncherRemoved, LauncherActivated, LauncherRecorded }
+public record InstallationOverview(InstallationOwner? Owner, InstallationState? State, bool PendingRecovery, string StateHash, string PendingHash, string? PendingOperation, string LauncherHash = "", string RegistrationHash = "");
+public enum InstallationCheckpoint { BackupCreated, StageVerified, PackageStaged, Prepared, StateMigrated, StateRestored, BeforeActivation, Activated, BeforeRemoval, ItemRemoved, LauncherPrepared, LauncherRemoved, LauncherActivated, LauncherRecorded, RegistrationPrepared, RegistrationValueWritten, RegistrationShortcutRemoved, RegistrationShortcutActivated, RegistrationRecorded }
 public interface IInstallationObserver { Task ReachedAsync(InstallationCheckpoint checkpoint, string? item, CancellationToken ct); }
 internal record RemovalScope(string Kind, string Name, bool Directory, IReadOnlyList<ReleaseFile> Files);
 internal record InstallationJournal(int FormatVersion, string Id, string Kind, string? OldStateHash, InstallationState Proposed,
@@ -143,11 +143,13 @@ public sealed class Installation
         ct.ThrowIfCancellationRequested(); using var installationLease = Acquire(lease);
         var package = await ReleasePackage.ValidateAsync(source, ct); var owner = await OwnerAsync(lease, true, ct);
         await RecoverCoreAsync(lease, owner, ct); var old = await StateAsync(owner, ct);
+        if (OperatingSystem.IsWindows()) { await WindowsRegistration.ValidateFeatureAsync(source, package, ct); await WindowsRegistration.VerifyAsync(Root, owner, ct); }
         if (old?.CurrentPackageId == package.PackageId)
         {
             await ReleasePackage.ValidateAsync(PackagePath(package.PackageId), ct);
             var database = Path.Combine(lease.Workspace.Root, "queue.db"); if (File.Exists(database)) Compatible(package, await SqliteSchema.ValidateDatabaseAsync(database, ct));
             await InstalledLauncher.EnsureAsync(Root, owner, PackagePath(package.PackageId), package, ct, observer);
+            if (OperatingSystem.IsWindows()) await WindowsRegistration.EnsureAsync(Root, owner, PackagePath(package.PackageId), package, ct, observer);
             return new(old, Path.Combine(PackagePath(package.PackageId), "app", "CommuteCast.Desktop.exe"), true);
         }
         if (old?.CurrentPackageId is not null) await ReleasePackage.ValidateAsync(PackagePath(old.CurrentPackageId), ct);
@@ -180,7 +182,9 @@ public sealed class Installation
         await Observe(observer, InstallationCheckpoint.BeforeActivation, ct); ct.ThrowIfCancellationRequested();
         await Workspace.AtomicWriteAsync(StatePath, JsonSerializer.Serialize(proposed, Json));
         await Observe(observer, InstallationCheckpoint.Activated, CancellationToken.None);
-        await InstalledLauncher.EnsureAsync(Root, owner, destination, package, CancellationToken.None, observer); File.Delete(JournalPath);
+        await InstalledLauncher.EnsureAsync(Root, owner, destination, package, CancellationToken.None, observer);
+        if (OperatingSystem.IsWindows()) await WindowsRegistration.EnsureAsync(Root, owner, destination, package, CancellationToken.None, observer);
+        File.Delete(JournalPath);
         return new(proposed, Path.Combine(destination, "app", "CommuteCast.Desktop.exe"));
     }
     private static async Task MoveStageAsync(string stage, string destination, CancellationToken ct)
@@ -199,6 +203,7 @@ public sealed class Installation
     {
         ct.ThrowIfCancellationRequested(); using var installationLease = Acquire(lease); var owner = await OwnerAsync(lease, false, ct);
         await RecoverCoreAsync(lease, owner, ct); var old = await StateAsync(owner, ct);
+        if (OperatingSystem.IsWindows()) await WindowsRegistration.VerifyAsync(Root, owner, ct);
         if (old?.CurrentPackageId is null || old.Previous is null) throw new IOException("No previous release and compatible state snapshot are recorded for rollback.");
         var package = await ReleasePackage.ValidateAsync(PackagePath(old.Previous.PackageId), ct);
         var prior = await VerifySnapshotAsync(lease, old.Previous.Snapshot, ct); Compatible(package, prior.Manifest.SchemaVersion);
@@ -210,7 +215,9 @@ public sealed class Installation
         await Observe(observer, InstallationCheckpoint.BeforeActivation, ct); ct.ThrowIfCancellationRequested();
         await Workspace.AtomicWriteAsync(StatePath, JsonSerializer.Serialize(proposed, Json));
         await Observe(observer, InstallationCheckpoint.Activated, CancellationToken.None);
-        await InstalledLauncher.EnsureAsync(Root, owner, PackagePath(package.PackageId), package, CancellationToken.None, observer); File.Delete(JournalPath);
+        await InstalledLauncher.EnsureAsync(Root, owner, PackagePath(package.PackageId), package, CancellationToken.None, observer);
+        if (OperatingSystem.IsWindows()) await WindowsRegistration.EnsureAsync(Root, owner, PackagePath(package.PackageId), package, CancellationToken.None, observer);
+        File.Delete(JournalPath);
         return new(proposed, Path.Combine(PackagePath(package.PackageId), "app", "CommuteCast.Desktop.exe"));
     }
     private string ScopeRoot(WorkspaceLease lease, RemovalScope scope)
@@ -267,6 +274,7 @@ public sealed class Installation
         ct.ThrowIfCancellationRequested(); using var installationLease = Acquire(lease); var owner = await OwnerAsync(lease, false, ct);
         if (Workspace.IsWithin(Root, AppContext.BaseDirectory)) throw new IOException("Run uninstall from an extracted portable package outside the installation folder.");
         await RecoverCoreAsync(lease, owner, ct); var old = await StateAsync(owner, ct) ?? throw new IOException("No installed release is recorded.");
+        if (OperatingSystem.IsWindows()) await WindowsRegistration.VerifyAsync(Root, owner, ct);
         var scopes = new List<RemovalScope>();
         foreach (var id in old.KnownPackages)
         {
@@ -301,12 +309,14 @@ public sealed class Installation
         await SaveJournalAsync(journal); await Observe(observer, InstallationCheckpoint.Prepared, ct); await VerifyRemovalAsync(lease, scopes, ct);
         ct.ThrowIfCancellationRequested(); await Workspace.AtomicWriteAsync(StatePath, JsonSerializer.Serialize(proposed, Json));
         await Observe(observer, InstallationCheckpoint.Activated, CancellationToken.None);
+        if (OperatingSystem.IsWindows()) await WindowsRegistration.RemoveAsync(Root, owner, ct, observer);
         await RemoveCoreAsync(lease, scopes, observer, ct); File.Delete(JournalPath); return new(proposed, null);
     }
     private async Task<bool> RecoverCoreAsync(WorkspaceLease lease, InstallationOwner owner, CancellationToken ct)
     {
-        var launcherPending = InstalledLauncher.HasPending(Root);
+        var launcherPending = InstalledLauncher.HasPending(Root) || OperatingSystem.IsWindows() && WindowsRegistration.HasPending(Root);
         await InstalledLauncher.RecoverAsync(Root, owner, ct);
+        if (OperatingSystem.IsWindows()) await WindowsRegistration.RecoverAsync(Root, owner, ct);
         await WorkspaceBackup.RecoverInterruptedAsync(lease, ct);
         var journal = await ReadAsync<InstallationJournal>(JournalPath, 32 * 1048576, ct); if (journal is null) return launcherPending;
         if (journal.FormatVersion != 1 || !Id(journal.Id) || journal.Kind is not ("Activate" or "Rollback" or "Uninstall") || journal.Proposed is null ||
@@ -331,7 +341,11 @@ public sealed class Installation
         if (!committed && currentHash != journal.OldStateHash) throw new IOException("Deployment state changed outside its journal. All files were preserved for inspection.");
         if (committed)
         {
-            if (journal.Kind == "Uninstall") await RemoveCoreAsync(lease, journal.Removal, null, ct);
+            if (journal.Kind == "Uninstall")
+            {
+                if (OperatingSystem.IsWindows()) await WindowsRegistration.RemoveAsync(Root, owner, ct);
+                await RemoveCoreAsync(lease, journal.Removal, null, ct);
+            }
             else if (journal.Proposed.CurrentPackageId is not null) await ReleasePackage.ValidateAsync(PackagePath(journal.Proposed.CurrentPackageId), ct);
         }
         else if (journal.Kind is "Activate" or "Rollback")
@@ -343,6 +357,7 @@ public sealed class Installation
         {
             var activePath = PackagePath(resultingState.CurrentPackageId); var activePackage = await ReleasePackage.ValidateAsync(activePath, ct);
             await InstalledLauncher.EnsureAsync(Root, owner, activePath, activePackage, ct);
+            if (OperatingSystem.IsWindows()) await WindowsRegistration.EnsureAsync(Root, owner, activePath, activePackage, ct);
         }
         File.Delete(JournalPath); return true;
     }
@@ -373,14 +388,15 @@ public sealed class Installation
         if (journal is not null && journal.Kind is not ("Activate" or "Rollback" or "Uninstall")) throw new IOException("Deployment recovery records are incompatible. Existing files were preserved.");
         if ((File.Exists(JournalPath) ? await Workspace.HashFileAsync(JournalPath, ct) : "") != pendingHash) throw new IOException("Deployment recovery records changed during review. Review them again.");
         var launcherHash = await InstalledLauncher.PendingHashAsync(Root, ct);
-        var pending = deploymentPending || launcherHash.Length > 0;
-        if (pending) pendingHash = CommuteCast.Core.Job.Hash(pendingHash + "|" + launcherHash);
+        var registrationPending = OperatingSystem.IsWindows() ? await WindowsRegistration.PendingHashAsync(Root, ct) : "";
+        var pending = deploymentPending || launcherHash.Length > 0 || registrationPending.Length > 0;
+        if (pending) pendingHash = CommuteCast.Core.Job.Hash(pendingHash + "|" + launcherHash + "|" + registrationPending);
         if (!pending && state?.CurrentPackageId is not null)
         {
             var package = await ReleasePackage.ValidateAsync(PackagePath(state.CurrentPackageId), ct);
             if (package.PackageId != state.CurrentPackageId || package.AppVersion != state.AppVersion) throw new IOException("The active release differs from its installation record.");
         }
-        return new(owner, state, pending, stateHash, pendingHash, journal?.Kind ?? (launcherHash.Length > 0 ? "Launcher" : null), await InstalledLauncher.OverviewHashAsync(Root, owner, ct));
+        return new(owner, state, pending, stateHash, pendingHash, journal?.Kind ?? (launcherHash.Length > 0 ? "Launcher" : registrationPending.Length > 0 ? "Windows integration" : null), await InstalledLauncher.OverviewHashAsync(Root, owner, ct), OperatingSystem.IsWindows() ? await WindowsRegistration.OverviewHashAsync(Root, owner, ct) : "");
     }
     // Maintenance needs trusted active binaries even when the private queue needs repair.
     public Task<InstallationResult> InspectForMaintenanceAsync(WorkspaceLease lease, CancellationToken ct = default) => InspectCoreAsync(lease, false, ct);
@@ -409,5 +425,5 @@ public sealed class Installation
         GuardSeparation(Path.GetFullPath(owner.WorkspaceRoot)); return owner;
     }
     public bool HasPendingOperation
-    { get { SqliteSchema.RejectLink(JournalPath); return File.Exists(JournalPath) || InstalledLauncher.HasPending(Root); } }
+    { get { SqliteSchema.RejectLink(JournalPath); return File.Exists(JournalPath) || InstalledLauncher.HasPending(Root) || OperatingSystem.IsWindows() && WindowsRegistration.HasPending(Root); } }
 }

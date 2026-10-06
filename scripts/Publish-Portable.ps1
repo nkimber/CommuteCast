@@ -12,6 +12,7 @@ $launcherOutput = Join-Path $projectRoot 'artifacts\launcher-publish'
 & dotnet publish (Join-Path $projectRoot 'tools\CommuteCast.Launcher') -c Release -r win-x64 --self-contained true -o $launcherOutput
 if ($LASTEXITCODE -ne 0) { throw 'Stable launcher publish failed.' }
 Copy-Item -LiteralPath (Join-Path $launcherOutput 'CommuteCast.Launcher.exe') -Destination $application -Force
+[System.IO.File]::WriteAllText((Join-Path $application 'windows-integration.json'), '{"formatVersion":1}')
 New-Item -ItemType Directory -Force -Path (Join-Path $release 'scripts'), (Join-Path $release 'services'), (Join-Path $release 'documents') | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md'), (Join-Path $projectRoot 'THIRD-PARTY-NOTICES.md') -Destination $release
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Start-CommuteCast.ps1'), (Join-Path $projectRoot 'scripts\Provision-Speech.ps1') -Destination (Join-Path $release 'scripts')
