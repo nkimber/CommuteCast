@@ -36,6 +36,7 @@ $hasLauncher = Test-Path -LiteralPath (Join-Path $portable 'app\CommuteCast.Laun
 $hasWindowsIntegration = Test-Path -LiteralPath (Join-Path $portable 'app\windows-integration.json')
 $hasSetupCacheCleanup = ((& $Executable --help) -join "`n").Contains('review-setup-cache')
 $cacheCleanupEvidence = $null
+$launcherPlanTimings = [Collections.Generic.List[object]]::new()
 function Verify-WindowsIntegration([bool]$Present) {
     if (-not $hasWindowsIntegration) { return }
     $owner = Get-Content -LiteralPath (Join-Path $installRoot 'installation.owner.json') -Raw | ConvertFrom-Json
@@ -53,6 +54,10 @@ function Verify-WindowsIntegration([bool]$Present) {
     }
 }
 function Launcher-Plan([switch]$Setup) {
+    # First setup copies, flushes and verifies the complete self-contained distribution.
+    # An observed 430-file copy took 37.5 seconds; ordinary read-only plans keep 30 seconds.
+    $allowanceMs = if ($Setup) { 120000 } else { 30000 }
+    $watch = [Diagnostics.Stopwatch]::StartNew()
     $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $installRoot 'CommuteCast.exe'))
     $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $start.WindowStyle = 'Hidden'
     $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
@@ -65,11 +70,12 @@ function Launcher-Plan([switch]$Setup) {
     $process = [Diagnostics.Process]::Start($start)
     $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
     try {
-        if (-not $process.WaitForExit(30000)) { $process.Kill($true); throw 'Owned launcher inspection timed out.' }
+        if (-not $process.WaitForExit($allowanceMs)) { $process.Kill($true); throw "Owned launcher inspection exceeded its $($allowanceMs / 1000)-second allowance (setup=$([bool]$Setup))." }
         $output = $stdout.GetAwaiter().GetResult(); $errors = $stderr.GetAwaiter().GetResult()
         if ($process.ExitCode -ne 0) { throw "Launcher inspection failed: $errors" }
         $plan = $output | ConvertFrom-Json
         if ($plan.bundledRuntimeLoaded -ne $true) { throw 'Launcher did not report a statically linked or isolated extracted CLR.' }
+        $launcherPlanTimings.Add([ordered]@{setup=[bool]$Setup;wallSeconds=$watch.Elapsed.TotalSeconds;allowanceSeconds=$allowanceMs / 1000;packageId=$plan.PackageId})
         return $plan
     } finally { $process.Dispose() }
 }
@@ -169,6 +175,7 @@ if (-not $KeepInstalled) {
 }
 $report = [ordered]@{ passed = $true; fixture = $fixture; privateRoot = $privateRoot; installRoot = $installRoot; executable = $undone.Executable; keptInstalledForNativeCheck = [bool]$KeepInstalled; checks = @('real-process workspace exclusion', 'versioned initial install and update', 'queued source/settings/time/receipt/artifact preservation', 'explicit compatible state-and-binary rollback', 'undo snapshot retains later jobs'); uninstallScopesExecuted = (-not $KeepInstalled); sourcePackage = $portable; createdUtc = [datetime]::UtcNow.ToString('O') }
 $report['launcherPlansExecuted'] = $hasLauncher
+$report['launcherPlanTimings'] = $launcherPlanTimings.ToArray()
 $report['bundledRuntimeInspected'] = $hasLauncher
 $report['externalSetup'] = $externalSetup
 $report['windowsIntegrationInspected'] = $hasWindowsIntegration
