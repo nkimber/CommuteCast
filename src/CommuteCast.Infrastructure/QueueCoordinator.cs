@@ -248,6 +248,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         if (job.ChunkingVersion != "chunk450-v1" || job.AudioContractVersion != AudioPipeline.ContractVersion) throw new IOException("This job uses an unsupported chunk/audio contract. Restore its application version or submit a new narration.");
         Chunker.ValidateManifest(job.Chunks, job.Prepared.Script);
         ValidateConfiguration(job);
+        PrivateJobFiles.RetainReceipts(job);
         await StageAsync(job, JobStage.Preparing, ct);
         var valid = new List<ChunkReceipt>();
         foreach (var chunk in job.Chunks)
@@ -288,24 +289,33 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                         await StageAsync(job, JobStage.Synthesizing, ct);
                         var raw = Path.Combine(directory, "inference.partial.wav");
                         var normalized = Path.Combine(directory, "normalized.partial.wav");
+                        await PrivateJobFiles.PrepareOutputAsync(job, directory, Path.GetFileName(raw), ct);
                         await provider.SynthesizeAsync(job.Settings, chunk.Text, raw, ct);
+                        await PrivateJobFiles.RecordAsync(job, directory, Path.GetFileName(raw), ct);
+                        await store.SaveAsync(job, ct);
+                        await PrivateJobFiles.PrepareOutputAsync(job, directory, Path.GetFileName(normalized), ct);
                         await audio.NormalizeAsync(raw, normalized, ct);
+                        await PrivateJobFiles.RecordAsync(job, directory, Path.GetFileName(normalized), ct);
+                        await store.SaveAsync(job, ct);
                         var checkedAudio = await audio.ValidateChunkAsync(normalized, chunk.Text, ct);
                         var hash = await Workspace.HashFileAsync(normalized, ct);
                         ct.ThrowIfCancellationRequested();
-                        File.Move(normalized, workspace.ChunkPath(job, chunk.Index), true);
+                        var chunkName = Path.GetFileName(workspace.ChunkPath(job, chunk.Index));
+                        await PrivateJobFiles.PrepareOutputAsync(job, directory, chunkName, ct, preserveChangedChunk: true);
+                        File.Move(normalized, workspace.ChunkPath(job, chunk.Index), false);
+                        job.PrivateArtifacts.Add(new(chunkName, hash));
                         lock (sync) job.Receipts.Add(new(chunk.Index, hash, job.Fingerprint, checkedAudio.Duration));
                         job.CompletedChunks = job.Receipts.Count;
                         await store.SaveAsync(job, ct);
                         Notify();
-                        File.Delete(raw);
+                        await OwnedFileRemoval.DeleteByHashAsync(directory, Path.GetFileName(raw), job.PrivateArtifacts.Single(r => r.RelativePath == Path.GetFileName(raw)).Hash, ct: ct);
                     }
                 }
                 finally { InferenceGate.Release(); }
             }
             if (job.Receipts.Count != job.Chunks.Count || job.Receipts.Select(r => r.Index).Distinct().Count() != job.Chunks.Count) throw new IOException("The chunk sequence is incomplete. Publication is blocked.");
             await StageAsync(job, JobStage.Assembling, ct);
-            await audio.AssembleAsync(job, directory, ct);
+            await audio.AssembleAsync(job, directory, ct, () => store.SaveAsync(job, ct));
         }
         await StageAsync(job, JobStage.Validating, ct);
         var checkedFinal = await audio.ValidateFinalAsync(job, final, ct);
@@ -487,12 +497,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     {
         if (job.DeleteExportRequested) await publisher.RemoveManagedExportAsync(job, CancellationToken.None);
         var directory = workspace.JobDirectory(job.Id);
-        Workspace.RejectReparsePoints(directory);
-        if (Directory.Exists(directory))
-        {
-            if (Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.AllDirectories).Any(p => File.GetAttributes(p).HasFlag(FileAttributes.ReparsePoint))) throw new IOException("Private job storage contains a symbolic link. Removal was refused.");
-            Directory.Delete(directory, true);
-        }
+        await PrivateJobFiles.RemoveAsync(job, directory);
         await store.RemoveAsync(job.Id);
     }
     public async ValueTask DisposeAsync()

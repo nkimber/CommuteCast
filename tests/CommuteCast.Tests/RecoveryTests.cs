@@ -66,6 +66,7 @@ public class RecoveryTests
         var job = MakeJob(test); job.DeletionRequested = true; job.Stage = JobStage.Deleting;
         Directory.CreateDirectory(test.Workspace.JobDirectory(job.Id));
         await File.WriteAllTextAsync(Path.Combine(test.Workspace.JobDirectory(job.Id), "partial.txt"), "private");
+        await PrivateJobFiles.RecordAsync(job, test.Workspace.JobDirectory(job.Id), "partial.txt", default);
         await store.SaveAsync(job);
         await using var queue = new QueueCoordinator(test.Workspace, store, provider, new(new()), new(test.Workspace, store));
         await queue.InitializeAsync();
@@ -173,6 +174,11 @@ public class RecoveryTests
         var calls = provider.Calls; await File.WriteAllTextAsync(test.Workspace.ChunkPath(job, 0), "corrupt");
         await queue.RetryAsync(job.Id, test.Destination); await WaitForAsync(() => queue.Snapshot().Any(j => j.Stage == JobStage.Exported));
         Assert.Equal(calls + 1, provider.Calls);
+        var retained = Assert.Single(Directory.GetFiles(test.Workspace.JobDirectory(job.Id), "unverified-*-chunk-00000.wav"));
+        Assert.Equal("corrupt", await File.ReadAllTextAsync(retained));
+        Assert.Contains("retained", Assert.Single(await store.LoadAsync()).PrivateStorageNotice);
+        var removal = await queue.DeleteManyAsync([job.Id], false);
+        Assert.Equal(1, removal.Failed); Assert.Equal("corrupt", await File.ReadAllTextAsync(retained));
     }
     private static Job MakeJob(TestWorkspace test) => new() { Title = "Pipeline test", Source = "A short test narration for a complete audio pipeline.", Prepared = TextPreparation.Prepare("A short test narration for a complete audio pipeline."), Settings = new("kokoro", "af_heart", 1, false, "", "fake"), Destination = test.Destination };
     private static async Task<Job> GeneratedJobAsync(TestWorkspace test)

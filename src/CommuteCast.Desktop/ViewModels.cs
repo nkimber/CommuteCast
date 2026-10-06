@@ -59,7 +59,8 @@ public sealed class JobView(Job job, Workspace workspace)
     public double ChunkTotal => Math.Max(1, Job.Chunks.Count);
     public string Details => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
     public string Error => string.Join(Environment.NewLine, new[] { Job.Error,
-        string.IsNullOrWhiteSpace(Job.ExportNotice) || Job.Error.Contains(Job.ExportNotice, StringComparison.Ordinal) ? "" : Job.ExportNotice }.Where(s => !string.IsNullOrWhiteSpace(s)));
+        string.IsNullOrWhiteSpace(Job.ExportNotice) || Job.Error.Contains(Job.ExportNotice, StringComparison.Ordinal) ? "" : Job.ExportNotice,
+        Job.PrivateStorageNotice }.Where(s => !string.IsNullOrWhiteSpace(s)));
     public string Delivery => Job.Stage == JobStage.Exported
         ? (File.Exists(Path.Combine(Job.Destination, Job.ExportName)) ? "Finished MP3 exists in the selected local folder. Cloud upload is unknown. Check OneDrive and your phone." : "The exported file is missing or moved. History is preserved. Cloud upload is unknown.")
         : File.Exists(workspace.FinalPath(Job)) && Job.FinalHash.Length > 0 ? "Generated audio is saved privately on this laptop. It has not been exported." : "Audio is generated privately on this laptop before publication.";

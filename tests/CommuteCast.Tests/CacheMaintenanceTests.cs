@@ -11,6 +11,7 @@ public class CacheMaintenanceTests
         Directory.CreateDirectory(test.Workspace.JobDirectory(job.Id));
         var attempt = Path.Combine(test.Workspace.JobDirectory(job.Id), "inference.partial.wav.attempt-" + Guid.NewGuid().ToString("N") + ".partial");
         await File.WriteAllBytesAsync(attempt, new byte[2 * 1048576]);
+        await PrivateJobFiles.RecordAsync(job, test.Workspace.JobDirectory(job.Id), Path.GetFileName(attempt), default);
         var cleaner = new CacheMaintenance(test.Workspace);
         Assert.Equal(0, (await cleaner.CleanAsync([job], job.Id, 1, 7, default)).FilesRemoved);
         Assert.Equal(1, (await cleaner.CleanAsync([job], null, 1, 7, default)).FilesRemoved); Assert.False(File.Exists(attempt));
@@ -21,6 +22,7 @@ public class CacheMaintenanceTests
         var directory = test.Workspace.JobDirectory(job.Id); Directory.CreateDirectory(directory);
         await File.WriteAllTextAsync(test.Workspace.FinalPath(job), "validated private audio"); job.FinalHash = await Workspace.HashFileAsync(test.Workspace.FinalPath(job));
         var chunk = test.Workspace.ChunkPath(job, 0); await File.WriteAllBytesAsync(chunk, new byte[2 * 1048576]);
+        await PrivateJobFiles.RecordAsync(job, directory, Path.GetFileName(chunk), default);
         var history = Path.Combine(directory, "source.json"); await File.WriteAllTextAsync(history, "keep");
         var unrelated = Path.Combine(directory, "unrelated.wav"); await File.WriteAllTextAsync(unrelated, "keep");
         var export = Path.Combine(test.Destination, "export.mp3"); await File.WriteAllTextAsync(export, "keep");
@@ -35,17 +37,18 @@ public class CacheMaintenanceTests
         using var test = new TestWorkspace(); var job = new Job { Stage = JobStage.Failed };
         Directory.CreateDirectory(test.Workspace.JobDirectory(job.Id));
         var chunk = test.Workspace.ChunkPath(job, 0); await File.WriteAllBytesAsync(chunk, new byte[2 * 1048576]);
-        job.Receipts.Add(new(0, "hash", job.Fingerprint, 1)); File.SetLastWriteTimeUtc(chunk, DateTime.UtcNow.AddDays(-30));
+        job.Receipts.Add(new(0, await Workspace.HashFileAsync(chunk), job.Fingerprint, 1)); File.SetLastWriteTimeUtc(chunk, DateTime.UtcNow.AddDays(-30));
         var scratch = Path.Combine(test.Workspace.JobDirectory(job.Id), "inference.partial.wav"); await File.WriteAllTextAsync(scratch, "partial"); File.SetLastWriteTimeUtc(scratch, DateTime.UtcNow.AddDays(-30));
+        await PrivateJobFiles.RecordAsync(job, test.Workspace.JobDirectory(job.Id), Path.GetFileName(scratch), default);
         var cleaner = new CacheMaintenance(test.Workspace);
         var active = await cleaner.CleanAsync([job], job.Id, 1, 7, default); Assert.Equal(0, active.FilesRemoved); Assert.True(File.Exists(scratch));
         var result = await cleaner.CleanAsync([job], null, 1, 7, default); Assert.Equal(1, result.FilesRemoved); Assert.True(File.Exists(chunk)); Assert.False(File.Exists(scratch));
     }
     [Fact] public async Task MissingOrChangedFinalDoesNotMakeReceiptChunksReclaimable()
     {
-        using var test = new TestWorkspace(); var job = new Job { ExportCommitted = true, FinalHash = "original" };
+        using var test = new TestWorkspace(); var job = new Job { ExportCommitted = true, FinalHash = Job.Hash("original") };
         Directory.CreateDirectory(test.Workspace.JobDirectory(job.Id));
-        var chunk = test.Workspace.ChunkPath(job, 0); await File.WriteAllBytesAsync(chunk, new byte[2 * 1048576]); job.Receipts.Add(new(0, "hash", job.Fingerprint, 1));
+        var chunk = test.Workspace.ChunkPath(job, 0); await File.WriteAllBytesAsync(chunk, new byte[2 * 1048576]); job.Receipts.Add(new(0, await Workspace.HashFileAsync(chunk), job.Fingerprint, 1));
         var cleaner = new CacheMaintenance(test.Workspace);
         Assert.Equal(0, (await cleaner.CleanAsync([job], null, 1, 7, default)).FilesRemoved);
         await File.WriteAllTextAsync(test.Workspace.FinalPath(job), "changed");

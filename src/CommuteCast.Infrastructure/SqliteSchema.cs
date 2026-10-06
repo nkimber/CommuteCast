@@ -99,7 +99,7 @@ public static class SqliteSchema
             var job = JsonSerializer.Deserialize<Job>(payload);
             if (job is null || job.Id != id || id.Length != 32 || !id.All(Uri.IsHexDigit) || !DateTimeOffset.TryParse(created, out var timestamp) || timestamp != job.CreatedUtc ||
                 !Enum.IsDefined(job.Stage) || !Enum.IsDefined(job.FailureCategory) || job.Settings is null || job.Prepared is null || job.Prepared.Spans is null ||
-                job.Source is null || job.Prepared.Script is null || job.Chunks is null || job.Receipts is null || job.Title is null || job.Destination is null)
+                job.Source is null || job.Prepared.Script is null || job.Chunks is null || job.Receipts is null || job.PrivateArtifacts is null || job.Title is null || job.Destination is null)
                 throw new IOException("A queue record is incompatible. Original records were preserved; restore a verified backup.");
             return job;
         }

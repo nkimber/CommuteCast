@@ -26,9 +26,9 @@ public sealed class CacheMaintenance(Workspace workspace)
                 if (!File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint)) directories.Push(path);
         }
     }
-    private async Task<HashSet<string>> EligibleAsync(IReadOnlyList<Job> jobs, string? activeId, CancellationToken ct)
+    private async Task<Dictionary<string, string>> EligibleAsync(IReadOnlyList<Job> jobs, string? activeId, CancellationToken ct)
     {
-        var eligible = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var eligible = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var job in jobs.Where(j => j.Id != activeId && !j.DeletionRequested))
         {
             ct.ThrowIfCancellationRequested();
@@ -39,10 +39,11 @@ public sealed class CacheMaintenance(Workspace workspace)
             var finished = job.ExportCommitted && job.FinalHash.Length > 0 && File.Exists(workspace.FinalPath(job)) &&
                 await Workspace.HashFileAsync(workspace.FinalPath(job), ct) == job.FinalHash;
             var protectedChunks = job.Receipts.Select(r => workspace.ChunkPath(job, r.Index)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var path in Directory.EnumerateFiles(directory))
+            foreach (var receipt in PrivateJobFiles.Inventory(job))
             {
+                var path = OwnedFileRemoval.Resolve(directory, receipt.Key);
                 var file = new FileInfo(path);
-                if (!file.Attributes.HasFlag(FileAttributes.ReparsePoint) && IsCache(file.Name) && (finished || !protectedChunks.Contains(path))) eligible.Add(path);
+                if (file.Exists && !file.Attributes.HasFlag(FileAttributes.ReparsePoint) && IsCache(file.Name) && (finished || !protectedChunks.Contains(path))) eligible.Add(path, receipt.Value);
             }
         }
         return eligible;
@@ -55,7 +56,7 @@ public sealed class CacheMaintenance(Workspace workspace)
         {
             total += file.Length;
             if (IsCache(file.Name) && Workspace.IsWithin(Path.Combine(workspace.Root, "jobs"), file.FullName)) cache += file.Length;
-            if (eligible.Contains(file.FullName)) reclaimable += file.Length;
+            if (eligible.ContainsKey(file.FullName)) reclaimable += file.Length;
         }
         long reserved = 0;
         foreach (var job in jobs.Where(j => j.Stage is not (JobStage.Exported or JobStage.Cancelled or JobStage.Failed or JobStage.Deleting)))
@@ -74,7 +75,7 @@ public sealed class CacheMaintenance(Workspace workspace)
         var usage = await MeasureAsync(jobs, activeId, ct);
         var cutoff = DateTime.UtcNow.AddDays(-ageDays); var quota = quotaMiB * 1024L * 1024;
         long removed = 0; var count = 0; var failures = 0;
-        foreach (var file in eligible.Select(p => new FileInfo(p)).OrderBy(f => f.LastWriteTimeUtc))
+        foreach (var file in eligible.Keys.Select(p => new FileInfo(p)).OrderBy(f => f.LastWriteTimeUtc))
         {
             ct.ThrowIfCancellationRequested();
             if (file.LastWriteTimeUtc >= cutoff && usage.CacheBytes - removed <= quota) continue;
@@ -84,8 +85,8 @@ public sealed class CacheMaintenance(Workspace workspace)
                 file.Refresh();
                 if (!file.Exists || file.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue;
                 var size = file.Length;
-                // Exact known filenames only; no recursive deletion, folder sweep, or export access.
-                File.Delete(file.FullName); removed += size; count++;
+                if (await OwnedFileRemoval.DeleteByHashAsync(file.DirectoryName!, file.Name, eligible[file.FullName], ct: ct))
+                { removed += size; count++; }
             }
             catch (IOException) { failures++; }
             catch (UnauthorizedAccessException) { failures++; }

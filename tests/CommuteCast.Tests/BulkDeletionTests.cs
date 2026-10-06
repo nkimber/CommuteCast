@@ -168,7 +168,13 @@ public class BulkDeletionTests
         return new() { Title = "Bulk fixture", Source = text, Prepared = TextPreparation.Prepare(text), Destination = test.Destination, Stage = stage, Settings = new("kokoro", "af_heart", 1, false, "", "fixture") };
     }
     private static async Task<string> SentinelAsync(TestWorkspace test, Job job)
-    { var directory = test.Workspace.JobDirectory(job.Id); Directory.CreateDirectory(directory); var path = Path.Combine(directory, "source.json"); await File.WriteAllTextAsync(path, "Selected source artifact"); return path; }
+    {
+        var directory = test.Workspace.JobDirectory(job.Id); Directory.CreateDirectory(directory); var path = Path.Combine(directory, "source.json");
+        await File.WriteAllTextAsync(path, "Selected source artifact");
+        await PrivateJobFiles.RecordAsync(job, directory, "source.json", default);
+        await new SqliteJobStore(test.Workspace).SaveAsync(job);
+        return path;
+    }
     private static async Task SqlAsync(TestWorkspace test, string sql)
     {
         await using var connection = new SqliteConnection(SqliteSchema.ConnectionString(Path.Combine(test.Workspace.Root, "queue.db"))); await connection.OpenAsync();

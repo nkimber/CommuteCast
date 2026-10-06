@@ -10,12 +10,16 @@ public interface IFileRemovalObserver { Task ValidatedAsync(string path, Cancell
 /// <summary>Windows deletion through the same handle that validated the recorded bytes. Never sweeps a directory.</summary>
 public static class OwnedFileRemoval
 {
-    public static string Resolve(string root, string relative)
+    public static void ValidateRelativePath(string relative)
     {
         if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative) || relative.Contains('\\') || relative.Contains(':') ||
             relative.Split('/').Any(p => p is "" or "." or ".." || p.EndsWith('.') || p.EndsWith(' ') || p.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
                 System.Text.RegularExpressions.Regex.IsMatch(p.Split('.')[0], "^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)))
             throw new IOException("A managed removal path is unsafe. Files were preserved.");
+    }
+    public static string Resolve(string root, string relative)
+    {
+        ValidateRelativePath(relative);
         var path = Path.GetFullPath(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
         if (!Workspace.IsWithin(root, path)) throw new IOException("A managed removal path escapes its recorded root. Files were preserved.");
         SqliteSchema.RejectLink(path); return path;

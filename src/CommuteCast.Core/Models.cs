@@ -36,6 +36,8 @@ public sealed class Job
     public JobStage Stage { get; set; } = JobStage.Queued;
     public List<TextChunk> Chunks { get; set; } = [];
     public List<ChunkReceipt> Receipts { get; set; } = [];
+    public List<PrivateArtifactReceipt> PrivateArtifacts { get; set; } = [];
+    public string PrivateStorageNotice { get; set; } = "";
     public int CompletedChunks { get; set; }
     public string Error { get; set; } = "";
     public FailureCategory FailureCategory { get; set; }
@@ -61,6 +63,7 @@ public sealed class Job
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 public record ChunkReceipt(int Index, string Hash, string Fingerprint, double Duration);
+public record PrivateArtifactReceipt(string RelativePath, string Hash);
 public record ExportStagingIdentity(int FormatVersion, ulong VolumeSerialNumber, string FileId, long CreationFileTime);
 public record ProviderInfo(string Engine, string Fingerprint, string[] Voices, string State, int Active,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ImageId = null);

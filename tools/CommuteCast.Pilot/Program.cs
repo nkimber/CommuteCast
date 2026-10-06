@@ -6,7 +6,9 @@ using System.Reflection;
 
 var engine = args.FirstOrDefault() ?? "kokoro";
 if (engine is not ("kokoro" or "piper")) throw new ArgumentException("Use kokoro or piper.");
-if (args.Length > 2) throw new ArgumentException("Use an engine and an optional fresh folder under artifacts/pilot.");
+if (args.Length > 3 || args.Length == 3 && args[2] != "--verify-private-removal")
+    throw new ArgumentException("Use an engine, an optional fresh folder under artifacts/pilot, and optional --verify-private-removal.");
+var verifyPrivateRemoval = args.Length == 3;
 var pilotParent = Path.GetFullPath(Path.Combine("artifacts", "pilot"));
 var root = Path.GetFullPath(args.ElementAtOrDefault(1) ?? Path.Combine(pilotParent, engine + "-" + Guid.NewGuid().ToString("N")));
 if (!Workspace.IsWithin(pilotParent, root) || root.Equals(pilotParent, StringComparison.OrdinalIgnoreCase) || Directory.Exists(root) || File.Exists(root))
@@ -71,6 +73,39 @@ if (retained.Source != text || retained.Settings != job.Settings || retained.Pre
     throw new IOException("Durable completed narration differs from the approved snapshot.");
 var exported = Path.Combine(destination, finished.ExportName);
 if (await Workspace.HashFileAsync(exported) != finished.FinalHash) throw new IOException("Pilot export checksum failed.");
+watch.Stop();
+var privateInventory = PrivateJobFiles.Inventory(retained);
+foreach (var file in privateInventory)
+{
+    var path = OwnedFileRemoval.Resolve(workspace.JobDirectory(retained.Id), file.Key);
+    if (File.Exists(path) && await Workspace.HashFileAsync(path) != file.Value)
+        throw new IOException("A durable private artifact checksum differs from its generated file.");
+}
 var report = new { engine, imageId, applicationBuild = typeof(Job).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion, provider = info.Fingerprint, capturedImageId = finished.Settings.ProviderImageId, metadataCaptureVerified = true, metadataCaptureSeconds = capture.Elapsed.TotalSeconds, profile, dictionaryRevision = finished.Prepared.ProfileReview!.DictionaryRevision, pronunciationChanges = finished.Prepared.ProfileReview.Changes.Count, submittedCharacters = text.Length, preparedCharacters = finished.Prepared.Script.Length, sourceAccounted = true, scriptCoverage = true, durableSnapshotVerified = true, chunks = finished.Chunks.Count, finished.CompletedChunks, finished.DurationSeconds, readinessSeconds = readiness.Elapsed.TotalSeconds, wallSeconds = watch.Elapsed.TotalSeconds, realTimeFactor = watch.Elapsed.TotalSeconds / finished.DurationSeconds, timingScope = "generation, validation and local export; model readiness and metadata capture recorded separately", mp3 = exported, sha256 = finished.FinalHash, generation = "passed", localExport = "passed", cloudUpload = "unknown", listeningQuality = "requires user audition", phonePlayback = "not performed" };
 await File.WriteAllTextAsync(Path.Combine(root, "pilot-report.json"), JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
 Console.WriteLine(JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
+if (verifyPrivateRemoval)
+{
+    var jobDirectory = workspace.JobDirectory(finished.Id);
+    var unknown = Path.Combine(jobDirectory, "untracked-inspection-fixture.txt");
+    await File.WriteAllTextAsync(unknown, "Preserve this untracked fixture");
+    var unrelated = Path.Combine(destination, "unrelated-inspection-fixture.txt");
+    await File.WriteAllTextAsync(unrelated, "Preserve unrelated output");
+    var first = await queue.DeleteManyAsync([finished.Id], false);
+    if (first.Failed != 1 || first.Removed != 0 || !File.Exists(unknown) || !(await store.LoadAsync()).Single().DeletionRequested ||
+        privateInventory.Keys.Any(name => File.Exists(OwnedFileRemoval.Resolve(jobDirectory, name))))
+        throw new IOException("Recorded private removal did not preserve unknown content and its durable intent.");
+    // The acceptance harness explicitly removes its own unknown fixture after inspection.
+    if (await File.ReadAllTextAsync(unknown) != "Preserve this untracked fixture") throw new IOException("The unknown fixture changed.");
+    File.Delete(unknown);
+    await queue.DeleteAsync(finished.Id, false);
+    if (Directory.Exists(jobDirectory) || (await store.LoadAsync()).Count != 0 || queue.Snapshot().Count != 0 ||
+        await Workspace.HashFileAsync(exported) != finished.FinalHash || await File.ReadAllTextAsync(unrelated) != "Preserve unrelated output")
+        throw new IOException("Private removal retry or export preservation failed.");
+    var removal = new { engine, applicationBuild = typeof(Job).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+        completedPrivateReceiptCount = privateInventory.Count, unknownFilePreserved = true, durableIntentRetained = true,
+        retryRemovedJobDirectoryAndHistory = true, managedExportPreserved = true, unrelatedOutputPreserved = true,
+        nativeInteraction = "not performed", hostCrash = "not performed" };
+    await File.WriteAllTextAsync(Path.Combine(root, "private-removal-report.json"), JsonSerializer.Serialize(removal, new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine(JsonSerializer.Serialize(removal, new JsonSerializerOptions { WriteIndented = true }));
+}
