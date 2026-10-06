@@ -9,6 +9,8 @@ public record BackupFile(string RelativePath, long Bytes, string Sha256);
 public record BackupManifest(int FormatVersion, string BackupId, string AppVersion, int SchemaVersion, DateTimeOffset CreatedUtc, IReadOnlyList<BackupFile> Files);
 public enum RestoreCheckpoint { Prepared, OldItemMoved, OldMoved, NewItemMoved, NewMoved, Committed }
 public interface IRestoreObserver { Task ReachedAsync(RestoreCheckpoint checkpoint, string? item, CancellationToken ct); }
+public enum RestoreRecoveryCheckpoint { IncomingRetained, OriginalRestored, CommittedStateRetained }
+public interface IRestoreRecoveryObserver { Task ReachedAsync(RestoreRecoveryCheckpoint checkpoint, string? item, CancellationToken ct); }
 public record RestoreResult(string RestoreId, string PreviousState);
 internal record RestoreJournal(int FormatVersion, string Id, string Phase, IReadOnlyDictionary<string, bool> HadOriginal, IReadOnlyDictionary<string, string?> OriginalDigests);
 
@@ -240,7 +242,7 @@ public static class WorkspaceBackup
         if (observer is not null) await observer.ReachedAsync(RestoreCheckpoint.Committed, null, CancellationToken.None);
         File.Delete(JournalPath(workspace)); return new(id, previous);
     }
-    public static async Task<bool> RecoverInterruptedAsync(WorkspaceLease lease, CancellationToken ct = default)
+    public static async Task<bool> RecoverInterruptedAsync(WorkspaceLease lease, CancellationToken ct = default, IRestoreRecoveryObserver? observer = null)
     {
         ct.ThrowIfCancellationRequested();
         lease.EnsureHeld(); var workspace = lease.Workspace; var path = JournalPath(workspace); SqliteSchema.RejectLink(path);
@@ -263,13 +265,23 @@ public static class WorkspaceBackup
                 if (Exists(old))
                 {
                     if (await DigestAsync(old, ct) != journal.OriginalDigests[name]) throw new IOException("Original recovery state changed. All remaining files were preserved for inspection.");
-                    if (Exists(current)) await MoveAsync(current, Path.Combine(failed, name), ct);
+                    if (Exists(current))
+                    {
+                        await MoveAsync(current, Path.Combine(failed, name), ct);
+                        if (observer is not null) await observer.ReachedAsync(RestoreRecoveryCheckpoint.IncomingRetained, name, ct);
+                    }
                     await MoveAsync(old, current, ct);
+                    if (observer is not null) await observer.ReachedAsync(RestoreRecoveryCheckpoint.OriginalRestored, name, ct);
                 }
-                else if (!journal.HadOriginal[name] && Exists(current)) await MoveAsync(current, Path.Combine(failed, name), ct);
+                else if (!journal.HadOriginal[name] && Exists(current))
+                {
+                    await MoveAsync(current, Path.Combine(failed, name), ct);
+                    if (observer is not null) await observer.ReachedAsync(RestoreRecoveryCheckpoint.IncomingRetained, name, ct);
+                }
                 else if (journal.HadOriginal[name] && (!Exists(current) || await DigestAsync(current, ct) != journal.OriginalDigests[name])) throw new IOException("Restore recovery cannot verify an original state item. All remaining files were preserved for inspection.");
             }
         }
+        else if (observer is not null) await observer.ReachedAsync(RestoreRecoveryCheckpoint.CommittedStateRetained, null, ct);
         File.Delete(path); return true;
     }
 }
