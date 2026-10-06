@@ -17,7 +17,9 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     public bool Paused { get; set; }
     public int CacheQuotaMiB { get; set; } = 1024;
     public int ScratchRetentionDays { get; set; } = 7;
+    public int PrivateStorageLimitMiB { get; set; } // zero disables admission checks for controlled fixtures.
     public string MaintenanceError { get; private set; } = "";
+    public string PersistenceError { get; private set; } = "";
     public event Action<IReadOnlyList<Job>>? Changed;
     public IReadOnlyList<Job> Snapshot()
     {
@@ -71,12 +73,30 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         await dispatchGate.WaitAsync(ct);
         try
         {
+            await CheckStorageBudgetAsync(Snapshot(), job.Prepared.Script, ct);
             lock (sync) job.QueuePosition = Math.Max(DateTimeOffset.UtcNow.UtcTicks, jobs.Select(j => j.QueuePosition).DefaultIfEmpty().Max() + 1);
             await store.SaveAsync(job, ct);
             lock (sync) jobs.Add(job);
         }
         finally { dispatchGate.Release(); }
         Notify();
+    }
+    private async Task CheckStorageBudgetAsync(IReadOnlyList<Job> snapshots, string? addedScript, CancellationToken ct)
+    {
+        if (PrivateStorageLimitMiB == 0) return;
+        string? active; lock (sync) active = activeId;
+        var usage = await Task.Run(() => new CacheMaintenance(workspace).MeasureAsync(snapshots, active, ct), ct);
+        var drive = new DriveInfo(Path.GetPathRoot(workspace.Root)!);
+        StorageBudget.EnsureFits(usage, addedScript, PrivateStorageLimitMiB, drive.AvailableFreeSpace);
+    }
+    private async Task PersistOutcomeAsync(Job job)
+    {
+        try { await store.SaveAsync(job, CancellationToken.None); }
+        catch (Exception error)
+        {
+            Paused = true;
+            PersistenceError = "Queue paused because its checkpoint could not be saved. Repair disk space or permissions, then retry the narration and resume. Existing durable records are retained. " + FriendlyError(error);
+        }
     }
     public async Task MovePendingAsync(string id, int direction, CancellationToken ct = default)
     {
@@ -139,7 +159,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                 job.Error = "";
                 job.FailureCategory = lifetime.IsCancellationRequested ? FailureCategory.None : FailureCategory.Cancelled;
                 job.FailedStage = null;
-                await store.SaveAsync(job, CancellationToken.None);
+                await PersistOutcomeAsync(job);
             }
             catch (Exception error)
             {
@@ -147,7 +167,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                 job.FailureCategory = Categorize(error, job.Stage);
                 job.Stage = job.ExportCommitted ? JobStage.Exported : JobStage.Failed;
                 job.Error = FriendlyError(error);
-                await store.SaveAsync(job, CancellationToken.None);
+                await PersistOutcomeAsync(job);
             }
             finally
             {
@@ -314,14 +334,15 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             if (job.ExportCommitted) throw new ArgumentException("This job was exported. Submit a new job to regenerate it.");
             if (job.DeletionRequested) throw new ArgumentException("This narration is pending deletion. Retry its deletion to finish removal.");
         }
-        if (destination is not null) { workspace.GuardLocalDestination(destination); job.Destination = destination; job.ExportName = ""; job.ExportHash = ""; }
-        job.Error = "";
-        // Persist queue intent before the worker is allowed to pick up the job.
-        job.Stage = JobStage.Preparing;
         var queued = JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(job))!;
-        queued.Stage = JobStage.Queued;
+        if (destination is not null) { workspace.GuardLocalDestination(destination); queued.Destination = destination; queued.ExportName = ""; queued.ExportHash = ""; }
+        queued.Stage = JobStage.Queued; queued.Error = ""; queued.FailureCategory = FailureCategory.None; queued.FailedStage = null;
+        var admission = Snapshot().Where(j => j.Id != id).Append(queued).ToList();
+        await CheckStorageBudgetAsync(admission, null, lifetime.Token);
+        // Persist queue intent before the worker is allowed to pick up the job.
         await store.SaveAsync(queued);
-        lock (sync) job.Stage = JobStage.Queued;
+        lock (sync) jobs[jobs.FindIndex(j => j.Id == id)] = queued;
+        PersistenceError = "";
         Notify();
     }
     public async Task DeleteAsync(string id, bool deleteExport)

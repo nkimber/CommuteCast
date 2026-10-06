@@ -2,7 +2,7 @@ using CommuteCast.Core;
 
 namespace CommuteCast.Infrastructure;
 
-public record StorageUsage(long TotalBytes, long CacheBytes, long ReclaimableBytes);
+public record StorageUsage(long TotalBytes, long CacheBytes, long ReclaimableBytes, long ReservedBytes = 0);
 public record CleanupResult(long BytesRemoved, int FilesRemoved, int Failures);
 
 public sealed class CacheMaintenance(Workspace workspace)
@@ -56,7 +56,15 @@ public sealed class CacheMaintenance(Workspace workspace)
             if (IsCache(file.Name) && Workspace.IsWithin(Path.Combine(workspace.Root, "jobs"), file.FullName)) cache += file.Length;
             if (eligible.Contains(file.FullName)) reclaimable += file.Length;
         }
-        return new(total, cache, reclaimable);
+        long reserved = 0;
+        foreach (var job in jobs.Where(j => j.Stage is not (JobStage.Exported or JobStage.Cancelled or JobStage.Failed or JobStage.Deleting)))
+        {
+            var directory = workspace.JobDirectory(job.Id);
+            Workspace.RejectReparsePoints(directory);
+            var existing = Directory.Exists(directory) ? Directory.EnumerateFiles(directory).Select(p => new FileInfo(p)).Where(f => !f.Attributes.HasFlag(FileAttributes.ReparsePoint)).Sum(f => f.Length) : 0;
+            reserved += Math.Max(0, StorageBudget.Estimate(job.Prepared.Script) - existing);
+        }
+        return new(total, cache, reclaimable, reserved);
     }
     public async Task<CleanupResult> CleanAsync(IReadOnlyList<Job> jobs, string? activeId, int quotaMiB, int ageDays, CancellationToken ct)
     {
@@ -82,5 +90,24 @@ public sealed class CacheMaintenance(Workspace workspace)
             catch (UnauthorizedAccessException) { failures++; }
         }
         return new(removed, count, failures);
+    }
+}
+
+public static class StorageBudget
+{
+    public static long Estimate(string script)
+    {
+        var words = script.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).LongLength;
+        var equivalentWords = Math.Max(words, script.Length / 6L);
+        return Math.Max(1048576L, equivalentWords * 120000L * 3); // 2.5 seconds at 48 kB/s, three lossless copies.
+    }
+    public static void EnsureFits(StorageUsage usage, string? script, int limitMiB, long availableFreeBytes)
+    {
+        if (limitMiB is < 128 or > 1048576) throw new ArgumentException("Use a private storage limit of 128–1048576 MiB.");
+        var requested = script is null ? 0 : Estimate(script);
+        if (usage.TotalBytes + usage.ReservedBytes + requested > limitMiB * 1048576L)
+            throw new IOException("This narration and queued work exceed the private storage budget. Clean eligible cache, delete older narrations, or raise the limit in Settings. Your draft and saved jobs are retained.");
+        if (availableFreeBytes < usage.ReservedBytes + requested + 512 * 1048576L)
+            throw new IOException("Private storage has insufficient free space for this narration and queued work. Free disk space and retry; your draft and saved jobs are retained.");
     }
 }

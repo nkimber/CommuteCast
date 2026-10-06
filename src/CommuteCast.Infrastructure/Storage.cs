@@ -23,6 +23,7 @@ public sealed class Workspace
     public string ChunkPath(Job job, int index) => Path.Combine(JobDirectory(job.Id), $"chunk-{index:D5}.wav");
     public void GuardLocalDestination(string directory)
     {
+        if (string.IsNullOrWhiteSpace(directory)) throw new ArgumentException("Choose an output folder before queueing. Use Choose folder to select your existing local OneDrive folder; your draft is retained.");
         var path = Path.GetFullPath(directory);
         if (!Directory.Exists(path)) throw new IOException("The output folder is missing. Choose an existing local OneDrive folder.");
         if (path.StartsWith("\\\\", StringComparison.Ordinal)) throw new IOException("Choose a local synced folder, not a network share.");

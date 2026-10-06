@@ -15,7 +15,7 @@ public sealed class DiagnosticExporter(Workspace workspace, SqliteJobStore store
             application = "CommuteCast 0.1.0", runtime = Environment.Version.ToString(), windows = Environment.OSVersion.Version.ToString(),
             exportedUtc = DateTimeOffset.UtcNow, encoder = encoderVersion,
             eventLimit = 2000, timingMeaning = "Elapsed since the preceding persisted event for this job; includes waiting and checkpoint work, not isolated inference timing.",
-            storage = new { usage.TotalBytes, usage.CacheBytes, usage.ReclaimableBytes },
+            storage = new { usage.TotalBytes, usage.CacheBytes, usage.ReclaimableBytes, usage.ReservedBytes },
             jobs = jobs.Select(j => new
             {
                 jobId = j.Id.Length == 32 && j.Id.All(Uri.IsHexDigit) ? j.Id : "invalid",

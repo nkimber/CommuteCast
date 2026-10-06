@@ -5,6 +5,36 @@ namespace CommuteCast.Tests;
 
 public class RecoveryTests
 {
+    [Fact] public async Task CheckpointFailurePausesDispatchWithoutLosingDurableJobs()
+    {
+        using var test = new TestWorkspace(); var durable = new SqliteJobStore(test.Workspace); var failing = new FailingCheckpointStore(durable); var provider = new FakeProvider();
+        await using var queue = new QueueCoordinator(test.Workspace, failing, provider, new(new()), new(test.Workspace, failing)) { Paused = true };
+        await queue.InitializeAsync(); var first = MakeJob(test); var second = MakeJob(test);
+        await queue.AddAsync(first); await queue.AddAsync(second); failing.Fail = true; queue.Paused = false;
+        await WaitForAsync(() => queue.PersistenceError.Length > 0);
+        Assert.True(queue.Paused); Assert.Equal(1, provider.Calls); Assert.Equal(JobStage.Queued, queue.Snapshot().Single(j => j.Id == second.Id).Stage);
+        Assert.Equal(2, (await durable.LoadAsync()).Count);
+        failing.Fail = false; await queue.RetryAsync(first.Id); Assert.Equal("", queue.PersistenceError); Assert.Equal(JobStage.Queued, queue.Snapshot().Single(j => j.Id == first.Id).Stage);
+    }
+    private sealed class FailingCheckpointStore(IJobStore inner) : IJobStore
+    {
+        public bool Fail { get; set; }
+        public bool FailQueued { get; set; }
+        public Task SaveAsync(Job job, CancellationToken ct = default) => (Fail && job.Stage is JobStage.Validating or JobStage.Failed) || (FailQueued && job.Stage == JobStage.Queued) ? throw new IOException("Simulated checkpoint write failure") : inner.SaveAsync(job, ct);
+        public Task SaveQueueOrderAsync(IReadOnlyDictionary<string, long> positions, CancellationToken ct = default) => inner.SaveQueueOrderAsync(positions, ct);
+        public Task<IReadOnlyList<Job>> LoadAsync(CancellationToken ct = default) => inner.LoadAsync(ct);
+        public Task RemoveAsync(string id, CancellationToken ct = default) => inner.RemoveAsync(id, ct);
+    }
+    [Fact] public async Task FailedRetryPersistenceRetainsOriginalStageAndDestination()
+    {
+        using var test = new TestWorkspace(); var durable = new SqliteJobStore(test.Workspace); var store = new FailingCheckpointStore(durable);
+        await using var queue = new QueueCoordinator(test.Workspace, store, new FakeProvider(), new(new()), new(test.Workspace, store)) { Paused = true };
+        await queue.InitializeAsync(); var job = MakeJob(test); await queue.AddAsync(job); await queue.CancelAsync(job.Id);
+        var replacement = Path.Combine(test.Parent, "replacement"); Directory.CreateDirectory(replacement); store.FailQueued = true;
+        await Assert.ThrowsAsync<IOException>(() => queue.RetryAsync(job.Id, replacement));
+        var snapshot = Assert.Single(queue.Snapshot()); Assert.Equal(JobStage.Cancelled, snapshot.Stage); Assert.Equal(test.Destination, snapshot.Destination);
+        var saved = Assert.Single(await durable.LoadAsync()); Assert.Equal(JobStage.Cancelled, saved.Stage); Assert.Equal(test.Destination, saved.Destination);
+    }
     [Fact] public async Task PendingOrderSurvivesRelaunchWithoutChangingCapturedSettings()
     {
         using var test = new TestWorkspace(); var store = new SqliteJobStore(test.Workspace);

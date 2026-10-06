@@ -49,7 +49,7 @@ public sealed class JobView(Job job, Workspace workspace)
         JobStage.Synthesizing => $"Narrating · {Job.CompletedChunks} of {Job.Chunks.Count} chunks validated",
         JobStage.Exported => "Exported locally · upload unknown",
         JobStage.Generated => "Generated · ready to export",
-        JobStage.Failed => "Needs attention · preserved for retry",
+        JobStage.Failed => $"Needs attention at {Job.FailedStage?.ToString() ?? "reconciliation"} · preserved for retry",
         JobStage.Cancelled => "Cancelled · ready to resume",
         _ => Job.Stage.ToString()
     };
@@ -151,7 +151,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         settings = saved;
         store = new SqliteJobStore(Workspace);
         provider = new(Workspace); publisher = new(Workspace, store);
-        queue = new(Workspace, store, provider, new(settings), publisher) { Paused = settings.QueuePaused, CacheQuotaMiB = settings.CacheQuotaMiB, ScratchRetentionDays = settings.ScratchRetentionDays };
+        queue = new(Workspace, store, provider, new(settings), publisher) { Paused = settings.QueuePaused, CacheQuotaMiB = settings.CacheQuotaMiB, ScratchRetentionDays = settings.ScratchRetentionDays, PrivateStorageLimitMiB = settings.PrivateStorageLimitMiB };
         queue.Changed += snapshots => Application.Current.Dispatcher.InvokeAsync(() => RefreshJobs(snapshots));
         player.MediaFailed += (_, _) => StatusMessage = "Playback failed. Check that the local audio exists and is decodable.";
         Voices.Add(settings.Voice);
@@ -192,6 +192,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         foreach (var job in snapshots.Where(j => j.Stage == JobStage.Queued).Concat(snapshots.Where(j => j.Stage != JobStage.Queued).OrderByDescending(j => j.CreatedUtc))) Jobs.Add(new(job, Workspace));
         SelectedJob = Jobs.FirstOrDefault(j => j.Id == id) ?? Jobs.FirstOrDefault();
         Raise(nameof(LibrarySummary));
+        Raise(nameof(PauseLabel));
+        if (queue.PersistenceError.Length > 0) StatusMessage = queue.PersistenceError;
     }
     public async Task InitializeAsync()
     {
@@ -226,7 +228,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     }
     private Task SaveSettingsAsync()
     {
-        ValidateRetention(); queue.CacheQuotaMiB = CacheQuotaMiB; queue.ScratchRetentionDays = ScratchRetentionDays;
+        ValidateRetention(); queue.CacheQuotaMiB = CacheQuotaMiB; queue.ScratchRetentionDays = ScratchRetentionDays; queue.PrivateStorageLimitMiB = PrivateStorageLimitMiB; settings.QueuePaused = queue.Paused;
         return Workspace.SaveSettingsAsync(settings);
     }
     private void ValidateRetention()
@@ -237,7 +239,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private async Task RefreshStorageAsync()
     {
         var usage = await queue.MeasureStorageAsync(shutdown.Token);
-        storageSummary = $"{usage.TotalBytes / 1048576.0:0.0} MiB total · {usage.CacheBytes / 1048576.0:0.0} MiB intermediates · {usage.ReclaimableBytes / 1048576.0:0.0} MiB eligible for cleanup.";
+        storageSummary = $"{usage.TotalBytes / 1048576.0:0.0} MiB total · {usage.CacheBytes / 1048576.0:0.0} MiB intermediates · {usage.ReclaimableBytes / 1048576.0:0.0} MiB eligible for cleanup · {usage.ReservedBytes / 1048576.0:0.0} MiB reserved for pending work.";
         if (queue.MaintenanceError.Length > 0) storageSummary += "\nAutomatic cleanup needs attention: " + queue.MaintenanceError;
         Raise(nameof(StorageDetails));
     }
@@ -266,14 +268,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         ValidateRetention();
         await queue.CleanCacheAsync(shutdown.Token);
         var usage = await queue.MeasureStorageAsync(shutdown.Token);
-        // Conservative reservation: up to 2 seconds per word at 48kB/s PCM, two copies plus MP3.
-        var words = prepared.Script.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
-        var estimate = Math.Max(1048576L, words * 2L * 48000 * 3);
-        if (usage.TotalBytes + estimate > PrivateStorageLimitMiB * 1048576L)
-            throw new IOException("This narration exceeds the private storage budget. Clean eligible cache, delete older narrations, or raise the limit in Settings. Your draft is retained.");
         var drive = new DriveInfo(Path.GetPathRoot(Workspace.Root)!);
-        if (drive.AvailableFreeSpace < estimate + 512 * 1048576L)
-            throw new IOException("Private storage has insufficient free space for this narration. Free disk space and retry; your draft is retained.");
+        StorageBudget.EnsureFits(usage, prepared.Script, PrivateStorageLimitMiB, drive.AvailableFreeSpace);
         if (title.Length == 0) title = TextPreparation.SuggestTitle(text);
         await publisher.TestDestinationAsync(destination, shutdown.Token);
         if (!settings.Providers.TryGetValue(engine, out var info)) info = await CheckReadinessAsync();
