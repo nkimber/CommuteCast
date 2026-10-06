@@ -45,7 +45,9 @@ public class ExportRemovalTests
     {
         using var test = new TestWorkspace(); var (job, path, store) = await ExportAsync(test);
         var partial = Path.Combine(test.Destination, $".commutecast-{job.Id}.partial");
-        await File.WriteAllTextAsync(partial, "Owned incomplete staging"); job.ExportStagingOwned = true;
+        var prefix = (await File.ReadAllBytesAsync(test.Workspace.FinalPath(job)))[..81920];
+        await using (var staging = ExportStagingFile.Create(test.Destination, Path.GetFileName(partial)))
+        { await staging.Stream.WriteAsync(prefix); staging.Stream.Flush(true); job.ExportStagingIdentity = staging.Identity; }
         using var cancellation = new CancellationTokenSource();
         var observer = new Observer((point, _) =>
         {
@@ -57,9 +59,9 @@ public class ExportRemovalTests
         if (cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => publisher.RemoveManagedExportAsync(job, cancellation.Token));
         else await Assert.ThrowsAsync<IOException>(() => publisher.RemoveManagedExportAsync(job, default));
         Assert.Equal(job.ExportHash, await Workspace.HashFileAsync(path));
-        Assert.Equal("Owned incomplete staging", await File.ReadAllTextAsync(partial)); Assert.True(job.ExportStagingOwned);
+        Assert.Equal(prefix, await File.ReadAllBytesAsync(partial)); Assert.NotNull(job.ExportStagingIdentity);
         await new ExportPublisher(test.Workspace, store).RemoveManagedExportAsync(job, default);
-        Assert.False(File.Exists(path)); Assert.False(File.Exists(partial)); Assert.False(job.ExportStagingOwned);
+        Assert.False(File.Exists(path)); Assert.False(File.Exists(partial)); Assert.Null(job.ExportStagingIdentity);
     }
 
     [Fact]
@@ -117,7 +119,7 @@ public class ExportRemovalTests
         return (job, Path.Combine(test.Destination, job.ExportName), store);
     }
 
-    private static async Task<JsonDocument> CompeteAsync(string path, string other)
+    internal static async Task<JsonDocument> CompeteAsync(string path, string other)
     {
         static string Literal(string value) => "'" + value.Replace("'", "''") + "'";
         var script = $$"""

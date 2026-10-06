@@ -72,7 +72,7 @@ public class PublicationRaceTests
     {
         using var test = new TestWorkspace(); var job = await GeneratedAsync(test); var durable = new SqliteJobStore(test.Workspace);
         await Assert.ThrowsAsync<IOException>(() => new ExportPublisher(test.Workspace, new CommitFailureStore(durable, true)).PublishAsync(job, default));
-        Assert.False(Assert.Single(await durable.LoadAsync()).ExportStagingOwned); Assert.False(job.ExportStagingOwned); Assert.Empty(Directory.GetFiles(test.Destination));
+        Assert.Null(Assert.Single(await durable.LoadAsync()).ExportStagingIdentity); Assert.Null(job.ExportStagingIdentity); Assert.False(job.ExportStagingOwned); Assert.Empty(Directory.GetFiles(test.Destination));
         await new ExportPublisher(test.Workspace, durable).PublishAsync(job, default); Assert.True(job.ExportCommitted);
     }
     [Fact] public async Task ChangedStagingCollisionIsNeverTruncatedOrDeleted()
@@ -89,11 +89,11 @@ public class PublicationRaceTests
         await new ExportPublisher(test.Workspace, new SqliteJobStore(test.Workspace)).PublishAsync(job, default);
         Assert.True(job.ExportCommitted); Assert.False(File.Exists(Partial(test, job))); Assert.Single(Directory.GetFiles(test.Destination, "*.mp3"));
     }
-    [Fact] public async Task JournaledExclusiveStagingAfterInterruptedCopyIsRecreated()
+    [Fact] public async Task JournaledIdenticalStagingAfterInterruptedCopyResumesItsVerifiedPrefix()
     {
         using var test = new TestWorkspace(); var job = await GeneratedAsync(test); var store = new SqliteJobStore(test.Workspace);
-        job.ExportName = ExportPublisher.Filename(job); job.ExportHash = job.FinalHash; job.ExportStagingOwned = true; job.Stage = JobStage.Exporting;
-        await store.SaveAsync(job); await File.WriteAllTextAsync(Partial(test, job), "Interrupted owned copy");
+        job.ExportName = ExportPublisher.Filename(job); job.ExportHash = job.FinalHash; job.Stage = JobStage.Exporting;
+        await SeedPartialAsync(test, job); await store.SaveAsync(job);
         var restored = Assert.Single(await store.LoadAsync()); await new ExportPublisher(test.Workspace, store).PublishAsync(restored, default);
         Assert.True(restored.ExportCommitted); Assert.False(restored.ExportStagingOwned); Assert.Equal(job.FinalHash, await Workspace.HashFileAsync(Assert.Single(Directory.GetFiles(test.Destination, "*.mp3"))));
     }
@@ -109,8 +109,8 @@ public class PublicationRaceTests
     [Fact] public async Task ReconciliationCleansKnownPartialAlongsideVerifiedFinal()
     {
         using var test = new TestWorkspace(); var job = await GeneratedAsync(test); var store = new SqliteJobStore(test.Workspace);
-        job.ExportName = ExportPublisher.Filename(job); job.ExportHash = job.FinalHash; job.ExportStagingOwned = true;
-        File.Copy(test.Workspace.FinalPath(job), Path.Combine(test.Destination, job.ExportName)); await File.WriteAllTextAsync(Partial(test, job), "Known leftover");
+        job.ExportName = ExportPublisher.Filename(job); job.ExportHash = job.FinalHash;
+        File.Copy(test.Workspace.FinalPath(job), Path.Combine(test.Destination, job.ExportName)); await SeedPartialAsync(test, job);
         await new ExportPublisher(test.Workspace, store).ReconcileAsync(job, default);
         Assert.True(job.ExportCommitted); Assert.False(File.Exists(Partial(test, job))); Assert.False(job.ExportStagingOwned);
     }
@@ -122,13 +122,14 @@ public class PublicationRaceTests
         await new ExportPublisher(test.Workspace, store).ReconcileAsync(job, default);
         Assert.True(job.ExportCommitted); Assert.Equal("Unknown leftover", await File.ReadAllTextAsync(Partial(test, job))); Assert.Contains("preserved", job.Error);
     }
-    [Fact] public async Task StagingChangedAfterVerificationCannotBecomeFinalAudio()
+    [Fact] public async Task VerifiedStagingStaysLockedUntilAtomicPublication()
     {
         using var test = new TestWorkspace(); var job = await GeneratedAsync(test); var store = new SqliteJobStore(test.Workspace);
-        var observer = new Observer(async (stage, _) => { if (stage == ExportCheckpoint.BeforeRename) await File.WriteAllTextAsync(Partial(test, job), "Changed verified staging"); });
-        await Assert.ThrowsAsync<IOException>(() => new ExportPublisher(test.Workspace, store, observer).PublishAsync(job, default));
-        Assert.False(job.ExportCommitted); Assert.Empty(Directory.GetFiles(test.Destination, "*.mp3")); Assert.Equal("Changed verified staging", await File.ReadAllTextAsync(Partial(test, job)));
-        await new ExportPublisher(test.Workspace, store).PublishAsync(job, default); Assert.True(job.ExportCommitted);
+        var attempted = false;
+        var observer = new Observer(async (stage, _) => { if (stage == ExportCheckpoint.BeforeRename) { attempted = true; await Assert.ThrowsAsync<IOException>(() => File.WriteAllTextAsync(Partial(test, job), "Changed verified staging")); } });
+        await new ExportPublisher(test.Workspace, store, observer).PublishAsync(job, default);
+        Assert.True(attempted); Assert.True(job.ExportCommitted); Assert.False(File.Exists(Partial(test, job)));
+        Assert.Equal(job.FinalHash, await Workspace.HashFileAsync(Assert.Single(Directory.GetFiles(test.Destination, "*.mp3"))));
     }
     [Fact] public async Task ValidatedSourceRemainsLockedThroughoutDestinationCopy()
     {
@@ -151,6 +152,12 @@ public class PublicationRaceTests
         Assert.Equal(2, Directory.GetFiles(test.Destination, "*.mp3").Length); Assert.True(first.ExportCommitted && second.ExportCommitted);
     }
     private static string Partial(TestWorkspace test, Job job) => Path.Combine(test.Destination, $".commutecast-{job.Id}.partial");
+    private static async Task SeedPartialAsync(TestWorkspace test, Job job)
+    {
+        await using var staging = ExportStagingFile.Create(test.Destination, Path.GetFileName(Partial(test, job)));
+        var bytes = await File.ReadAllBytesAsync(test.Workspace.FinalPath(job));
+        await staging.Stream.WriteAsync(bytes.AsMemory(0, 81920)); staging.Stream.Flush(true); job.ExportStagingIdentity = staging.Identity;
+    }
     private static async Task<Job> GeneratedAsync(TestWorkspace test)
     {
         var job = new Job { Title = "Publication fixture", Destination = test.Destination };
@@ -163,7 +170,7 @@ public class PublicationRaceTests
     }
     private sealed class CommitFailureStore(IJobStore inner, bool ownership = false) : IJobStore
     {
-        public Task SaveAsync(Job job, CancellationToken ct = default) => (ownership ? job.ExportStagingOwned : job.ExportCommitted) ? throw new IOException("Injected checkpoint failure") : inner.SaveAsync(job, ct);
+        public Task SaveAsync(Job job, CancellationToken ct = default) => (ownership ? job.ExportStagingIdentity is not null : job.ExportCommitted) ? throw new IOException("Injected checkpoint failure") : inner.SaveAsync(job, ct);
         public Task<IReadOnlyList<Job>> LoadAsync(CancellationToken ct = default) => inner.LoadAsync(ct);
         public Task<IReadOnlyDictionary<string, bool>> RequestDeletionAsync(IReadOnlyList<string> ids, bool deleteExports, CancellationToken ct = default) => inner.RequestDeletionAsync(ids, deleteExports, ct);
         public Task SaveQueueOrderAsync(IReadOnlyDictionary<string, long> positions, CancellationToken ct = default) => inner.SaveQueueOrderAsync(positions, ct);

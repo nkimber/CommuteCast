@@ -39,13 +39,41 @@ public class QueueRaceTests
     [Fact] public async Task ExplicitDestinationRetryCleansKnownOldStagingAndClearsCancellation()
     {
         using var test = new TestWorkspace(); var store = new SqliteJobStore(test.Workspace); var job = MakeJob(test);
-        job.Stage = JobStage.Failed; job.FinalHash = Job.Hash("Final fixture"); job.ExportHash = job.FinalHash; job.ExportName = ExportPublisher.Filename(job); job.ExportStagingOwned = true;
-        var oldPartial = Path.Combine(test.Destination, $".commutecast-{job.Id}.partial"); await File.WriteAllTextAsync(oldPartial, "Interrupted known staging"); await store.SaveAsync(job);
+        job.Stage = JobStage.Failed; job.FinalHash = Job.Hash("Final fixture"); job.ExportHash = job.FinalHash; job.ExportName = ExportPublisher.Filename(job);
+        Directory.CreateDirectory(test.Workspace.JobDirectory(job.Id)); await File.WriteAllTextAsync(test.Workspace.FinalPath(job), "Final fixture");
+        var oldPartial = Path.Combine(test.Destination, $".commutecast-{job.Id}.partial");
+        await using (var staging = ExportStagingFile.Create(test.Destination, Path.GetFileName(oldPartial)))
+        { await staging.Stream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("Final")); staging.Stream.Flush(true); job.ExportStagingIdentity = staging.Identity; }
+        await store.SaveAsync(job);
         var destination = Path.Combine(test.Parent, "replacement"); Directory.CreateDirectory(destination);
         await using var queue = new QueueCoordinator(test.Workspace, store, new GatedProvider(false) { Enabled = false }, new(new()), new(test.Workspace, store)) { Paused = true };
         await queue.InitializeAsync(); await queue.RetryAsync(job.Id, destination);
         Assert.False(File.Exists(oldPartial)); var queued = Assert.Single(await store.LoadAsync()); Assert.Equal(destination, queued.Destination);
-        Assert.False(queued.ExportStagingOwned); Assert.False(queued.CancellationRequested); Assert.Equal("", queued.ExportName); Assert.Equal(job.Source, queued.Source); Assert.Equal(job.Settings, queued.Settings);
+        Assert.Null(queued.ExportStagingIdentity); Assert.False(queued.ExportStagingOwned); Assert.False(queued.CancellationRequested); Assert.Equal("", queued.ExportName); Assert.Equal(job.Source, queued.Source); Assert.Equal(job.Settings, queued.Settings);
+    }
+    [Theory] [InlineData(0)] [InlineData(1)] [InlineData(2)]
+    public async Task ExplicitDestinationRetryPreservesUnverifiedOrLockedOldStagingAndRecordsTheNotice(int condition)
+    {
+        using var test = new TestWorkspace(); var store = new SqliteJobStore(test.Workspace); var job = MakeJob(test);
+        job.Stage = JobStage.Failed; job.FinalHash = job.ExportHash = Job.Hash("Final fixture"); job.ExportName = ExportPublisher.Filename(job);
+        Directory.CreateDirectory(test.Workspace.JobDirectory(job.Id)); await File.WriteAllTextAsync(test.Workspace.FinalPath(job), "Final fixture");
+        var partial = Path.Combine(test.Destination, $".commutecast-{job.Id}.partial");
+        await using (var staging = ExportStagingFile.Create(test.Destination, Path.GetFileName(partial)))
+        { await staging.Stream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("Final")); staging.Stream.Flush(true); job.ExportStagingIdentity = staging.Identity; }
+        if (condition == 0) { job.ExportStagingIdentity = null; job.ExportStagingOwned = true; }
+        if (condition == 1) await File.WriteAllTextAsync(partial, "Changed");
+        var expected = await File.ReadAllBytesAsync(partial); await store.SaveAsync(job);
+        var replacement = Path.Combine(test.Parent, "replacement"); Directory.CreateDirectory(replacement);
+        await using var queue = new QueueCoordinator(test.Workspace, store, new GatedProvider(false) { Enabled = false }, new(new()), new(test.Workspace, store)) { Paused = true };
+        await queue.InitializeAsync();
+        using (var writer = condition == 2 ? new FileStream(partial, FileMode.Open, FileAccess.ReadWrite, FileShare.None) : null)
+            await queue.RetryAsync(job.Id, replacement);
+        Assert.Equal(expected, await File.ReadAllBytesAsync(partial));
+        var queued = Assert.Single(await store.LoadAsync()); Assert.Equal(replacement, queued.Destination); Assert.Equal(JobStage.Queued, queued.Stage);
+        Assert.Null(queued.ExportStagingIdentity); Assert.False(queued.ExportStagingOwned); Assert.Equal("", queued.ExportName);
+        Assert.Contains("preserved", queued.ExportNotice); Assert.Contains("previous output folder", queued.ExportNotice);
+        Assert.Equal(job.Source, queued.Source); Assert.Equal(job.Settings, queued.Settings); Assert.Equal(job.CreatedUtc, queued.CreatedUtc);
+        Assert.Equal(job.FinalHash, await Workspace.HashFileAsync(test.Workspace.FinalPath(job))); Assert.Empty(Directory.GetFiles(replacement));
     }
     [Theory] [InlineData(false)] [InlineData(true)]
     public async Task CancellationDuringReadinessOrSecondChunkSettlesBeforeRetry(bool secondChunk)

@@ -370,8 +370,10 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         if (destination is not null)
         {
             workspace.GuardLocalDestination(destination);
-            await publisher.RemoveOwnedStagingAsync(job, lifetime.Token);
-            queued.Destination = destination; queued.ExportName = ""; queued.ExportHash = ""; queued.ExportStagingOwned = false;
+            var stagingCleanup = await publisher.RemoveOwnedStagingAsync(job, lifetime.Token, preserveUnknown: true);
+            if (stagingCleanup == ExportStagingCleanup.PreservedUnknown)
+                queued.ExportNotice = "An unrecognized or altered staging file was preserved in the previous output folder. Inspect it manually; retry uses the newly selected folder.";
+            queued.Destination = destination; queued.ExportName = ""; queued.ExportHash = ""; queued.ExportStagingOwned = false; queued.ExportStagingIdentity = null;
         }
         queued.Stage = JobStage.Queued; queued.Error = ""; queued.FailureCategory = FailureCategory.None; queued.FailedStage = null;
         queued.CancellationRequested = false;

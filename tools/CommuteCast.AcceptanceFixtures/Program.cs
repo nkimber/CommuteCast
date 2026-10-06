@@ -3,11 +3,15 @@ using CommuteCast.Infrastructure;
 using System.Text.Json;
 
 // Synthetic developer fixtures only. Never packaged and never accepts the live workspace.
-if (args.Length < 2 || args[0] is not ("seed" or "seed-audio" or "inspect" or "restore-barrier" or "recover-barrier"))
-    throw new ArgumentException("seed|seed-audio|inspect <isolated artifact private-root> [label]; restore-barrier <root> <backup> <checkpoint> [item]; recover-barrier <root> <checkpoint> [item]");
-if (args[0] is "seed" or "seed-audio" && (args.Length is < 2 or > 3 || args.Length == 3 && args[2] is not ("original" or "later")) ||
-    args[0] == "inspect" && args.Length != 2 || args[0] == "restore-barrier" && args.Length is not (4 or 5) ||
-    args[0] == "recover-barrier" && args.Length is not (3 or 4)) throw new ArgumentException("Invalid fixture command scope.");
+if (args.Length < 2) throw new ArgumentException("Choose an isolated fixture operation and private root.");
+var validScope = args[0] switch
+{
+    "seed" or "seed-audio" or "seed-export" => args.Length is 2 or 3 && (args.Length == 2 || args[2] is "original" or "later"),
+    "inspect" or "inspect-export" or "export" => args.Length == 2,
+    "restore-barrier" => args.Length is 4 or 5, "recover-barrier" => args.Length is 3 or 4,
+    "export-barrier" => args.Length == 3, _ => false
+};
+if (!validScope) throw new ArgumentException("Invalid fixture command scope.");
 var repository = new DirectoryInfo(AppContext.BaseDirectory);
 while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "CommuteCast.slnx"))) repository = repository.Parent;
 if (repository is null) throw new IOException("Run this fixture host from its repository build.");
@@ -17,6 +21,16 @@ Workspace.RejectReparsePoints(root);
 var boundary = args[0] is "restore-barrier" or "recover-barrier";
 var marker = Path.Combine(Path.GetDirectoryName(root)!, "boundary.json");
 string? backup = null; RestoreCheckpoint restorePoint = default; RestoreRecoveryCheckpoint recoveryPoint = default; string? item = null;
+ExportCheckpoint exportPoint = default;
+if (args[0] == "export-barrier")
+{
+    if (!Enum.TryParse(args[2], out exportPoint) || args[2] != exportPoint.ToString() || exportPoint is not
+        (ExportCheckpoint.IntentSaved or ExportCheckpoint.StagingCreated or ExportCheckpoint.CopyStarted or ExportCheckpoint.CopyProgress or
+        ExportCheckpoint.CopyFlushed or ExportCheckpoint.CopyVerified or ExportCheckpoint.BeforeRename or ExportCheckpoint.Renamed or ExportCheckpoint.Committed or ExportCheckpoint.StagingResumed))
+        throw new ArgumentException("Choose an actual publication checkpoint.");
+    Workspace.RejectFileReparsePoint(marker);
+    if (File.Exists(marker) || Directory.Exists(marker) || !Directory.Exists(root)) throw new IOException("A fresh export boundary marker and existing fixture are required.");
+}
 if (boundary)
 {
     var point = args[0] == "restore-barrier" ? args[3] : args[2];
@@ -34,6 +48,22 @@ if (boundary)
     if (File.Exists(marker) || Directory.Exists(marker) || !Directory.Exists(root)) throw new IOException("A fresh fixture boundary marker and existing private root are required.");
 }
 var workspace = new Workspace(root); using var lease = WorkspaceLease.Acquire(workspace);
+if (args[0] is "export" or "export-barrier" or "inspect-export")
+{
+    var exportStore = new SqliteJobStore(workspace); var exportJob = (await exportStore.LoadAsync()).Single();
+    if (!string.Equals(Path.GetFullPath(exportJob.Destination), Path.Combine(Path.GetDirectoryName(root)!, "separate-exports"), StringComparison.OrdinalIgnoreCase))
+        throw new IOException("Fixture publication is restricted to this isolated case's own separate-exports folder.");
+    var exportObserver = args[0] == "export-barrier" ? new ExportBoundary(workspace, exportStore, exportJob, marker, exportPoint) : null;
+    if (args[0] != "inspect-export")
+    {
+        var publisher = new ExportPublisher(workspace, exportStore, exportObserver);
+        await publisher.ReconcileAsync(exportJob, default);
+        if (!exportJob.ExportCommitted) await publisher.PublishAsync(exportJob, default);
+        if (args[0] == "export-barrier") throw new IOException("The requested export checkpoint was not reached.");
+    }
+    Console.WriteLine(JsonSerializer.Serialize(ExportBoundary.Inspect(workspace, exportJob), new JsonSerializerOptions { WriteIndented = true }));
+    return;
+}
 if (boundary)
 {
     var observer = new ProcessBoundary(root, marker, args[0], restorePoint, recoveryPoint, item);
@@ -41,7 +71,7 @@ if (boundary)
     else await WorkspaceBackup.RecoverInterruptedAsync(lease, observer: observer);
     throw new IOException("The requested fixture boundary was not reached; no process-kill evidence was produced.");
 }
-if (args[0] is "seed" or "seed-audio")
+if (args[0] is "seed" or "seed-audio" or "seed-export")
 {
     var label = args.Length == 3 ? args[2] : "original";
     if (label is not ("original" or "later")) throw new ArgumentException("Choose the synthetic original or later fixture label.");
@@ -50,14 +80,14 @@ if (args[0] is "seed" or "seed-audio")
     var job = new Job { Title = "Synthetic " + label, Source = source, Prepared = TextPreparation.Prepare(source), Destination = destination, Stage = JobStage.Queued,
         Settings = new("piper", "en_US-lessac-medium", 1.1, false, "API=A P I", "piper:contract-v1:" + new string('b', 64)) };
     job.Chunks = Chunker.Split(job.Prepared.Script, 450); Directory.CreateDirectory(workspace.JobDirectory(job.Id));
-    var seconds = args[0] == "seed-audio" ? 2 : 1;
+    var seconds = args[0] == "seed-export" ? 12 : args[0] == "seed-audio" ? 2 : 1;
     using (var file = File.Create(workspace.ChunkPath(job, 0)))
     {
         WaveAudio.WriteHeader(file, 24000 * seconds); using var writer = new BinaryWriter(file);
         for (var i = 0; i < 24000 * seconds; i++) writer.Write((short)(Math.Sin(i * 2 * Math.PI * 220 / 24000) * 8000));
     }
     job.CompletedChunks = 1; job.Receipts.Add(new(0, await Workspace.HashFileAsync(workspace.ChunkPath(job, 0)), job.Fingerprint, seconds));
-    if (args[0] == "seed-audio")
+    if (args[0] is "seed-audio" or "seed-export")
     {
         var audio = new AudioPipeline(new()); await audio.AssembleAsync(job, workspace.JobDirectory(job.Id), default);
         job.DurationSeconds = (await audio.ValidateFinalAsync(job, workspace.FinalPath(job), default)).Duration;
@@ -70,6 +100,7 @@ if (args[0] is "seed" or "seed-audio")
     // Acceptance UI must not attempt Docker startup or dispatch synthetic work.
     if (!File.Exists(Path.Combine(root, "recovery-piper.json"))) await new RecoveryBudget(workspace).BeginAsync("piper", default);
 }
+
 var jobs = await new SqliteJobStore(workspace).LoadAsync(); var artifacts = new List<object>();
 foreach (var job in jobs)
 {
@@ -96,4 +127,28 @@ sealed class ProcessBoundary(string root, string marker, string command, Restore
         await Task.Delay(TimeSpan.FromSeconds(120));
         throw new TimeoutException("Fixture boundary was not terminated within its two-minute safety limit.");
     }
+}
+
+sealed class ExportBoundary(Workspace workspace, SqliteJobStore store, Job job, string marker, ExportCheckpoint boundary) : IExportObserver
+{
+    public async Task ReachedAsync(ExportCheckpoint checkpoint, CancellationToken ct)
+    {
+        if (checkpoint != boundary) return;
+        var durable = (await store.LoadAsync()).Single();
+        var json = JsonSerializer.Serialize(new { processId = Environment.ProcessId, command = "export-barrier", checkpoint = checkpoint.ToString(),
+            root = workspace.Root, jobId = job.Id, durableRecordHash = Job.Hash(JsonSerializer.Serialize(durable)), state = Inspect(workspace, durable) });
+        using (var file = new FileStream(marker, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+        { await file.WriteAsync(System.Text.Encoding.UTF8.GetBytes(json)); file.Flush(true); }
+        await Task.Delay(TimeSpan.FromSeconds(120));
+        throw new TimeoutException("The export fixture boundary was not terminated within two minutes.");
+    }
+    public static object Inspect(Workspace workspace, Job job) => new
+    {
+        job.Id, job.Stage, job.ExportName, job.ExportHash, job.ExportCommitted, job.ExportStagingOwned, job.ExportStagingIdentity,
+        privateFinal = workspace.FinalPath(job), destination = job.Destination,
+        staging = Path.Combine(job.Destination, $".commutecast-{job.Id}.partial"),
+        frozenHash = Job.Hash(JsonSerializer.Serialize(new { job.Id, job.Title, job.Source, job.Prepared, job.Settings, job.CreatedUtc,
+            job.Destination, job.Chunks, job.Receipts, job.CompletedChunks, job.FinalHash, job.DurationSeconds })),
+        durableRecordHash = Job.Hash(JsonSerializer.Serialize(job))
+    };
 }

@@ -36,6 +36,8 @@ public sealed class Job
     public string ExportName { get; set; } = "";
     public string ExportHash { get; set; } = "";
     public bool ExportStagingOwned { get; set; }
+    public ExportStagingIdentity? ExportStagingIdentity { get; set; }
+    public string ExportNotice { get; set; } = "";
     public bool ExportCommitted { get; set; }
     private volatile bool cancellationRequested;
     public bool CancellationRequested { get => cancellationRequested; set => cancellationRequested = value; }
@@ -45,6 +47,7 @@ public sealed class Job
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 public record ChunkReceipt(int Index, string Hash, string Fingerprint, double Duration);
+public record ExportStagingIdentity(int FormatVersion, ulong VolumeSerialNumber, string FileId, long CreationFileTime);
 public record ProviderInfo(string Engine, string Fingerprint, string[] Voices, string State, int Active);
 public record AudioInfo(double Duration, int SampleRate, int Channels, long Samples, double Peak, double Rms);
 public sealed class AppSettings
