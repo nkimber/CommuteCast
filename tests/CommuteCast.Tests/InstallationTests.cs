@@ -149,6 +149,48 @@ public class InstallationTests
         Assert.Equal(stateHash, await Workspace.HashFileAsync(Path.Combine(install.Root, "installation.json")));
         Assert.Equal(databaseHash, await Workspace.HashFileAsync(database)); Assert.False(install.HasPendingOperation);
     }
+    [Fact] public async Task SchemaOneReleaseCannotActivateOverIdentityAwareSchemaTwoState()
+    {
+        using var test = new TestWorkspace(); await SeedAsync(test, "Identity-aware queued state");
+        var current = await PackageAsync(test, "current-schema-two"); var older = await SchemaOnePackageAsync(test);
+        using var lease = WorkspaceLease.Acquire(test.Workspace); var install = new Installation(Path.Combine(test.Parent, "program"));
+        await install.ActivateAsync(lease, current);
+        var pointer = await Workspace.HashFileAsync(Path.Combine(install.Root, "installation.json"));
+        var database = Path.Combine(test.Workspace.Root, "queue.db"); var hash = await Workspace.HashFileAsync(database);
+        var error = await Assert.ThrowsAsync<IOException>(() => install.ActivateAsync(lease, older));
+        Assert.Contains("does not support", error.Message); Assert.Equal(pointer, await Workspace.HashFileAsync(Path.Combine(install.Root, "installation.json")));
+        Assert.Equal(hash, await Workspace.HashFileAsync(database)); Assert.False(install.HasPendingOperation);
+    }
+    [Fact] public async Task RollbackRestoresCompatibleSchemaOneSnapshotAndUndoRestoresSchemaTwo()
+    {
+        using var test = new TestWorkspace(); var original = await SeedAsync(test, "Earlier frozen schema-one state");
+        await ExecuteSqlAsync(test, "DELETE FROM schema_history WHERE version>1; PRAGMA user_version=1;");
+        var older = await SchemaOnePackageAsync(test); var current = await PackageAsync(test, "current-schema-two");
+        using var lease = WorkspaceLease.Acquire(test.Workspace); var install = new Installation(Path.Combine(test.Parent, "program"));
+        var oldRelease = await install.ActivateAsync(lease, older);
+        var upgraded = await install.ActivateAsync(lease, current);
+        Assert.Equal(2, await SqliteSchema.ValidateDatabaseAsync(Path.Combine(test.Workspace.Root, "queue.db")));
+        var rolledBack = await install.RollbackAsync(lease);
+        Assert.Equal(oldRelease.State.CurrentPackageId, rolledBack.State.CurrentPackageId);
+        Assert.Equal(1, await SqliteSchema.ValidateDatabaseAsync(Path.Combine(test.Workspace.Root, "queue.db")));
+        // Do not open the old snapshot through the newer job store before undo:
+        // opening would deliberately upgrade it again.
+        Assert.True(File.Exists(test.Workspace.ChunkPath(original, 0)));
+        var undone = await install.RollbackAsync(lease);
+        Assert.Equal(upgraded.State.CurrentPackageId, undone.State.CurrentPackageId);
+        Assert.Equal(2, await SqliteSchema.ValidateDatabaseAsync(Path.Combine(test.Workspace.Root, "queue.db")));
+        Assert.Equal(JsonSerializer.Serialize(original), JsonSerializer.Serialize(Assert.Single(await new SqliteJobStore(test.Workspace).LoadAsync())));
+    }
+    private static async Task<string> SchemaOnePackageAsync(TestWorkspace test)
+    {
+        var path = await PackageAsync(test, "older-schema-one");
+        var manifest = (await ReleasePackage.ValidateAsync(path)) with { MaximumSchema = 1 };
+        // Produce the documented legacy manifest identity with its older capability.
+        var identity = Job.Hash(JsonSerializer.Serialize(new { manifest.AppVersion, manifest.DesktopBuild, manifest.MaintenanceBuild,
+            manifest.BundledRuntime, manifest.Target, manifest.MinimumSchema, manifest.MaximumSchema, manifest.ProviderContract, manifest.Files }));
+        await File.WriteAllTextAsync(Path.Combine(path, ReleasePackage.ManifestName), JsonSerializer.Serialize(manifest with { PackageId = identity }));
+        Assert.Equal(1, (await ReleasePackage.ValidateAsync(path)).MaximumSchema); return path;
+    }
     [Theory] [InlineData(InstallationCheckpoint.Prepared)] [InlineData(InstallationCheckpoint.Activated)]
     public async Task UnrecordedFileDuringUninstallIsPreservedAndNeverSwept(InstallationCheckpoint checkpoint)
     {

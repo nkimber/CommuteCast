@@ -56,7 +56,10 @@ dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-ac
 dotnet run --project tools\CommuteCast.Pilot -- piper artifacts/pilot/piper-host-loss-example --verify-queue-host-loss
 dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-host-loss-example --verify-queue-host-loss
 # Synthetic completed private-audio rename boundaries: four owned child terminations.
-powershell -File scripts\Test-PrivatePromotionCrash.ps1
+pwsh -File scripts\Test-PrivatePromotionCrash.ps1
+# Retained older binary against an isolated schema-2 queue.
+# Supply the maintenance executable from a previously extracted schema-1 package.
+pwsh -File scripts\Test-SchemaCompatibility.ps1 -OlderMaintenance C:\path\to\older\app\CommuteCast.Maintenance.exe
 ```
 
 Tests cover source span accounting, chunk ordering, Unicode boundaries, frozen settings, SQLite relaunch, cancellation, export collisions, rename reconciliation, changed-file deletion guards, cache corruption, and export-only retry. Pipeline tests require FFmpeg and FFprobe. Pilot output and reports are private, ignored files in `artifacts/pilot`; they do not upload to OneDrive.

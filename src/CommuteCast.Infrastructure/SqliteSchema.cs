@@ -10,7 +10,9 @@ public interface ISchemaMigrationObserver
 }
 public static class SqliteSchema
 {
-    public const int CurrentVersion = 1;
+    // Version 2 requires understanding identity-bound private promotion intent.
+    // Older binaries must refuse this state even though the SQL columns match.
+    public const int CurrentVersion = 2;
     public const int ApplicationId = 0x434D4354;
     public const string AppVersion = "0.1.0";
     public static string ConnectionString(string path, SqliteOpenMode mode = SqliteOpenMode.ReadWriteCreate) =>
@@ -125,8 +127,16 @@ public static class SqliteSchema
         }
         using var transaction = connection.BeginTransaction();
         await using var command = connection.CreateCommand(); command.Transaction = transaction;
-        command.CommandText = $"CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, created TEXT NOT NULL, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, stage TEXT NOT NULL, timestamp TEXT NOT NULL); CREATE TABLE schema_history(version INTEGER PRIMARY KEY,app_version TEXT NOT NULL,applied_utc TEXT NOT NULL); CREATE INDEX IF NOT EXISTS events_by_job ON events(job_id,sequence); INSERT INTO schema_history VALUES($version,$app,$now); PRAGMA application_id={ApplicationId}; PRAGMA user_version={CurrentVersion};";
-        command.Parameters.AddWithValue("$version", CurrentVersion); command.Parameters.AddWithValue("$app", AppVersion); command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.CommandText = "CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, created TEXT NOT NULL, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, stage TEXT NOT NULL, timestamp TEXT NOT NULL); CREATE TABLE IF NOT EXISTS schema_history(version INTEGER PRIMARY KEY,app_version TEXT NOT NULL,applied_utc TEXT NOT NULL); CREATE INDEX IF NOT EXISTS events_by_job ON events(job_id,sequence);";
+        await command.ExecuteNonQueryAsync(ct);
+        for (var next = version + 1; next <= CurrentVersion; next++)
+        {
+            command.CommandText = "INSERT INTO schema_history VALUES($version,$app,$now)";
+            command.Parameters.Clear(); command.Parameters.AddWithValue("$version", next);
+            command.Parameters.AddWithValue("$app", AppVersion); command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync(ct);
+        }
+        command.Parameters.Clear(); command.CommandText = $"PRAGMA application_id={ApplicationId}; PRAGMA user_version={CurrentVersion};";
         await command.ExecuteNonQueryAsync(ct);
         if (observer is not null) await observer.BeforeCommitAsync(version, CurrentVersion, ct);
         ct.ThrowIfCancellationRequested(); transaction.Commit();
