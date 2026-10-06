@@ -1,6 +1,7 @@
 """CommuteCast contract v1. No text logs, network inference, or runtime downloads."""
 import hashlib
 import io
+import json
 import logging
 import os
 import threading
@@ -9,6 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
+import onnxruntime as ort
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
@@ -19,13 +21,25 @@ model = None
 voices = []
 fingerprint = ""
 active = 0
+execution = None
 gate = threading.Lock()
 logging.getLogger("kokoro_onnx").setLevel(logging.CRITICAL)
 logging.getLogger("phonemizer").setLevel(logging.CRITICAL)
 
 
+def cpu_session(path):
+    # Match the verified two-CPU service quota; default pools use host physical cores.
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 2
+    options.inter_op_num_threads = 1
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+    return ort.InferenceSession(str(path), sess_options=options, providers=["CPUExecutionProvider"])
+
+
 def load():
-    global model, voices, fingerprint, state
+    global model, voices, fingerprint, state, execution
     try:
         folder = Path("/models") / ENGINE
         h = hashlib.sha256()
@@ -41,14 +55,23 @@ def load():
         fingerprint = ENGINE + ":contract-v1:" + h.hexdigest()
         if ENGINE == "kokoro":
             from kokoro_onnx import Kokoro
-            model = Kokoro(str(folder / "kokoro-v1.0.onnx"), str(folder / "voices-v1.0.bin"))
+            session = cpu_session(folder / "kokoro-v1.0.onnx")
+            model = Kokoro.from_session(session, str(folder / "voices-v1.0.bin"))
             voices = sorted(v for v in model.get_voices() if v.startswith(("af_", "am_", "bf_", "bm_")))
         elif ENGINE == "piper":
             from piper import PiperVoice
-            model = PiperVoice.load(str(folder / "en_US-lessac-medium.onnx"))
+            from piper.config import PiperConfig
+            session = cpu_session(folder / "en_US-lessac-medium.onnx")
+            config = json.loads((folder / "en_US-lessac-medium.onnx.json").read_text())
+            model = PiperVoice(session=session, config=PiperConfig.from_dict(config))
             voices = ["en_US-lessac-medium"]
         else:
             raise ValueError("unsupported engine")
+        actual = session.get_session_options()
+        execution = {"provider": session.get_providers()[0], "intraOpThreads": actual.intra_op_num_threads,
+                     "interOpThreads": actual.inter_op_num_threads, "mode": actual.execution_mode.name,
+                     "intraOpSpinning": actual.get_session_config_entry("session.intra_op.allow_spinning"),
+                     "interOpSpinning": actual.get_session_config_entry("session.inter_op.allow_spinning")}
         state = "ready"
     except Exception:
         state = "failed"
@@ -66,7 +89,7 @@ app = FastAPI(title="CommuteCast Speech", version="1", lifespan=lifespan)
 @app.get("/health")
 def health():
     return {"service": "CommuteCast", "contract": 1, "engine": ENGINE,
-            "fingerprint": fingerprint, "voices": voices, "state": state, "active": active}
+            "fingerprint": fingerprint, "voices": voices, "state": state, "active": active, "execution": execution}
 
 
 class SpeechRequest(BaseModel):

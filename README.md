@@ -42,6 +42,8 @@ dotnet run --project tools\CommuteCast.Pilot -- piper
 
 Tests cover source span accounting, chunk ordering, Unicode boundaries, frozen settings, SQLite relaunch, cancellation, export collisions, rename reconciliation, changed-file deletion guards, cache corruption, and export-only retry. Pipeline tests require FFmpeg and FFprobe. Pilot output and reports are private, ignored files in `artifacts/pilot`; they do not upload to OneDrive.
 
+The real-service pilot uses a fresh isolated folder, the locally pinned image, and an English technical pronunciation profile (scientific numbers, uppercase letter spelling, ISO dates and dictionary overrides). It verifies raw/script accounting, complete ordered receipts, the durable frozen snapshot, full audio validation and byte-identical local export. Its report records readiness separately from generation/validation/export time. Current smoke tests pass for both engines; subjective voice quality, longer workload approval and phone/cloud acceptance remain open. On this machine, one candidate run generated 120 seconds of Kokoro audio in 289 seconds and 113 seconds of Piper audio in 50 seconds; these are single-workload observations, not accepted performance guarantees.
+
 ## Architecture
 
 - `src/CommuteCast.Core`: domain records, deterministic preparation, coverage and chunking; no WPF or provider JSON dependency.
