@@ -5,6 +5,30 @@ namespace CommuteCast.Tests;
 
 public class RecoveryTests
 {
+    [Fact] public async Task PendingOrderSurvivesRelaunchWithoutChangingCapturedSettings()
+    {
+        using var test = new TestWorkspace(); var store = new SqliteJobStore(test.Workspace);
+        var first = MakeJob(test); var second = MakeJob(test); var third = MakeJob(test);
+        second.Settings = second.Settings with { Speed = 1.2 }; second.Title = "Second";
+        await using (var queue = new QueueCoordinator(test.Workspace, store, new FakeProvider(), new(new()), new(test.Workspace, store)) { Paused = true })
+        {
+            await queue.InitializeAsync(); await queue.AddAsync(first); await queue.AddAsync(second); await queue.AddAsync(third);
+            await queue.MovePendingAsync(second.Id, -1);
+            Assert.Equal(new[] { second.Id, first.Id, third.Id }, queue.Snapshot().Select(j => j.Id));
+        }
+        await using var reopened = new QueueCoordinator(test.Workspace, store, new FakeProvider(), new(new()), new(test.Workspace, store)) { Paused = true };
+        await reopened.InitializeAsync();
+        Assert.Equal(new[] { second.Id, first.Id, third.Id }, reopened.Snapshot().Select(j => j.Id));
+        var restored = reopened.Snapshot().First(); Assert.Equal(second.Settings, restored.Settings); Assert.Equal(second.CreatedUtc, restored.CreatedUtc); Assert.Equal(second.Destination, restored.Destination);
+    }
+    [Fact] public async Task CancelledAndCompletedJobsCannotBeReordered()
+    {
+        using var test = new TestWorkspace(); var store = new SqliteJobStore(test.Workspace);
+        await using var queue = new QueueCoordinator(test.Workspace, store, new FakeProvider(), new(new()), new(test.Workspace, store)) { Paused = true };
+        await queue.InitializeAsync(); var job = MakeJob(test); await queue.AddAsync(job); await queue.CancelAsync(job.Id);
+        await Assert.ThrowsAsync<ArgumentException>(() => queue.MovePendingAsync(job.Id, -1));
+        await Assert.ThrowsAsync<ArgumentException>(() => queue.MovePendingAsync(job.Id, 0));
+    }
     [Fact] public async Task InterruptedDeletionResumesBeforeGeneration()
     {
         using var test = new TestWorkspace(); var store = new SqliteJobStore(test.Workspace); var provider = new FakeProvider();

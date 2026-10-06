@@ -7,6 +7,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
 {
     private readonly List<Job> jobs = [];
     private readonly object sync = new();
+    private readonly SemaphoreSlim dispatchGate = new(1);
     private readonly CancellationTokenSource lifetime = new();
     private CancellationTokenSource? activeCancellation;
     private string? activeId;
@@ -14,12 +15,32 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     private Task? worker;
     public SemaphoreSlim InferenceGate { get; } = new(1);
     public bool Paused { get; set; }
+    public int CacheQuotaMiB { get; set; } = 1024;
+    public int ScratchRetentionDays { get; set; } = 7;
+    public string MaintenanceError { get; private set; } = "";
     public event Action<IReadOnlyList<Job>>? Changed;
     public IReadOnlyList<Job> Snapshot()
     {
         lock (sync) return jobs.Select(j => JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(j))!).ToArray();
     }
     private void Notify() => Changed?.Invoke(Snapshot());
+    public Task<StorageUsage> MeasureStorageAsync(CancellationToken ct = default) => Task.Run(async () =>
+    {
+        string? active;
+        lock (sync) active = activeId;
+        return await new CacheMaintenance(workspace).MeasureAsync(Snapshot(), active, ct);
+    }, ct);
+    public async Task<CleanupResult> CleanCacheAsync(CancellationToken ct = default)
+    {
+        await dispatchGate.WaitAsync(ct);
+        try
+        {
+            string? active;
+            lock (sync) active = activeId;
+            return await Task.Run(() => new CacheMaintenance(workspace).CleanAsync(Snapshot(), active, CacheQuotaMiB, ScratchRetentionDays, ct), ct);
+        }
+        finally { dispatchGate.Release(); }
+    }
     public async Task InitializeAsync(CancellationToken ct = default)
     {
         var loaded = await store.LoadAsync(ct);
@@ -41,14 +62,46 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             }
             retained.Add(job);
         }
-        lock (sync) jobs.AddRange(retained);
+        lock (sync) jobs.AddRange(retained.OrderBy(j => j.QueuePosition == 0 ? j.CreatedUtc.UtcTicks : j.QueuePosition).ThenBy(j => j.CreatedUtc));
         Notify();
         worker = Task.Run(WorkLoopAsync);
     }
     public async Task AddAsync(Job job, CancellationToken ct = default)
     {
-        await store.SaveAsync(job, ct);
-        lock (sync) jobs.Add(job);
+        await dispatchGate.WaitAsync(ct);
+        try
+        {
+            lock (sync) job.QueuePosition = Math.Max(DateTimeOffset.UtcNow.UtcTicks, jobs.Select(j => j.QueuePosition).DefaultIfEmpty().Max() + 1);
+            await store.SaveAsync(job, ct);
+            lock (sync) jobs.Add(job);
+        }
+        finally { dispatchGate.Release(); }
+        Notify();
+    }
+    public async Task MovePendingAsync(string id, int direction, CancellationToken ct = default)
+    {
+        if (direction is not (-1 or 1)) throw new ArgumentException("Choose move earlier or later.");
+        await dispatchGate.WaitAsync(ct);
+        try
+        {
+            List<Job> pending;
+            lock (sync) pending = jobs.Where(j => j.Stage == JobStage.Queued && !j.DeletionRequested && j.Id != activeId).ToList();
+            var index = pending.FindIndex(j => j.Id == id);
+            if (index < 0) throw new ArgumentException("Only pending narrations can be reordered.");
+            var target = index + direction;
+            if (target < 0 || target >= pending.Count) return;
+            (pending[index], pending[target]) = (pending[target], pending[index]);
+            var position = DateTimeOffset.UtcNow.UtcTicks;
+            var positions = pending.Select((j, i) => (j.Id, Position: position + i)).ToDictionary(x => x.Id, x => x.Position);
+            await store.SaveQueueOrderAsync(positions, ct);
+            lock (sync)
+            {
+                foreach (var job in pending) job.QueuePosition = positions[job.Id];
+                var next = 0;
+                for (var i = 0; i < jobs.Count; i++) if (positions.ContainsKey(jobs[i].Id)) jobs[i] = pending[next++];
+            }
+        }
+        finally { dispatchGate.Release(); }
         Notify();
     }
     private async Task WorkLoopAsync()
@@ -56,17 +109,22 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         while (!lifetime.IsCancellationRequested)
         {
             Job? job;
-            lock (sync)
+            await dispatchGate.WaitAsync();
+            try
             {
-                job = Paused ? null : jobs.FirstOrDefault(j => j.Stage == JobStage.Queued && !j.DeletionRequested);
-                if (job is not null)
+                lock (sync)
                 {
-                    activeId = job.Id;
-                    activeCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-                    activeFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
-                    job.Stage = JobStage.Preparing;
+                    job = Paused || lifetime.IsCancellationRequested ? null : jobs.FirstOrDefault(j => j.Stage == JobStage.Queued && !j.DeletionRequested);
+                    if (job is not null)
+                    {
+                        activeId = job.Id;
+                        activeCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                        activeFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                        job.Stage = JobStage.Preparing;
+                    }
                 }
             }
+            finally { dispatchGate.Release(); }
             if (job is null)
             {
                 try { await Task.Delay(400, lifetime.Token); } catch (OperationCanceledException) { break; }
@@ -97,6 +155,9 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                 cancellation.Dispose();
                 Notify();
             }
+            try { await CleanCacheAsync(lifetime.Token); MaintenanceError = ""; }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
+            catch (Exception error) { MaintenanceError = FriendlyError(error); }
         }
     }
     public static string FriendlyError(Exception error) => error switch
@@ -189,6 +250,12 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     }
     public async Task CancelAsync(string id)
     {
+        await dispatchGate.WaitAsync();
+        try { await CancelCoreAsync(id); }
+        finally { dispatchGate.Release(); }
+    }
+    private async Task CancelCoreAsync(string id)
+    {
         Task? pending = null;
         Job? job;
         lock (sync)
@@ -206,6 +273,12 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         Notify();
     }
     public async Task RetryAsync(string id, string? destination = null)
+    {
+        await dispatchGate.WaitAsync();
+        try { await RetryCoreAsync(id, destination); }
+        finally { dispatchGate.Release(); }
+    }
+    private async Task RetryCoreAsync(string id, string? destination)
     {
         Task? settling = null;
         lock (sync)
@@ -234,7 +307,13 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     }
     public async Task DeleteAsync(string id, bool deleteExport)
     {
-        await CancelAsync(id);
+        await dispatchGate.WaitAsync();
+        try { await DeleteCoreAsync(id, deleteExport); }
+        finally { dispatchGate.Release(); }
+    }
+    private async Task DeleteCoreAsync(string id, bool deleteExport)
+    {
+        await CancelCoreAsync(id);
         Job job;
         lock (sync) job = jobs.First(j => j.Id == id);
         job.DeletionRequested = true;

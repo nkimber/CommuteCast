@@ -122,6 +122,28 @@ public sealed class SqliteJobStore : IJobStore
         }
         finally { gate.Release(); }
     }
+    public async Task SaveQueueOrderAsync(IReadOnlyDictionary<string, long> positions, CancellationToken ct = default)
+    {
+        await gate.WaitAsync(ct);
+        try
+        {
+            await using var connection = await OpenAsync(ct);
+            using var transaction = connection.BeginTransaction();
+            foreach (var (id, position) in positions)
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                // Update only the order field; do not overwrite concurrent stage or receipt saves.
+                command.CommandText = "UPDATE jobs SET payload=json_set(payload,'$.QueuePosition',$position) WHERE id=$id AND json_extract(payload,'$.Stage')=$queued;";
+                command.Parameters.AddWithValue("$id", id);
+                command.Parameters.AddWithValue("$position", position);
+                command.Parameters.AddWithValue("$queued", (int)JobStage.Queued);
+                if (await command.ExecuteNonQueryAsync(ct) != 1) throw new IOException("Queue order changed while saving. Refresh the library and try again.");
+            }
+            transaction.Commit();
+        }
+        finally { gate.Release(); }
+    }
     public async Task RemoveAsync(string id, CancellationToken ct = default)
     {
         await gate.WaitAsync(ct);

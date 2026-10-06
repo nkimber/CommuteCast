@@ -13,6 +13,7 @@ public sealed class Job
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public DateTimeOffset CreatedUtc { get; set; } = DateTimeOffset.UtcNow;
+    public long QueuePosition { get; set; }
     public string Title { get; set; } = "";
     public string Source { get; set; } = "";
     public PreparedText Prepared { get; set; } = new("", []);
@@ -47,11 +48,15 @@ public sealed class AppSettings
     public bool QueuePaused { get; set; }
     public string Ffmpeg { get; set; } = "ffmpeg";
     public string Ffprobe { get; set; } = "ffprobe";
+    public int CacheQuotaMiB { get; set; } = 1024;
+    public int ScratchRetentionDays { get; set; } = 7;
+    public int PrivateStorageLimitMiB { get; set; } = 10240;
     public Dictionary<string, ProviderInfo> Providers { get; set; } = [];
 }
 public interface IJobStore
 {
     Task SaveAsync(Job job, CancellationToken ct = default);
+    Task SaveQueueOrderAsync(IReadOnlyDictionary<string, long> positions, CancellationToken ct = default);
     Task<IReadOnlyList<Job>> LoadAsync(CancellationToken ct = default);
     Task RemoveAsync(string id, CancellationToken ct = default);
 }
