@@ -248,6 +248,25 @@ public class ProviderContractTests
         finally { stream.Release.TrySetResult(0); }
         Assert.False(File.Exists(fixture.Output)); Assert.Empty(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"));
     }
+    [Theory] [InlineData("kokoro")] [InlineData("piper")]
+    public async Task UnsupportedPronunciationIsRefusedBeforeRuntimeOrHttp(string engine)
+    {
+        using var fixture = new Fixture(engine); using var provider = fixture.Provider();
+        foreach (var profile in new[] { new PronunciationProfile(Version: "future"), new(Language: "fr"), new(Numbers: (NumberReading)999) })
+            await Assert.ThrowsAsync<ArgumentException>(() => provider.SynthesizeAsync(fixture.Settings with { Profile = profile }, "API 24", fixture.Output, default));
+        Assert.Empty(fixture.Runtime.Calls); Assert.Empty(fixture.Http.Uris); Assert.False(File.Exists(fixture.Output));
+    }
+    [Theory] [InlineData("kokoro")] [InlineData("piper")]
+    public async Task SupportedProfilesSendOnlyTheExactAlreadyReviewedScript(string engine)
+    {
+        using var fixture = new Fixture(engine); using var provider = fixture.Provider(); var profile = new PronunciationProfile(Numbers: NumberReading.NumberWords, Acronyms: AcronymReading.SpellUppercaseWords);
+        var prepared = TextPreparation.Prepare("API 24", profile: profile);
+        await provider.SynthesizeAsync(fixture.Settings with { Profile = profile }, prepared.Script, fixture.Output, default);
+        Assert.Equal(1, fixture.Http.Posts); Assert.True(File.Exists(fixture.Output));
+        using var body = JsonDocument.Parse(Assert.Single(fixture.Http.Bodies));
+        Assert.Equal("A P I twenty four", body.RootElement.GetProperty("text").GetString());
+        Assert.False(body.RootElement.TryGetProperty("profile", out _));
+    }
     private sealed class Fixture : IDisposable
     {
         public TestWorkspace Test { get; } = new(); public FakeRuntime Runtime { get; } public Handler Http { get; }

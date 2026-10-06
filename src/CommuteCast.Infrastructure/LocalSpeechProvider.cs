@@ -145,6 +145,7 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
     }
     public async Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
     {
+        settings.Profile?.Validate(settings.Engine);
         if (string.IsNullOrWhiteSpace(text) || text.Length > 900 || settings.Speed is < .7 or > 1.4 || !double.IsFinite(settings.Speed)) throw new ArgumentException("Choose valid text within the 900-character provider limit and a supported speaking pace.");
         output = Path.GetFullPath(output);
         if (!Workspace.IsWithin(workspace.Root, output)) throw new IOException("Speech output must remain in the private workspace.");

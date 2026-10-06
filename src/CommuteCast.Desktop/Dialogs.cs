@@ -16,11 +16,24 @@ public sealed class PreparationWindow : Window
         var panel = new DockPanel { Margin = new(24) };
         var heading = new TextBlock { Text = $"{source.Length:N0} source characters accounted for · {prepared.Spans.Count:N0} spans · {prepared.Spans.Count(s => s.Kind == "explicit exclusion")} explicitly excluded spans\nPreparation {prepared.Version}. Automated accounting does not prove exact spoken fidelity.", Margin = new(0, 0, 0, 18), TextWrapping = TextWrapping.Wrap };
         DockPanel.SetDock(heading, Dock.Top); panel.Children.Add(heading);
+        if (prepared.ProfileReview is { } review)
+        {
+            var summary = new TextBlock { Text = $"{review.Profile.Version} · {review.Profile.Language} · {review.Profile.Numbers} · {review.Profile.Acronyms} · {review.Profile.Dates}\nDictionary {review.Profile.DictionaryVersion}, revision {review.DictionaryRevision[..Math.Min(12, review.DictionaryRevision.Length)]}. {review.Changes.Count:N0} changes / {review.Changes.Count(c => c.Warning)} warnings. Changes appear in execution order; dictionary cascades can cover the same source twice. Offsets use UTF-16 characters.", TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 14) };
+            DockPanel.SetDock(summary, Dock.Top); panel.Children.Add(summary);
+        }
         var close = new Button { Content = "Close review", Padding = new(20, 10, 20, 10), HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 16, 0, 0), IsCancel = true };
         DockPanel.SetDock(close, Dock.Bottom); panel.Children.Add(close);
         var tabs = new TabControl();
         tabs.Items.Add(new TabItem { Header = "Spoken text", Content = TextArea(prepared.Script, "Prepared narration script") });
         tabs.Items.Add(new TabItem { Header = "Original source", Content = TextArea(source, "Original submitted source") });
+        if (prepared.ProfileReview is { } pronunciation)
+        {
+            var view = new DataGrid { IsReadOnly = true, AutoGenerateColumns = false, ItemsSource = pronunciation.Changes, CanUserAddRows = false, EnableRowVirtualization = true };
+            foreach (var field in new[] { "SourceStart", "SourceLength", "Original", "Before", "After", "Rule", "Warning" })
+                view.Columns.Add(new DataGridTextColumn { Header = field, Binding = new Binding(field), Width = field is "SourceStart" or "SourceLength" or "Warning" ? new DataGridLength(85) : new DataGridLength(1, DataGridLengthUnitType.Star) });
+            System.Windows.Automation.AutomationProperties.SetName(view, "Pronunciation changes in execution order, source positions in UTF-16 characters");
+            tabs.Items.Add(new TabItem { Header = "Pronunciation changes", Content = view });
+        }
         var map = new DataGrid { IsReadOnly = true, AutoGenerateColumns = false, ItemsSource = prepared.Spans, CanUserAddRows = false, EnableRowVirtualization = true };
         map.Columns.Add(new DataGridTextColumn { Header = "Start", Binding = new Binding("Start"), Width = 65 });
         map.Columns.Add(new DataGridTextColumn { Header = "Length", Binding = new Binding("Length"), Width = 65 });

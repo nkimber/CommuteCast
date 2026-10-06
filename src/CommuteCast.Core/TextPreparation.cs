@@ -6,8 +6,12 @@ namespace CommuteCast.Core;
 public static partial class TextPreparation
 {
     public const int MaximumCharacters = 250_000;
-    public static PreparedText Prepare(string source, bool excludeCode = false, string pronunciation = "")
+    public static void ValidateDictionary(string dictionary) => ProfilePreparation.ValidateDictionary(dictionary);
+    public static string DictionaryRevision(string dictionary) => ProfilePreparation.DictionaryRevision(dictionary);
+    public static PreparedText Prepare(string source, bool excludeCode = false, string pronunciation = "", PronunciationProfile? profile = null, CancellationToken ct = default)
     {
+        if (profile is not null) return ProfilePreparation.Prepare(source, excludeCode, pronunciation, profile, ct);
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(source)) throw new ArgumentException("Paste some text before queueing.");
         if (source.Length > MaximumCharacters) throw new ArgumentException($"The input limit is {MaximumCharacters:N0} characters. Your draft is retained.");
         var rules = ParseDictionary(pronunciation);

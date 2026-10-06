@@ -23,6 +23,7 @@ public abstract class Observable : INotifyPropertyChanged
         field = value; Raise(name); return true;
     }
 }
+public sealed record PronunciationOption<T>(T Value, string Label);
 public sealed class AsyncCommand(Func<object?, Task> execute, Action<Exception> failure) : ICommand
 {
     private bool running;
@@ -56,7 +57,7 @@ public sealed class JobView(Job job, Workspace workspace)
     };
     public double Progress => Job.CompletedChunks;
     public double ChunkTotal => Math.Max(1, Job.Chunks.Count);
-    public string Details => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks" + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
+    public string Details => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
     public string Error => string.Join(Environment.NewLine, new[] { Job.Error,
         string.IsNullOrWhiteSpace(Job.ExportNotice) || Job.Error.Contains(Job.ExportNotice, StringComparison.Ordinal) ? "" : Job.ExportNotice }.Where(s => !string.IsNullOrWhiteSpace(s)));
     public string Delivery => Job.Stage == JobStage.Exported
@@ -106,12 +107,27 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     }
     public string DraftTitle { get => draftTitle; set { if (Set(ref draftTitle, value)) ScheduleDraftSave(); } }
     public string CharacterCount => $"{source.Length:N0} / {TextPreparation.MaximumCharacters:N0} characters";
-    public string Engine { get => settings.Engine; set { if (settings.Engine == value || value is null) return; settings.Engine = value; settings.Voice = value == "kokoro" ? "af_heart" : "en_US-lessac-medium"; Voices.Clear(); Voices.Add(settings.Voice); Raise(); Raise(nameof(Voice)); ServiceStatus = "Check readiness to refresh voices"; } }
+    public string Engine { get => settings.Engine; set { if (settings.Engine == value || value is null) return; settings.Engine = value; settings.Voice = value == "kokoro" ? "af_heart" : "en_US-lessac-medium"; Voices.Clear(); Voices.Add(settings.Voice); Raise(); Raise(nameof(Voice)); RaiseProfile(); ServiceStatus = "Check readiness to refresh voices"; } }
     public string Voice { get => settings.Voice; set { if (value is not null) { settings.Voice = value; Raise(); } } }
     public double Speed { get => settings.Speed; set { settings.Speed = Math.Round(value, 2); Raise(); Raise(nameof(SpeedLabel)); } }
     public string SpeedLabel => $"{Speed:0.00}×";
     public bool ExcludeCode { get => settings.ExcludeCode; set { settings.ExcludeCode = value; Raise(); } }
     public string Pronunciation { get => settings.Pronunciation; set { settings.Pronunciation = value; Raise(); } }
+    public PronunciationOption<NumberReading>[] NumberOptions { get; } = [new(NumberReading.AsWritten, "Keep numbers as written"), new(NumberReading.LiteralDigits, "Read each digit and symbol"), new(NumberReading.NumberWords, "Read integer and decimal values"), new(NumberReading.ScientificWords, "Read values and scientific exponents")];
+    public PronunciationOption<AcronymReading>[] AcronymOptions { get; } = [new(AcronymReading.AsWritten, "Keep uppercase words as written"), new(AcronymReading.SpellUppercaseWords, "Spell uppercase words (2–32 letters)")];
+    public PronunciationOption<DateReading>[] DateOptions { get; } = [new(DateReading.NoCalendarInterpretation, "No calendar interpretation"), new(DateReading.IsoYearMonthDay, "ISO dates: yyyy-MM-dd"), new(DateReading.MonthDayYear, "Month/day/year: M/d/yyyy"), new(DateReading.DayMonthYear, "Day/month/year: d/M/yyyy")];
+    private PronunciationProfile Profile => settings.PronunciationProfile ?? new();
+    public NumberReading NumberStyle { get => Profile.Numbers; set { settings.PronunciationProfile = Profile with { Numbers = value }; RaiseProfile(); } }
+    public AcronymReading AcronymStyle { get => Profile.Acronyms; set { settings.PronunciationProfile = Profile with { Acronyms = value }; RaiseProfile(); } }
+    public DateReading DateStyle { get => Profile.Dates; set { settings.PronunciationProfile = Profile with { Dates = value }; RaiseProfile(); } }
+    public bool PronunciationSupported { get { try { Profile.Validate(Engine); return true; } catch (ArgumentException) { return false; } } }
+    public bool PronunciationUnsupported => !PronunciationSupported;
+    public string PronunciationCapability => PronunciationSupported
+        ? "English preparation for Kokoro and Piper. Dictionary entries take priority. No acronym meanings are guessed. Preview the complete script and exact changes before queueing."
+        : "This engine, language or saved profile version is unsupported. Choose Kokoro or Piper and reset to the supported English profile for a new narration.";
+    public string ProfileSummary => PronunciationSupported ? $"English · {NumberOptions.First(o => o.Value == NumberStyle).Label}\n{AcronymOptions.First(o => o.Value == AcronymStyle).Label} · {DateOptions.First(o => o.Value == DateStyle).Label}" : PronunciationCapability;
+    private void RaiseProfile() { Raise(nameof(NumberStyle)); Raise(nameof(AcronymStyle)); Raise(nameof(DateStyle)); Raise(nameof(PronunciationSupported)); Raise(nameof(PronunciationUnsupported)); Raise(nameof(PronunciationCapability)); Raise(nameof(ProfileSummary)); }
+    private PronunciationProfile CaptureProfile() { var profile = Profile; profile.Validate(Engine); return profile; }
     public string Ffmpeg { get => settings.Ffmpeg; set { settings.Ffmpeg = value; Raise(); } }
     public string Ffprobe { get => settings.Ffprobe; set { settings.Ffprobe = value; Raise(); } }
     public string DestinationDisplay => settings.Destination.Length == 0 ? "Choose your local OneDrive folder" : settings.Destination;
@@ -135,6 +151,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public ICommand SetupCommand { get; }
     public ICommand AuditionCommand { get; }
     public ICommand SaveSettingsCommand { get; }
+    public ICommand ResetPronunciationCommand { get; }
     public ICommand CheckEncoderCommand { get; }
     public ICommand ThemeCommand { get; }
     public ICommand PauseCommand { get; }
@@ -166,7 +183,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         Voices.Add(settings.Voice);
         NavigateCommand = Command(p => { Navigate(p?.ToString() ?? "compose"); return Task.CompletedTask; });
         QueueCommand = Command(_ => SubmitAsync());
-        ReviewCommand = Command(async _ => { var text = Source; var omit = ExcludeCode; var dictionary = Pronunciation; var prepared = await Task.Run(() => TextPreparation.Prepare(text, omit, dictionary)); ShowPreparation(prepared, text); });
+        ReviewCommand = Command(async _ => { var text = Source; var omit = ExcludeCode; var dictionary = Pronunciation; var profile = CaptureProfile(); var prepared = await Task.Run(() => TextPreparation.Prepare(text, omit, dictionary, profile, shutdown.Token), shutdown.Token); ShowPreparation(prepared, text); });
         ChooseFolderCommand = Command(async _ => { var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); settings.Destination = path; Raise(nameof(DestinationDisplay)); await SaveSettingsAsync(); StatusMessage = "Output folder saved. Only completed MP3s will be exported here."; } });
         TestFolderCommand = Command(async _ => { await publisher.TestDestinationAsync(settings.Destination); StatusMessage = "Local write access passed. OneDrive cloud upload is still unknown."; });
         ReadinessCommand = Command(_ => CheckReadinessAsync(true));
@@ -178,7 +195,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
             StatusMessage = "Setup inspection finished. Corporate approval and real narration acceptance remain separate.";
         });
         AuditionCommand = Command(_ => AuditionAsync());
-        SaveSettingsCommand = Command(async _ => { TextPreparation.ParseDictionary(Pronunciation); await SaveSettingsAsync(); StatusMessage = "Settings saved for future submissions."; });
+        SaveSettingsCommand = Command(async _ => { CaptureProfile(); TextPreparation.ValidateDictionary(Pronunciation); await SaveSettingsAsync(); StatusMessage = "Settings saved for future submissions."; });
+        ResetPronunciationCommand = Command(_ => { settings.PronunciationProfile = new(); RaiseProfile(); StatusMessage = "English profile selected for new narrations. Save settings to retain it."; return Task.CompletedTask; });
         CheckEncoderCommand = Command(_ => CheckEncoderAsync());
         ThemeCommand = Command(_ => { App.ToggleTheme(); return Task.CompletedTask; });
         PauseCommand = Command(async _ => { if (queue.Paused && queue.PersistenceError.Length > 0) throw new IOException(queue.PersistenceError); queue.Paused = !queue.Paused; settings.QueuePaused = queue.Paused; Raise(nameof(PauseLabel)); await SaveSettingsAsync(); StatusMessage = queue.Paused ? "Future dispatch paused. The current narration can finish." : "Queue resumed."; });
@@ -191,7 +209,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         RetryCommand = Command(async _ => { var job = RequireSelected(); await provider.ResetRecoveryBudgetAsync(job.Settings.Engine, shutdown.Token); await queue.RetryAsync(job.Id); });
         ReplaceDestinationCommand = Command(async _ => { var job = RequireSelected(); var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); await queue.RetryAsync(job.Id, path); StatusMessage = queue.Snapshot().Single(j => j.Id == job.Id).ExportNotice is { Length: > 0 } notice ? notice : "Narration queued in the selected output folder."; } });
         CancelCommand = Command(async _ => { var id = RequireSelected().Id; await queue.CancelAsync(id); StatusMessage = "Cancellation settled. Exported files remain exported; validated chunks are retained for retry."; });
-        ReuseCommand = Command(_ => { var job = RequireSelected(); DraftTitle = job.Title; Source = job.Source; Engine = job.Settings.Engine; Voice = job.Settings.Voice; Speed = job.Settings.Speed; ExcludeCode = job.Settings.ExcludeCode; Pronunciation = job.Settings.Pronunciation; Navigate("compose"); return Task.CompletedTask; });
+        ReuseCommand = Command(_ => { var job = RequireSelected(); DraftTitle = job.Title; Source = job.Source; Engine = job.Settings.Engine; Voice = job.Settings.Voice; Speed = job.Settings.Speed; ExcludeCode = job.Settings.ExcludeCode; Pronunciation = job.Settings.Pronunciation; settings.PronunciationProfile = job.Settings.Profile ?? new(); RaiseProfile(); Navigate("compose"); return Task.CompletedTask; });
         DeleteCommand = Command(_ => DeleteAsync(false));
         DeleteAllCommand = Command(_ => DeleteAsync(true));
         DiagnosticsCommand = Command(_ => DiagnosticsAsync());
@@ -283,7 +301,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         if (!queueLoaded) throw new IOException("Local queue records have not loaded. Repair storage or restore a verified compatible backup before submitting. Your draft is retained.");
         var text = Source; var title = DraftTitle.Trim();
         var engine = Engine; var voice = Voice; var speed = Speed; var exclusion = ExcludeCode; var dictionary = Pronunciation; var destination = settings.Destination;
-        var prepared = await Task.Run(() => TextPreparation.Prepare(text, exclusion, dictionary));
+        var profile = CaptureProfile();
+        var prepared = await Task.Run(() => TextPreparation.Prepare(text, exclusion, dictionary, profile, shutdown.Token), shutdown.Token);
         ValidateRetention();
         await queue.CleanCacheAsync(shutdown.Token);
         var usage = await queue.MeasureStorageAsync(shutdown.Token);
@@ -293,7 +312,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         await publisher.TestDestinationAsync(destination, shutdown.Token);
         if (!settings.Providers.TryGetValue(engine, out var info)) info = await CheckReadinessAsync();
         if (!info.Voices.Contains(voice)) throw new ArgumentException("Select an installed voice after checking readiness.");
-        var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint), Destination = destination };
+        var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint, profile), Destination = destination };
         await queue.AddAsync(job, shutdown.Token);
         if (Source == text) { Source = ""; DraftTitle = ""; }
         StatusMessage = "Narration saved to the durable queue. Follow progress in Your library, or paste your next narration here.";
@@ -302,14 +321,16 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     }
     private async Task AuditionAsync()
     {
-        var engine = Engine; var voice = Voice; var speed = Speed;
+        var engine = Engine; var voice = Voice; var speed = Speed; var dictionary = Pronunciation; var profile = CaptureProfile();
+        var sample = await Task.Run(() => TextPreparation.Prepare("Welcome to CommuteCast. The API processes 24 requests per second. Version 2.10 costs 12.50 dollars. The measurement is 1.25e-3. Dates: 2026-10-06 and 03/04/2026.", false, dictionary, profile, shutdown.Token), shutdown.Token);
+        if (sample.Script.Length > 900) throw new ArgumentException("The dictionary expands the audition beyond the provider limit. Shorten its replacements and preview preparation.");
         await queue.InferenceGate.WaitAsync(shutdown.Token);
         try
         {
             var info = await provider.ReadyAsync(engine, shutdown.Token, true);
             var path = Path.Combine(Workspace.Root, "audition.wav");
             player.Stop(); player.Close();
-            await provider.SynthesizeAsync(new(engine, voice, speed, false, "", info.Fingerprint), "Welcome to CommuteCast. A good idea deserves a little more time. Let's take this one on the road. The API processes twenty-four requests per second.", path, shutdown.Token);
+            await provider.SynthesizeAsync(new(engine, voice, speed, false, dictionary, info.Fingerprint, profile), sample.Script, path, shutdown.Token);
             player.Open(new Uri(path)); player.Play();
             StatusMessage = "Playing a short local voice audition. Choose the voice and pace that suit your listening.";
         }

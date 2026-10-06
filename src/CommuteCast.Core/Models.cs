@@ -8,9 +8,9 @@ public enum JobStage { Queued, Preparing, WaitingForService, Synthesizing, Assem
 public enum FailureCategory { None, Cancelled, Timeout, Prerequisite, ServiceConnection, ServiceContract, AccessDenied, AudioValidation, Export, Storage, Unexpected }
 public record DiagnosticEvent(string JobId, JobStage Stage, DateTimeOffset Timestamp, double? ElapsedSincePreviousMs);
 public record SourceSpan(int Start, int Length, string Kind, string Original, string Narration);
-public record PreparedText(string Script, IReadOnlyList<SourceSpan> Spans, string Version = "prepare-v1");
+public record PreparedText(string Script, IReadOnlyList<SourceSpan> Spans, string Version = "prepare-v1", PronunciationReview? ProfileReview = null);
 public record TextChunk(int Index, int Start, int Length, string Text, bool HardSplit);
-public record NarrationSettings(string Engine, string Voice, double Speed, bool ExcludeCode, string Pronunciation, string ProviderFingerprint);
+public record NarrationSettings(string Engine, string Voice, double Speed, bool ExcludeCode, string Pronunciation, string ProviderFingerprint, PronunciationProfile? Profile = null);
 public sealed class Job
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -43,7 +43,10 @@ public sealed class Job
     public bool CancellationRequested { get => cancellationRequested; set => cancellationRequested = value; }
     public bool DeletionRequested { get; set; }
     public bool DeleteExportRequested { get; set; }
-    public string Fingerprint => Hash(JsonSerializer.Serialize(new { Settings, Prepared.Version, Prepared.Script, AudioContractVersion, ChunkingVersion }));
+    public string Fingerprint => Hash(JsonSerializer.Serialize(new { Settings = FingerprintSettings(), Prepared.Version, Prepared.Script, AudioContractVersion, ChunkingVersion }));
+    private object FingerprintSettings() => Settings.Profile is null
+        ? new { Settings.Engine, Settings.Voice, Settings.Speed, Settings.ExcludeCode, Settings.Pronunciation, Settings.ProviderFingerprint }
+        : Settings;
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 public record ChunkReceipt(int Index, string Hash, string Fingerprint, double Duration);
@@ -57,6 +60,7 @@ public sealed class AppSettings
     public string Voice { get; set; } = "af_heart";
     public double Speed { get; set; } = 1;
     public string Pronunciation { get; set; } = "";
+    public PronunciationProfile PronunciationProfile { get; set; } = new();
     public bool ExcludeCode { get; set; }
     public bool QueuePaused { get; set; }
     public string Ffmpeg { get; set; } = "ffmpeg";

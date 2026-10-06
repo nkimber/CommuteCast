@@ -84,6 +84,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     }
     public async Task AddAsync(Job job, CancellationToken ct = default)
     {
+        ValidatePronunciation(job);
         await dispatchGate.WaitAsync(ct);
         try
         {
@@ -94,6 +95,14 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         }
         finally { dispatchGate.Release(); }
         Notify();
+    }
+    private static void ValidatePronunciation(Job job)
+    {
+        if (job.Settings.Profile is not { } profile) return;
+        profile.Validate(job.Settings.Engine);
+        if (job.Prepared.Version != "prepare-v3" || job.Prepared.ProfileReview is not { } review || review.Profile != profile ||
+            review.DictionaryRevision != TextPreparation.DictionaryRevision(job.Settings.Pronunciation))
+            throw new ArgumentException("The captured pronunciation profile and prepared script differ. Submit a new narration after reviewing preparation.");
     }
     private async Task CheckStorageBudgetAsync(IReadOnlyList<Job> snapshots, string? addedScript, CancellationToken ct)
     {
@@ -237,6 +246,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         lock (sync) if (job.Chunks.Count == 0) job.Chunks = Chunker.Split(job.Prepared.Script, 450);
         if (job.ChunkingVersion != "chunk450-v1" || job.AudioContractVersion != AudioPipeline.ContractVersion) throw new IOException("This job uses an unsupported chunk/audio contract. Restore its application version or submit a new narration.");
         Chunker.ValidateManifest(job.Chunks, job.Prepared.Script);
+        ValidatePronunciation(job);
         await StageAsync(job, JobStage.Preparing, ct);
         var valid = new List<ChunkReceipt>();
         foreach (var chunk in job.Chunks)
