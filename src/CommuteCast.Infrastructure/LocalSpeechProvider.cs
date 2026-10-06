@@ -49,7 +49,7 @@ public sealed class LocalSpeechProvider(Workspace workspace) : ISpeechProvider, 
         var image = pinned.RootElement.GetProperty("ImageId").GetString();
         var context = await ProcessRunner.RunAsync("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], TimeSpan.FromSeconds(30), ct);
         if (context.ExitCode != 0 || !context.Output.Trim().StartsWith("npipe://", StringComparison.Ordinal)) throw new IOException("Select the local Docker Desktop context. Remote Docker engines are not permitted.");
-        var daemon = await ProcessRunner.RunAsync("docker", ["info", "--format", "{{.ServerVersion}}"], TimeSpan.FromSeconds(30), ct);
+        var daemon = await ProcessRunner.RunAsync("docker", ["version", "--format", "{{.Server.Version}}"], TimeSpan.FromSeconds(15), ct);
         if (daemon.ExitCode != 0 && startIfStopped)
         {
             var desktop = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Docker", "Docker", "Docker Desktop.exe");
@@ -58,7 +58,7 @@ public sealed class LocalSpeechProvider(Workspace workspace) : ISpeechProvider, 
             for (var attempt = 0; attempt < 10 && daemon.ExitCode != 0; attempt++)
             {
                 await Task.Delay(3000, ct);
-                daemon = await ProcessRunner.RunAsync("docker", ["info", "--format", "{{.ServerVersion}}"], TimeSpan.FromSeconds(5), ct);
+                daemon = await ProcessRunner.RunAsync("docker", ["version", "--format", "{{.Server.Version}}"], TimeSpan.FromSeconds(5), ct);
             }
         }
         if (daemon.ExitCode != 0) throw new IOException("Docker's local daemon is unavailable. Open Docker Desktop and retry.");

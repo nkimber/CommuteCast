@@ -7,6 +7,7 @@ namespace CommuteCast.Infrastructure;
 
 public sealed class Workspace
 {
+    private readonly SemaphoreSlim settingsGate = new(1);
     public string Root { get; }
     public Workspace(string? root = null)
     {
@@ -49,7 +50,13 @@ public sealed class Workspace
         var path = Path.Combine(Root, "settings.json");
         return File.Exists(path) ? JsonSerializer.Deserialize<AppSettings>(await File.ReadAllTextAsync(path)) ?? new() : new();
     }
-    public Task SaveSettingsAsync(AppSettings settings) => AtomicWriteAsync(Path.Combine(Root, "settings.json"), JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
+    public async Task SaveSettingsAsync(AppSettings settings)
+    {
+        var snapshot = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
+        await settingsGate.WaitAsync();
+        try { await AtomicWriteAsync(Path.Combine(Root, "settings.json"), snapshot); }
+        finally { settingsGate.Release(); }
+    }
     public static async Task AtomicWriteAsync(string path, string text)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

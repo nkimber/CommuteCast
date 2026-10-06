@@ -9,7 +9,8 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
 {
     public async Task NormalizeAsync(string input, string output, CancellationToken ct)
     {
-        var result = await ProcessRunner.RunAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-y", "-i", input, "-map", "0:a:0", "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", output], TimeSpan.FromMinutes(2), ct);
+        WaveAudio.DataRegion(input, false);
+        var result = await ProcessRunner.RunAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-y", "-protocol_whitelist", "file,pipe", "-i", input, "-map", "0:a:0", "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", output], TimeSpan.FromMinutes(2), ct);
         if (result.ExitCode != 0) throw new IOException("The speech audio could not be decoded to PCM. This chunk will be regenerated on retry.");
     }
     public Task<AudioInfo> ValidateChunkAsync(string path, string text, CancellationToken ct) => Task.Run(() =>
@@ -77,7 +78,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
 
 public static class WaveAudio
 {
-    public static (long Offset, long Length) DataRegion(string path)
+    public static (long Offset, long Length) DataRegion(string path, bool canonical = true)
     {
         using var file = File.OpenRead(path);
         using var reader = new BinaryReader(file, Encoding.ASCII);
@@ -93,9 +94,10 @@ public static class WaveAudio
             if (offset + length > file.Length) throw new IOException("Truncated WAV audio.");
             if (type == "fmt ")
             {
-                if (length < 16 || reader.ReadUInt16() != 1 || reader.ReadUInt16() != 1 || reader.ReadInt32() != 24000) throw new IOException("Expected mono 24kHz PCM audio.");
-                reader.ReadInt32();
-                if (reader.ReadUInt16() != 2 || reader.ReadUInt16() != 16) throw new IOException("Expected 16-bit PCM audio.");
+                if (length < 16 || reader.ReadUInt16() != 1) throw new IOException("Expected lossless PCM audio; compressed chunks are rejected.");
+                var channels = reader.ReadUInt16(); var rate = reader.ReadInt32(); var byteRate = reader.ReadInt32(); var alignment = reader.ReadUInt16(); var bits = reader.ReadUInt16();
+                if (channels is < 1 or > 2 || rate is < 8000 or > 96000 || alignment != channels * 2 || bits != 16 || byteRate != rate * alignment) throw new IOException("Unexpected native PCM sample format.");
+                if (canonical && (channels != 1 || rate != 24000)) throw new IOException("Expected mono 24kHz normalized PCM audio.");
                 validFormat = true;
             }
             if (type == "data")
