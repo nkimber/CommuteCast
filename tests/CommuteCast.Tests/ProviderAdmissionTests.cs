@@ -56,7 +56,8 @@ public partial class ProviderContractTests
         }
         var saved = await File.ReadAllTextAsync(AdmissionPath(fixture)); Assert.DoesNotContain("private text", saved);
         using var next = fixture.Provider();
-        await Assert.ThrowsAsync<TimeoutException>(() => next.ReadyAsync("piper", default, true));
+        var stillSettling = await Assert.ThrowsAsync<TimeoutException>(() => next.ReadyAsync("piper", default, true));
+        Assert.DoesNotContain("Repair Docker", stillSettling.Message);
         Assert.Equal(saved, await File.ReadAllTextAsync(AdmissionPath(fixture))); Assert.Equal(1, fixture.Http.Posts);
         Assert.All(fixture.Http.Uris, uri => Assert.Equal(8765, uri.Port)); Assert.Equal(0, fixture.Runtime.Starts); Assert.Equal(0, fixture.Runtime.Launches);
         Assert.False(File.Exists(Path.Combine(fixture.Test.Workspace.Root, "recovery-piper.json")));
@@ -154,5 +155,31 @@ public partial class ProviderContractTests
     {
         using var fixture = new Fixture(); WriteAdmission(fixture); var hash = await Workspace.HashFileAsync(AdmissionPath(fixture)); using var provider = fixture.Provider();
         await provider.ProbeAsync("kokoro"); Assert.Equal(hash, await Workspace.HashFileAsync(AdmissionPath(fixture))); Assert.Equal(0, fixture.Http.Settles);
+    }
+    [Fact] public async Task VerifiedStoppedServiceSettlesPendingFenceBeforeOneOwnedStart()
+    {
+        using var fixture = new Fixture(); WriteAdmission(fixture); fixture.Runtime.Container["State"]!["Running"] = false;
+        fixture.Runtime.OnStart = () => { Assert.False(File.Exists(AdmissionPath(fixture))); fixture.Http.Instance = new('e', 32); };
+        using var provider = fixture.Provider(); var ready = await provider.ReadyAsync("kokoro", default);
+        Assert.Equal(new string('e', 32), ready.InstanceId); Assert.Equal(1, fixture.Runtime.Starts); Assert.Equal(0, fixture.Runtime.Launches);
+        Assert.Equal(0, fixture.Http.Settles); Assert.False(File.Exists(AdmissionPath(fixture)));
+    }
+    [Fact] public async Task ReadOnlyStoppedProbePreservesPendingFenceAndDoesNotStart()
+    {
+        using var fixture = new Fixture(); WriteAdmission(fixture); var hash = await Workspace.HashFileAsync(AdmissionPath(fixture)); fixture.Runtime.Container["State"]!["Running"] = false;
+        using var provider = fixture.Provider(); await Assert.ThrowsAsync<IOException>(() => provider.ProbeAsync("kokoro"));
+        Assert.Equal(hash, await Workspace.HashFileAsync(AdmissionPath(fixture))); Assert.Equal(0, fixture.Runtime.Starts); Assert.Equal(0, fixture.Http.Settles);
+    }
+    [Theory] [InlineData("foreign")] [InlineData("oom")] [InlineData("paused")] [InlineData("missing")] [InlineData("daemon")]
+    public async Task UnprovenOrUnsafeStoppedServiceCannotClearFenceOrRecover(string defect)
+    {
+        using var fixture = new Fixture(); WriteAdmission(fixture); var hash = await Workspace.HashFileAsync(AdmissionPath(fixture)); fixture.Runtime.Container["State"]!["Running"] = false;
+        if (defect == "foreign") fixture.Runtime.Container["Name"] = "/foreign";
+        if (defect == "oom") fixture.Runtime.Container["State"]!["OOMKilled"] = true;
+        if (defect == "paused") fixture.Runtime.Container["State"]!["Paused"] = true;
+        if (defect == "missing") fixture.Runtime.Missing = true;
+        if (defect == "daemon") fixture.Runtime.DaemonFailures = 100;
+        using var provider = fixture.Provider(); await Assert.ThrowsAnyAsync<IOException>(() => provider.ReadyAsync("kokoro", default, true));
+        Assert.Equal(hash, await Workspace.HashFileAsync(AdmissionPath(fixture))); Assert.Equal(0, fixture.Runtime.Starts); Assert.Equal(0, fixture.Runtime.Launches); Assert.Empty(fixture.Http.Uris);
     }
 }

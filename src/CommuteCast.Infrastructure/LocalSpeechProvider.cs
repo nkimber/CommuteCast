@@ -61,7 +61,8 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
         info.Fingerprint is not null && Regex.IsMatch(info.Fingerprint, "^" + engine + ":contract-v1:[a-fA-F0-9]{64}$", RegexOptions.CultureInvariant) &&
         info.Voices is { Length: > 0 and <= 256 } && info.Voices.Distinct().Count() == info.Voices.Length &&
         info.Voices.All(v => v is not null && Regex.IsMatch(v, "^[a-zA-Z0-9_-]{1,80}$", RegexOptions.CultureInvariant));
-    private sealed class ServiceUnavailableException(string message) : IOException(message);
+    private class ServiceUnavailableException(string message) : IOException(message);
+    private sealed class OwnedServiceStoppedException() : ServiceUnavailableException("The verified owned speech container stopped; retry to resume.");
     private async Task RequireUnchangedPinAsync(string image, CancellationToken ct)
     {
         if (await ReadPinnedImageAsync(ct) != image) throw new IOException("The speech image pin changed during configuration verification. Check readiness and submit again; saved jobs and draft are retained.");
@@ -76,11 +77,11 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
     {
         DockerContainerPolicy.Name(engine);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Readiness);
-        var entered = false; var admissionEntered = false;
+        var entered = false; var admissionEntered = false; var settlingAdmission = false;
         try
         {
             await admissionGate.WaitAsync(deadline.Token); admissionEntered = true;
-            await ReconcileAdmissionAsync(deadline.Token);
+            settlingAdmission = true; await ReconcileAdmissionAsync(deadline.Token); settlingAdmission = false;
             await recoveryGate.WaitAsync(deadline.Token); entered = true;
             var budget = new RecoveryBudget(workspace);
             if (explicitRetry) await budget.ResetAsync(engine);
@@ -101,7 +102,7 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
             }
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException("Speech readiness exceeded its bounded allowance. Repair Docker Desktop, then check readiness or retry. Saved audio is retained."); }
-        catch (TimeoutException error) { throw new TimeoutException(error.Message + " Repair Docker Desktop, then check speech readiness or retry. Validated local audio is preserved.", error); }
+        catch (TimeoutException error) when (!settlingAdmission) { throw new TimeoutException(error.Message + " Repair Docker Desktop, then check speech readiness or retry. Validated local audio is preserved.", error); }
         finally { if (entered) recoveryGate.Release(); if (admissionEntered) admissionGate.Release(); }
     }
     private async Task<string> ReadPinnedImageAsync(CancellationToken ct)
@@ -145,7 +146,7 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
         if (result.ExitCode != 0) throw new IOException("The configured CommuteCast container is missing. Re-run the provisioning script; no other containers were changed.");
         if (!DockerContainerPolicy.Evaluate(result.Output, engine, image))
         {
-            if (!startIfStopped) throw new ServiceUnavailableException("The speech container stopped; retry to resume.");
+            if (!startIfStopped) { await RequireUnchangedPinAsync(image, ct); throw new OwnedServiceStoppedException(); }
             var start = await runtime.DockerAsync(["start", DockerContainerPolicy.Name(engine)], TimeSpan.FromSeconds(20), ct);
             if (start.ExitCode != 0) throw new IOException("The owned speech service could not start. Check for a port conflict or insufficient resources.");
             var started = await runtime.DockerAsync(["inspect", DockerContainerPolicy.Name(engine)], TimeSpan.FromSeconds(30), ct);
@@ -331,7 +332,15 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
         var (admission, hash) = pending.Value;
         try
         {
-            var image = await VerifyContainerAsync(admission.Engine, false, deadline.Token);
+            string image;
+            try { image = await VerifyContainerAsync(admission.Engine, false, deadline.Token); }
+            catch (OwnedServiceStoppedException)
+            {
+                // Docker verified the full owned-container policy and a stable
+                // pin before proving the old process stopped. Any later process
+                // gets a new instance token and rejects the old request.
+                await RemoveAdmissionAsync(hash); return;
+            }
             while (true)
             {
                 var info = await HealthAsync(admission.Engine, deadline.Token); RequireAdmission(info);
@@ -350,11 +359,15 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
                 await Task.Delay(limits.Poll, deadline.Token);
             }
             await RequireUnchangedPinAsync(image, deadline.Token);
-            if (!await OwnedFileRemoval.DeleteByHashAsync(workspace.Root, PendingSpeechAdmission.FileName, hash))
-                throw new IOException("The pending speech reservation changed during settlement. It was preserved; generation remains blocked.");
+            await RemoveAdmissionAsync(hash);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         { throw new TimeoutException("Speech cancellation is still settling. The saved reservation blocks both engines; wait for local inference to finish, then check readiness or retry. No service was restarted."); }
+    }
+    private async Task RemoveAdmissionAsync(string hash)
+    {
+        if (!await OwnedFileRemoval.DeleteByHashAsync(workspace.Root, PendingSpeechAdmission.FileName, hash))
+            throw new IOException("The pending speech reservation changed during settlement. It was preserved; generation remains blocked.");
     }
     public void Dispose() { http.Dispose(); recoveryGate.Dispose(); admissionGate.Dispose(); }
 }
