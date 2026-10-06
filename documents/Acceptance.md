@@ -2,7 +2,9 @@
 
 This record separates implementation, automated checks, and device/policy acceptance. The application is an implementation candidate, not a blanket assertion that every product requirement has passed release acceptance.
 
-**Current checkpoint:** clean Release build; **61 automated tests pass**; native editor/draft/settings/theme/usage/exit and portable launch exercised; real Piper generation/local export passed. Kokoro, final locked-image rebuild, listening approval, corporate OneDrive/Android delivery, fresh installation/rollback, and broader accessibility acceptance remain open. Docker host startup is blocked by its stale runtime socket. No GitHub remote is configured.
+**Current checkpoint:** clean Release build; **136 automated tests pass**; native editor/draft/settings/theme/usage/exit and portable launch exercised; real Piper generation/local export passed. Kokoro, final locked-image rebuild, listening approval, corporate OneDrive/Android delivery, fresh installation/rollback, and broader accessibility acceptance remain open. Docker host startup is blocked by its stale runtime socket. No GitHub remote is configured.
+
+Provider fault follow-up: the default adapter now has injectable runtime/HTTP boundaries for deterministic tests while retaining the production loopback/no-proxy/no-redirect configuration. Complete image/name/project/contract, command/entrypoint/engine, mount/network/resource/privilege and binding guards are exercised before HTTP/start; a stopped owned container is reinspected after its one start. Health data is size-bounded and schema-checked without reflecting response content. Synthesis validates lossless PCM before atomic output promotion, discards failed attempt files, preserves prior output, uses at most two transient retries under one five-minute overall budget, waits for busy inference without restarting, and fences even noncooperative late responses/reads by cancellation/deadline. Real-container regression acceptance remains pending.
 
 ## Automated checkpoint
 

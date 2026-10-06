@@ -13,11 +13,11 @@ Current reproducible commands: `dotnet build CommuteCast.slnx -c Release --no-re
 | T-05 | Settings fingerprints, incompatible model rejection, corrupt-cache and export-only retry tests | Every provider/normalizer/format version change contract and duplicate-submit UI acceptance |
 | T-06 | Both services expose candidate voices; audition UI exists | Actual user's short and 20–30 minute listening approval |
 | T-07 | Piper real WAV-to-MP3/export pipeline; initial Kokoro readiness | Current locked-image contract tests for both engines, technical corpus, limits and listener approval |
-| T-08 | Bounded host process/HTTP/size/cancellation implementation; process timeout/cancellation tests | Injected disconnect/429/5xx/partial/late HTTP response and active-request integration races |
+| T-08 | Adapter fault tests inject disconnect, 429/500/502/503/504, permanent errors/redirects, bad MIME/PCM/truncation/length/size, cancellation/late response and noncooperative read; two transient retries under one deadline; attempt cleanup and prior-output preservation | Real-provider disconnect/cancellation races and observed server quiescence |
 | T-09 | Bounded launch/readiness and native actionable exhausted state | Successful stopped-Desktop/cold-daemon and prerequisite matrix on Windows |
-| T-10 | Exact local pipe tests; image/labels/binding checks in provider | Automated complete container-identity fixtures and actual foreign-name/occupied-port/stopped-owned tests |
+| T-10 | Container fixtures cover exact image/name/project/owner/contract, binding/extra ports, command/entrypoint/engine, network/mount/resources/privileges, OOM/paused/restarting; foreign metadata never reaches HTTP/start; owned start is reinspected | Actual foreign-name/occupied-port/stopped-owned tests |
 | T-11 | Loading/active wait guard; persisted readiness allowance | Slow cold load, missing voice/model, unload and repeated-job integration |
-| T-12 | Persisted exhausted-budget/reset tests; OOM/identity guards | Busy/unhealthy/incompatible/OOM matrix and shared outage acceptance on real Docker |
+| T-12 | Persisted budget/reset, one daemon launch/exhaustion, loading/busy no-restart, incompatible health/voice/fingerprint and OOM guard fixtures | Shared outage/resource acceptance on real Docker |
 | T-13 | Durable reopen, stale-stage, corrupt/missing cache tests; native draft recovery | Real chunk-process kill, service kill, sleep/wake and stale response tests |
 | T-14 | Synthetic tone pipeline, coverage/order and duration checks | Distinct ordinal marker fixtures that deliberately omit/duplicate/reorder audio |
 | T-15 | Complete MP3 probe/decode/duration in pipeline and Piper pilot | ID3 readback, measured frames, calibrated clipping/silence and every-join listening |
