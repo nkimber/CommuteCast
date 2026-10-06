@@ -9,13 +9,21 @@ static int Run(string[] arguments)
     if (arguments.Length == 0 || arguments.SequenceEqual(new[] { "--help" }))
     {
         Console.WriteLine("CommuteCast local maintenance 0.1.0\nClose CommuteCast before backup, restore or recovery.\n\nbackup [--root <private workspace>]\nvalidate-backup --backup <completed backup folder>\nrestore --backup <completed backup folder> --confirm-replace-local-data [--root <private workspace>]\nrecover [--root <private workspace>]\nseal-package --package <complete portable folder>\nverify-package --package <complete portable folder>\n\nPackage sealing is an explicit build action. Verification checks inventory/integrity, not publisher trust or corporate signing approval.\nBackups contain private source, draft, settings and job audio. They stay under the private workspace/backups folder. Restore retains previous local state and never modifies exported MP3s or Docker artifacts. Historical backups/recovery copies and provisioning models are excluded from a current-state backup.");
-        Console.WriteLine("\nInstallation commands (close the app first):\ninstall --package <complete portable folder> [--install-root <local folder>]\ninspect-install [--install-root <local folder>]\nlaunch-installed [--install-root <local folder>]\nrollback --confirm-replace-local-data [--install-root <local folder>]\nuninstall --confirm-uninstall [--local-data retain|remove] [--confirm-remove-local-data] [--install-root <local folder>]\nrecover-install [--install-root <local folder>]\n\nDefault binaries: %LOCALAPPDATA%\\Programs\\CommuteCast. Private data is bound to the installation and stays separate. --root is an explicit isolated-workspace override for installation testing. Uninstall preserves exports, Docker and provisioning models; unknown root files remain for inspection.");
+        Console.WriteLine("\nRead-only setup: check-setup [--root <private workspace>]\n\nInstallation commands (close the app first):\ninstall --package <complete portable folder> [--install-root <local folder>]\ninspect-install [--install-root <local folder>]\nlaunch-installed [--install-root <local folder>]\nrollback --confirm-replace-local-data [--install-root <local folder>]\nuninstall --confirm-uninstall [--local-data retain|remove] [--confirm-remove-local-data] [--install-root <local folder>]\nrecover-install [--install-root <local folder>]\n\nDefault binaries: %LOCALAPPDATA%\\Programs\\CommuteCast. Private data is bound to the installation and stays separate. --root is an explicit isolated-workspace override for installation testing. Uninstall preserves exports, Docker and provisioning models; unknown root files remain for inspection.");
         return 0;
     }
     Mutex? legacy = null; var ownsLegacy = false;
     try
     {
         var command = arguments[0];
+        if (command == "check-setup")
+        {
+            if (arguments.Length is not (1 or 3) || arguments.Length == 3 && arguments[1] != "--root") throw new ArgumentException("check-setup [--root <private workspace>]");
+            var setupRoot = Path.GetFullPath(arguments.Length == 3 ? arguments[2] : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CommuteCast"));
+            Workspace.RejectReparsePoints(setupRoot);
+            var setupSettings = Directory.Exists(setupRoot) ? new Workspace(setupRoot).LoadSettingsAsync().GetAwaiter().GetResult() : new CommuteCast.Core.AppSettings();
+            Print(new SetupDiagnostics(new SetupRuntime(setupRoot)).CheckAsync(setupSettings).GetAwaiter().GetResult()); return 0;
+        }
         if (command is "install" or "rollback" or "uninstall" or "recover-install" or "inspect-install" or "launch-installed") return RunInstallation(arguments);
         if (command is "seal-package" or "verify-package")
         {
@@ -121,8 +129,10 @@ static int RunInstallation(string[] arguments)
         using var lease = WorkspaceLease.Acquire(new Workspace(root));
         if (command == "recover-install") { Print(new { recovered = installation.RecoverAsync(lease).GetAwaiter().GetResult() }); return 0; }
         InstallationResult result;
+        SetupReport? setup = null;
         try
         {
+            if (command == "install") setup = new SetupDiagnostics(new SetupRuntime(root)).CheckAsync(lease.Workspace.LoadSettingsAsync().GetAwaiter().GetResult()).GetAwaiter().GetResult();
             result = command switch
             {
                 "install" => installation.ActivateAsync(lease, package!).GetAwaiter().GetResult(),
@@ -138,7 +148,7 @@ static int RunInstallation(string[] arguments)
                 catch (Exception error) { Console.Error.WriteLine("Deployment recovery needs inspection: " + QueueCoordinator.FriendlyError(error)); }
             throw;
         }
-        Print(new { operation = command, result.State, result.Executable, result.AlreadyCurrent, localData = command == "uninstall" ? localData : "preserved or restored from recorded snapshot", exportedFiles = "unchanged", engineArtifacts = "unchanged", publisherTrust = "corporate signing approval remains external" });
+        Print(new { operation = command, result.State, result.Executable, result.AlreadyCurrent, setup, localData = command == "uninstall" ? localData : "preserved or restored from recorded snapshot", exportedFiles = "unchanged", engineArtifacts = "unchanged", publisherTrust = "corporate signing approval remains external" });
         if (command == "launch-installed") executable = result.Executable ?? throw new IOException("This installation is uninstalled. Install a verified release first.");
     }
     finally { if (ownsLegacy) legacy!.ReleaseMutex(); legacy?.Dispose(); }

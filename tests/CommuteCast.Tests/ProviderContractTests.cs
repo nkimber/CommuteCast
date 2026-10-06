@@ -9,6 +9,21 @@ namespace CommuteCast.Tests;
 
 public class ProviderContractTests
 {
+    [Fact] public async Task ReadOnlyProbeLeavesSpentRecoveryAllowanceAndRequestsNoSpeech()
+    {
+        using var fixture = new Fixture(); await new RecoveryBudget(fixture.Test.Workspace).BeginAsync("kokoro", default);
+        var budget = Path.Combine(fixture.Test.Workspace.Root, "recovery-kokoro.json"); var before = await Workspace.HashFileAsync(budget);
+        using var provider = fixture.Provider(); var result = await provider.ProbeAsync("kokoro"); Assert.Equal("ready", result.State);
+        Assert.Equal(before, await Workspace.HashFileAsync(budget)); Assert.Equal(0, fixture.Runtime.Starts); Assert.Equal(0, fixture.Runtime.Launches); Assert.Equal(0, fixture.Http.Posts);
+    }
+    [Theory] [InlineData(false)] [InlineData(true)] public async Task ReadOnlyProbeNeverStartsStoppedOrUnverifiedContainer(bool foreign)
+    {
+        using var fixture = new Fixture(); fixture.Runtime.Container["State"]!["Running"] = false;
+        if (foreign) fixture.Runtime.Container["Name"] = "/foreign";
+        using var provider = fixture.Provider(); await Assert.ThrowsAsync<IOException>(() => provider.ProbeAsync("kokoro"));
+        Assert.Equal(0, fixture.Runtime.Starts); Assert.Equal(0, fixture.Runtime.Launches); Assert.Empty(fixture.Http.Uris);
+        Assert.False(File.Exists(Path.Combine(fixture.Test.Workspace.Root, "recovery-kokoro.json")));
+    }
     [Fact] public async Task OutputOutsidePrivateWorkspaceIsRefusedBeforeRuntimeOrHttp()
     {
         using var fixture = new Fixture(); using var provider = fixture.Provider();

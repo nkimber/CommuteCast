@@ -15,9 +15,21 @@ public sealed class LocalSpeechRuntime : ILocalSpeechRuntime
     public Task<ProcessResult> DockerAsync(IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken ct) => ProcessRunner.RunAsync("docker", arguments, timeout, ct);
     public void LaunchInstalledDesktop()
     {
-        var desktop = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Docker", "Docker", "Docker Desktop.exe");
-        if (!File.Exists(desktop)) throw new IOException("Docker Desktop is not installed. Install it through your approved IT process.");
+        var desktop = DockerDesktopLocation.Find() ?? throw new IOException("Docker Desktop is not installed. Install it through your approved IT process.");
         Process.Start(new ProcessStartInfo(desktop) { UseShellExecute = false, WindowStyle = ProcessWindowStyle.Hidden });
+    }
+}
+
+public static class DockerDesktopLocation
+{
+    public static string? Find(string? localApplicationData = null, string? programFiles = null)
+    {
+        var candidates = new[] {
+            Path.Combine(localApplicationData ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "DockerDesktop", "Docker Desktop.exe"),
+            Path.Combine(programFiles ?? Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Docker", "Docker", "Docker Desktop.exe") };
+        foreach (var candidate in candidates)
+            if (File.Exists(candidate)) { SqliteSchema.RejectLink(candidate); return Path.GetFullPath(candidate); }
+        return null;
     }
 }
 

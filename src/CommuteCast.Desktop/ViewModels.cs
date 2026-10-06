@@ -78,6 +78,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private readonly SemaphoreSlim draftGate = new(1);
     private string page = "compose", source = "", draftTitle = "", statusMessage = "Paste something worth listening to. Queue it when you're ready.", serviceStatus = "Checking local speech…";
     private string providerDetails = "", encoderVersion = "Not checked";
+    private string setupDetails = "Setup has not been checked. This inspection does not start or change speech services.";
     private string storageSummary = "Usage has not been measured.";
     private bool loading = true, queueLoaded, draftLoadFailed, draftDirty;
     private JobView? selectedJob;
@@ -116,6 +117,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public int ScratchRetentionDays { get => settings.ScratchRetentionDays; set { settings.ScratchRetentionDays = value; Raise(); } }
     public int PrivateStorageLimitMiB { get => settings.PrivateStorageLimitMiB; set { settings.PrivateStorageLimitMiB = value; Raise(); } }
     public string ProviderDetails { get => providerDetails; private set => Set(ref providerDetails, value); }
+    public string SetupDetails { get => setupDetails; private set => Set(ref setupDetails, value); }
     public string ServiceStatus { get => serviceStatus; private set => Set(ref serviceStatus, value); }
     public string StatusMessage { get => statusMessage; private set => Set(ref statusMessage, value); }
     public string LibrarySummary => !queueLoaded ? "Local records have not loaded. Repair storage or restore a verified backup." : $"{Jobs.Count} narrations · {Jobs.Count(j => j.Job.Stage == JobStage.Queued)} queued · {Jobs.Count(j => j.Job.Stage == JobStage.Exported)} exported locally";
@@ -127,6 +129,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public ICommand ChooseFolderCommand { get; }
     public ICommand TestFolderCommand { get; }
     public ICommand ReadinessCommand { get; }
+    public ICommand SetupCommand { get; }
     public ICommand AuditionCommand { get; }
     public ICommand SaveSettingsCommand { get; }
     public ICommand CheckEncoderCommand { get; }
@@ -164,6 +167,13 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         ChooseFolderCommand = Command(async _ => { var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); settings.Destination = path; Raise(nameof(DestinationDisplay)); await SaveSettingsAsync(); StatusMessage = "Output folder saved. Only completed MP3s will be exported here."; } });
         TestFolderCommand = Command(async _ => { await publisher.TestDestinationAsync(settings.Destination); StatusMessage = "Local write access passed. OneDrive cloud upload is still unknown."; });
         ReadinessCommand = Command(_ => CheckReadinessAsync(true));
+        SetupCommand = Command(async _ =>
+        {
+            SetupDetails = "Checking setup without starting or changing services…";
+            var report = await new SetupDiagnostics(new SetupRuntime(Workspace.Root)).CheckAsync(settings, shutdown.Token);
+            SetupDetails = report.Display;
+            StatusMessage = "Setup inspection finished. Corporate approval and real narration acceptance remain separate.";
+        });
         AuditionCommand = Command(_ => AuditionAsync());
         SaveSettingsCommand = Command(async _ => { TextPreparation.ParseDictionary(Pronunciation); await SaveSettingsAsync(); StatusMessage = "Settings saved for future submissions."; });
         CheckEncoderCommand = Command(_ => CheckEncoderAsync());

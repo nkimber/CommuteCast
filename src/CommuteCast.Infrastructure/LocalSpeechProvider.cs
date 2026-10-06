@@ -21,6 +21,12 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
     private static Uri Endpoint(string engine, string route) => new($"http://127.0.0.1:{(engine == "kokoro" ? 8765 : engine == "piper" ? 8766 : throw new ArgumentException("Unsupported engine."))}/{route}");
     public static bool IsLocalContext(string endpoint) => endpoint.Equals("npipe:////./pipe/dockerDesktopLinuxEngine", StringComparison.OrdinalIgnoreCase);
     public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct) => ReadyAsync(engine, ct, false);
+    /// <summary>Inspect the configured owned service without spending recovery allowance or starting anything.</summary>
+    public async Task<ProviderInfo> ProbeAsync(string engine, CancellationToken ct = default)
+    {
+        await VerifyContainerAsync(engine, false, ct);
+        return await HealthAsync(engine, ct);
+    }
     public async Task ResetRecoveryBudgetAsync(string engine, CancellationToken ct = default)
     {
         await recoveryGate.WaitAsync(ct);
