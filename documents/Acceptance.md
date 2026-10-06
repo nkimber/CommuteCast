@@ -31,6 +31,8 @@ Capture/title/timestamp/durable submission (FR-01–04); deterministic inspectab
 
 Portable publish was executed successfully and produced a self-contained x64 application and approximately 66.5 MB ZIP under ignored `artifacts/release`. Native packaged launch and fresh-machine acceptance remain unverified.
 
+Final packaging follow-up: the self-contained executable was launched from `artifacts/release/CommuteCast-win-x64/app` and its native editor/restored draft and actionable exhausted-recovery state were observed. Native Settings scrolling, retention controls, dark-theme labels, and usage measurement were exercised in the Release app; native Alt+F4 exited with no remaining process or shutdown diagnostic. Hover/focus button resources were then corrected and rebuilt. Release build has zero warnings/errors and **56 tests pass**, including bounded process timeout/caller cancellation and simultaneous stdout/stderr draining. The rebuilt ZIP contains the executable, .NET runtime, setup scripts, service manifest/lockfile and acceptance document. Fresh-machine install, DPI/Narrator and full keyboard journeys remain open.
+
 ## Stationary Android pilot checklist
 
 1. Choose the approved corporate local OneDrive folder; submit representative technical material and check the complete local MP3.

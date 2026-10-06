@@ -48,6 +48,7 @@ public sealed class LocalSpeechProvider(Workspace workspace) : ISpeechProvider, 
             throw new TimeoutException("Local speech did not become ready within two minutes. Validated audio is preserved; repair Docker or retry.");
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException("Speech readiness exceeded its two-minute limit. Check Docker Desktop, then retry."); }
+        catch (TimeoutException error) { throw new TimeoutException(error.Message + " Repair Docker Desktop, then check speech readiness or retry. Validated local audio is preserved.", error); }
         finally { recoveryGate.Release(); }
     }
 

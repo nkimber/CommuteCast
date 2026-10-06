@@ -12,23 +12,31 @@ public static class ProcessRunner
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
         foreach (var arg in arguments) start.ArgumentList.Add(arg);
         using var process = Process.Start(start) ?? throw new IOException($"Could not start {Path.GetFileName(executable)}.");
-        var output = ReadBoundedAsync(process.StandardOutput);
-        var error = ReadBoundedAsync(process.StandardError);
-        try { await process.WaitForExitAsync(deadline.Token); }
+        var output = ReadBoundedAsync(process.StandardOutput, deadline.Token);
+        var error = ReadBoundedAsync(process.StandardError, deadline.Token);
+        try
+        {
+            await process.WaitForExitAsync(deadline.Token);
+            await Task.WhenAll(output, error).WaitAsync(deadline.Token);
+            return new(process.ExitCode, await output, await error);
+        }
         catch (OperationCanceledException)
         {
-            try { process.Kill(true); } catch (InvalidOperationException) { }
-            await process.WaitForExitAsync(CancellationToken.None);
-            await Task.WhenAll(output, error);
+            try { if (!process.HasExited) process.Kill(true); }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+            try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); } catch (TimeoutException) { }
+            try { await Task.WhenAll(output, error).WaitAsync(TimeSpan.FromSeconds(2)); }
+            catch (OperationCanceledException) { }
+            catch (TimeoutException) { }
             ct.ThrowIfCancellationRequested();
             throw new TimeoutException($"{Path.GetFileName(executable)} exceeded its {timeout.TotalSeconds:0}-second limit.");
         }
-        return new(process.ExitCode, await output, await error);
     }
-    private static async Task<string> ReadBoundedAsync(StreamReader reader)
+    private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken ct)
     {
         var text = new System.Text.StringBuilder(); var buffer = new char[4096]; int count;
-        while ((count = await reader.ReadAsync(buffer)) > 0)
+        while ((count = await reader.ReadAsync(buffer.AsMemory(), ct)) > 0)
             if (text.Length < 256 * 1024) text.Append(buffer, 0, Math.Min(count, 256 * 1024 - text.Length));
         return text.ToString();
     }
