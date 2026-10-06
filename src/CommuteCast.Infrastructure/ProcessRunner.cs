@@ -9,7 +9,7 @@ public static class ProcessRunner
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(timeout);
-        var start = new ProcessStartInfo(executable) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8, CreateNoWindow = true };
         foreach (var arg in arguments) start.ArgumentList.Add(arg);
         using var process = Process.Start(start) ?? throw new IOException($"Could not start {Path.GetFileName(executable)}.");
         var output = ReadBoundedAsync(process.StandardOutput, deadline.Token);

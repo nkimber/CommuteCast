@@ -7,6 +7,14 @@ namespace CommuteCast.Infrastructure;
 
 public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
 {
+    public const string ContractVersion = "pcm24k-s16le-mono-mp3128-gap150-v1";
+    private static void ValidateManifest(Job job)
+    {
+        if (job.AudioContractVersion != ContractVersion || job.ChunkingVersion != "chunk450-v1") throw new IOException("Unsupported audio/chunk contract. Publication is blocked.");
+        Chunker.ValidateManifest(job.Chunks, job.Prepared.Script);
+        if (job.Receipts.Count != job.Chunks.Count || !job.Receipts.OrderBy(r => r.Index).Select(r => r.Index).SequenceEqual(Enumerable.Range(0, job.Chunks.Count)) ||
+            job.Receipts.Any(r => r.Fingerprint != job.Fingerprint || !double.IsFinite(r.Duration) || r.Duration <= 0)) throw new IOException("Validated receipt sequence or contract is incompatible. Publication is blocked.");
+    }
     public async Task NormalizeAsync(string input, string output, CancellationToken ct)
     {
         WaveAudio.DataRegion(input, false);
@@ -25,6 +33,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
 
     public async Task AssembleAsync(Job job, string directory, CancellationToken ct)
     {
+        ValidateManifest(job);
         var assembled = Path.Combine(directory, "assembled.wav");
         var samples = job.Receipts.Sum(r => (long)Math.Round(r.Duration * 24000));
         // Add 150ms between chunks ending a sentence/paragraph. Hard splits have no inserted gap.
@@ -38,8 +47,11 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
             {
                 ct.ThrowIfCancellationRequested();
                 var path = Path.Combine(directory, $"chunk-{chunk.Index:D5}.wav");
-                var (offset, length) = WaveAudio.DataRegion(path);
                 await using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
+                var receipt = job.Receipts.Single(r => r.Index == chunk.Index);
+                if (Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(input, ct)) != receipt.Hash) throw new IOException("A validated chunk changed before assembly. Publication is blocked.");
+                var (offset, length) = WaveAudio.DataRegion(path);
+                if (length / 2 != (long)Math.Round(receipt.Duration * 24000)) throw new IOException("Chunk sample count differs from its validated receipt. Publication is blocked.");
                 input.Position = offset;
                 var buffer = new byte[81920];
                 while (length > 0)
@@ -53,7 +65,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
             }
         }
         var temporary = Path.Combine(directory, "encoded.partial.mp3");
-        var encode = await ProcessRunner.RunAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-y", "-i", assembled, "-c:a", "libmp3lame", "-b:a", "128k", "-id3v2_version", "3", "-metadata", "title=" + job.Title, "-metadata", "artist=CommuteCast", "-metadata", "date=" + job.CreatedUtc.ToString("O"), "-metadata", "comment=CommuteCast job " + job.Id, temporary], TimeSpan.FromMinutes(15), ct);
+        var encode = await ProcessRunner.RunAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-y", "-protocol_whitelist", "file,pipe", "-f", "wav", "-i", assembled, "-c:a", "libmp3lame", "-b:a", "128k", "-id3v2_version", "3", "-metadata", "title=" + job.Title, "-metadata", "artist=CommuteCast", "-metadata", "date=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_created_utc=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_job_id=" + job.Id, "-metadata", "comment=CommuteCast job " + job.Id, temporary], TimeSpan.FromMinutes(15), ct);
         if (encode.ExitCode != 0) throw new IOException("MP3 encoding failed. Validated chunks are retained. Check FFmpeg and free disk space.");
         ct.ThrowIfCancellationRequested();
         File.Move(temporary, Path.Combine(directory, "complete.mp3"), true);
@@ -61,7 +73,8 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
 
     public async Task<AudioInfo> ValidateFinalAsync(Job job, string path, CancellationToken ct)
     {
-        var probe = await ProcessRunner.RunAsync(settings.Ffprobe, ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name,sample_rate,channels,duration", "-of", "json", path], TimeSpan.FromSeconds(30), ct);
+        ValidateManifest(job);
+        var probe = await ProcessRunner.RunAsync(settings.Ffprobe, ["-v", "error", "-protocol_whitelist", "file,pipe", "-f", "mp3", "-select_streams", "a:0", "-show_entries", "stream=codec_name,sample_rate,channels,duration", "-of", "json", path], TimeSpan.FromSeconds(30), ct);
         if (probe.ExitCode != 0) throw new IOException("The finished MP3 could not be probed. Export is blocked.");
         using var json = JsonDocument.Parse(probe.Output);
         var stream = json.RootElement.GetProperty("streams")[0];
@@ -70,7 +83,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
         var gaps = job.Chunks.Take(job.Chunks.Count - 1).Count(c => c.Text.TrimEnd().EndsWith('.') || c.Text.EndsWith('\n')) * .15;
         var expected = job.Receipts.Sum(r => r.Duration) + gaps;
         if (Math.Abs(expected - duration) > .3) throw new IOException("Finished MP3 duration does not match the complete ordered chunk sequence.");
-        var decode = await ProcessRunner.RunAsync(settings.Ffmpeg, ["-v", "error", "-xerror", "-nostdin", "-i", path, "-f", "null", "-"], TimeSpan.FromMinutes(10), ct);
+        var decode = await ProcessRunner.RunAsync(settings.Ffmpeg, ["-v", "error", "-xerror", "-nostdin", "-protocol_whitelist", "file,pipe", "-f", "mp3", "-i", path, "-f", "null", "-"], TimeSpan.FromMinutes(10), ct);
         if (decode.ExitCode != 0) throw new IOException("Finished MP3 failed full decoding. Export is blocked.");
         return new(duration, 24000, 1, (long)(duration * 24000), 0, 0);
     }
@@ -82,32 +95,37 @@ public static class WaveAudio
     {
         using var file = File.OpenRead(path);
         using var reader = new BinaryReader(file, Encoding.ASCII);
+        if (file.Length < 44) throw new IOException("Truncated WAV header.");
         if (new string(reader.ReadChars(4)) != "RIFF") throw new IOException("Expected RIFF audio.");
-        reader.ReadUInt32();
+        if (reader.ReadUInt32() + 8L != file.Length) throw new IOException("WAV declared size does not match the complete file.");
         if (new string(reader.ReadChars(4)) != "WAVE") throw new IOException("Expected WAV audio.");
         var validFormat = false;
+        ushort blockAlignment = 0;
+        (long Offset, long Length)? region = null;
         while (file.Position + 8 <= file.Length)
         {
             var type = new string(reader.ReadChars(4));
             var length = reader.ReadUInt32();
             var offset = file.Position;
-            if (offset + length > file.Length) throw new IOException("Truncated WAV audio.");
+            if (offset + length + length % 2 > file.Length) throw new IOException("Truncated WAV audio or padding.");
             if (type == "fmt ")
             {
-                if (length < 16 || reader.ReadUInt16() != 1) throw new IOException("Expected lossless PCM audio; compressed chunks are rejected.");
+                if (validFormat || length < 16 || reader.ReadUInt16() != 1) throw new IOException("Expected one lossless PCM format; compressed or duplicate formats are rejected.");
                 var channels = reader.ReadUInt16(); var rate = reader.ReadInt32(); var byteRate = reader.ReadInt32(); var alignment = reader.ReadUInt16(); var bits = reader.ReadUInt16();
                 if (channels is < 1 or > 2 || rate is < 8000 or > 96000 || alignment != channels * 2 || bits != 16 || byteRate != rate * alignment) throw new IOException("Unexpected native PCM sample format.");
                 if (canonical && (channels != 1 || rate != 24000)) throw new IOException("Expected mono 24kHz normalized PCM audio.");
                 validFormat = true;
+                blockAlignment = alignment;
             }
             if (type == "data")
             {
-                if (!validFormat || length == 0 || length % 2 != 0) throw new IOException("Invalid PCM data region.");
-                return (offset, length);
+                if (!validFormat || region is not null || length == 0 || length % blockAlignment != 0) throw new IOException("Invalid or duplicate PCM data region.");
+                region = (offset, length);
             }
             file.Position = offset + length + length % 2;
         }
-        throw new IOException("WAV data is missing.");
+        if (file.Position != file.Length || region is null) throw new IOException("WAV data is missing or trailing structure is incomplete.");
+        return region.Value;
     }
     public static AudioInfo Inspect(string path)
     {

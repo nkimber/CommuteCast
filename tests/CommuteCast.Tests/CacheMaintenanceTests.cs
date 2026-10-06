@@ -5,6 +5,16 @@ namespace CommuteCast.Tests;
 
 public class CacheMaintenanceTests
 {
+    [Fact] public async Task AbandonedProviderAttemptsAreRecognizedButActiveAttemptIsProtected()
+    {
+        using var test = new TestWorkspace(); var job = new Job { Stage = JobStage.Failed };
+        Directory.CreateDirectory(test.Workspace.JobDirectory(job.Id));
+        var attempt = Path.Combine(test.Workspace.JobDirectory(job.Id), "inference.partial.wav.attempt-" + Guid.NewGuid().ToString("N") + ".partial");
+        await File.WriteAllBytesAsync(attempt, new byte[2 * 1048576]);
+        var cleaner = new CacheMaintenance(test.Workspace);
+        Assert.Equal(0, (await cleaner.CleanAsync([job], job.Id, 1, 7, default)).FilesRemoved);
+        Assert.Equal(1, (await cleaner.CleanAsync([job], null, 1, 7, default)).FilesRemoved); Assert.False(File.Exists(attempt));
+    }
     [Fact] public async Task QuotaCleanupPreservesFinalHistoryExportsAndUnrecognizedFiles()
     {
         using var test = new TestWorkspace(); var job = new Job { Source = "Private source", ExportCommitted = true, Stage = JobStage.Exported };

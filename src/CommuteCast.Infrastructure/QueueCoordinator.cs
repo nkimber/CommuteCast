@@ -220,7 +220,8 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         job.Error = "";
         job.FailureCategory = FailureCategory.None; job.FailedStage = null;
         lock (sync) if (job.Chunks.Count == 0) job.Chunks = Chunker.Split(job.Prepared.Script, 450);
-        if (string.Concat(job.Chunks.Select(c => c.Text)) != job.Prepared.Script) throw new IOException("Chunk coverage is invalid. No audio was exported.");
+        if (job.ChunkingVersion != "chunk450-v1" || job.AudioContractVersion != AudioPipeline.ContractVersion) throw new IOException("This job uses an unsupported chunk/audio contract. Restore its application version or submit a new narration.");
+        Chunker.ValidateManifest(job.Chunks, job.Prepared.Script);
         await StageAsync(job, JobStage.Preparing, ct);
         var valid = new List<ChunkReceipt>();
         foreach (var chunk in job.Chunks)

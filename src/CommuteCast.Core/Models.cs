@@ -21,6 +21,8 @@ public sealed class Job
     public PreparedText Prepared { get; set; } = new("", []);
     public NarrationSettings Settings { get; set; } = new("kokoro", "af_heart", 1, false, "", "");
     public string Destination { get; set; } = "";
+    public string AudioContractVersion { get; set; } = "pcm24k-s16le-mono-mp3128-gap150-v1";
+    public string ChunkingVersion { get; set; } = "chunk450-v1";
     public JobStage Stage { get; set; } = JobStage.Queued;
     public List<TextChunk> Chunks { get; set; } = [];
     public List<ChunkReceipt> Receipts { get; set; } = [];
@@ -36,7 +38,7 @@ public sealed class Job
     public bool ExportCommitted { get; set; }
     public bool DeletionRequested { get; set; }
     public bool DeleteExportRequested { get; set; }
-    public string Fingerprint => Hash(JsonSerializer.Serialize(Settings) + Prepared.Version + Prepared.Script);
+    public string Fingerprint => Hash(JsonSerializer.Serialize(new { Settings, Prepared.Version, Prepared.Script, AudioContractVersion, ChunkingVersion }));
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 public record ChunkReceipt(int Index, string Hash, string Fingerprint, double Duration);

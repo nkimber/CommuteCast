@@ -8,6 +8,7 @@ public record CleanupResult(long BytesRemoved, int FilesRemoved, int Failures);
 public sealed class CacheMaintenance(Workspace workspace)
 {
     private static bool IsCache(string name) => name is "inference.partial.wav" or "normalized.partial.wav" or "assembled.wav" or "encoded.partial.mp3" ||
+        System.Text.RegularExpressions.Regex.IsMatch(name, "^inference\\.partial\\.wav\\.attempt-[a-f0-9]{32}\\.partial$", System.Text.RegularExpressions.RegexOptions.CultureInvariant) ||
         name.StartsWith("chunk-", StringComparison.Ordinal) && name.EndsWith(".wav", StringComparison.Ordinal);
 
     private IEnumerable<FileInfo> ManagedFiles(CancellationToken ct)

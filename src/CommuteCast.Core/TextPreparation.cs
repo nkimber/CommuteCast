@@ -107,6 +107,21 @@ public static partial class TextPreparation
 
 public static class Chunker
 {
+    public static void ValidateManifest(IReadOnlyList<TextChunk> chunks, string script, int maximum = 450)
+    {
+        if (script.Length == 0 || chunks.Count == 0) throw new IOException("The narration manifest is empty. Publication is blocked.");
+        var offset = 0;
+        for (var ordinal = 0; ordinal < chunks.Count; ordinal++)
+        {
+            var chunk = chunks[ordinal];
+            if (chunk.Index != ordinal || chunk.Start != offset || chunk.Length != chunk.Text.Length || chunk.Length is <= 0 || chunk.Length > maximum ||
+                offset + chunk.Length > script.Length || string.CompareOrdinal(script, offset, chunk.Text, 0, chunk.Length) != 0 ||
+                char.IsLowSurrogate(chunk.Text[0]) || char.IsHighSurrogate(chunk.Text[^1]))
+                throw new IOException("The narration manifest has missing, duplicate, reordered, or invalid spans. Publication is blocked.");
+            offset += chunk.Length;
+        }
+        if (offset != script.Length) throw new IOException("The narration manifest does not cover the complete script. Publication is blocked.");
+    }
     public static List<TextChunk> Split(string script, int maximum = 900)
     {
         if (maximum < 16) throw new ArgumentOutOfRangeException(nameof(maximum));
