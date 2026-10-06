@@ -7,6 +7,41 @@ namespace CommuteCast.Tests;
 
 public class WorkspaceBackupTests
 {
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public async Task RestoreDirectoryLocksAreBoundedAndPreserveRecoverableOriginalState(bool persistent)
+    {
+        using var source = new TestWorkspace(); using var target = new TestWorkspace();
+        var incoming = await InstallationTests.SeedAsync(source, "Incoming source"); var original = await InstallationTests.SeedAsync(target, "Original source");
+        var originalHash = await Workspace.HashFileAsync(target.Workspace.ChunkPath(original, 0));
+        using var sourceLease = WorkspaceLease.Acquire(source.Workspace); var backup = await WorkspaceBackup.CreateAsync(sourceLease);
+        using var targetLease = WorkspaceLease.Acquire(target.Workspace); FileStream? locked = null; Task? release = null;
+        var observer = new Observer((checkpoint, _, _) =>
+        {
+            if (checkpoint != RestoreCheckpoint.OldMoved) return Task.CompletedTask;
+            var attempt = Assert.Single(Directory.GetDirectories(Path.Combine(target.Workspace.Root, "recovery", "restores")));
+            locked = new FileStream(Path.Combine(attempt, "incoming", "jobs", incoming.Id, "chunk-00000.wav"), FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (!persistent) release = Task.Run(async () => { await Task.Delay(200); locked.Dispose(); });
+            return Task.CompletedTask;
+        });
+        try
+        {
+            if (persistent)
+            {
+                var error = await Record.ExceptionAsync(() => WorkspaceBackup.RestoreAsync(targetLease, backup, observer));
+                Assert.True(error is IOException or UnauthorizedAccessException, error?.ToString());
+                locked?.Dispose(); Assert.True(await WorkspaceBackup.RecoverInterruptedAsync(targetLease));
+                Assert.Equal(original.Id, Assert.Single(await new SqliteJobStore(target.Workspace).LoadAsync()).Id);
+                Assert.Equal(originalHash, await Workspace.HashFileAsync(target.Workspace.ChunkPath(original, 0)));
+            }
+            else
+            {
+                await WorkspaceBackup.RestoreAsync(targetLease, backup, observer);
+                Assert.Equal(incoming.Id, Assert.Single(await new SqliteJobStore(target.Workspace).LoadAsync()).Id);
+                Assert.False(await WorkspaceBackup.RecoverInterruptedAsync(targetLease));
+            }
+        }
+        finally { locked?.Dispose(); if (release is not null) await release; }
+    }
     [Fact] public async Task FullBackupAndRestorePreserveSourceSettingsDraftReceiptsAndEveryAudioByte()
     {
         using var source = new TestWorkspace(); using var target = new TestWorkspace(); var original = await SeedAsync(source, "Original source 😀"); var later = await SeedAsync(target, "Later source");

@@ -182,12 +182,17 @@ public static class WorkspaceBackup
         }
         return CommuteCast.Core.Job.Hash(JsonSerializer.Serialize(entries.Select(e => new { e.Path, e.Hash })));
     }
-    private static void Move(string from, string to)
+    private static async Task MoveAsync(string from, string to, CancellationToken ct)
     {
-        SqliteSchema.RejectLink(from); SqliteSchema.RejectLink(to);
-        if (Exists(to)) throw new IOException("Restore recovery would overwrite an existing file. All state was preserved for inspection.");
-        Directory.CreateDirectory(Path.GetDirectoryName(to)!);
-        if (Directory.Exists(from)) { GuardTree(from); Directory.Move(from, to); } else File.Move(from, to, false);
+        for (var attempt = 0; ; attempt++)
+        {
+            ct.ThrowIfCancellationRequested(); SqliteSchema.RejectLink(from); SqliteSchema.RejectLink(to);
+            if (Exists(to)) throw new IOException("Restore recovery would overwrite an existing file. All state was preserved for inspection.");
+            Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+            try { if (Directory.Exists(from)) { GuardTree(from); Directory.Move(from, to); } else File.Move(from, to, false); return; }
+            catch (IOException error) when (attempt < 5 && (error.HResult & 0xFFFF) is 5 or 32 or 33) { await Task.Delay(50 << attempt, ct); }
+            catch (UnauthorizedAccessException) when (attempt < 5) { await Task.Delay(50 << attempt, ct); }
+        }
     }
     public static async Task<RestoreResult> RestoreAsync(WorkspaceLease lease, string backup, IRestoreObserver? observer = null, CancellationToken ct = default)
     {
@@ -211,7 +216,7 @@ public static class WorkspaceBackup
         foreach (var name in ManagedRoots)
         {
             ct.ThrowIfCancellationRequested(); var original = Path.Combine(workspace.Root, name);
-            if (Exists(original)) Move(original, Path.Combine(previous, name));
+            if (Exists(original)) await MoveAsync(original, Path.Combine(previous, name), ct);
             if (observer is not null) await observer.ReachedAsync(RestoreCheckpoint.OldItemMoved, name, ct);
         }
         journal = journal with { Phase = "OldMoved" }; await Workspace.AtomicWriteAsync(JournalPath(workspace), JsonSerializer.Serialize(journal, Json));
@@ -219,7 +224,7 @@ public static class WorkspaceBackup
         foreach (var name in ManagedRoots)
         {
             ct.ThrowIfCancellationRequested(); var staged = Path.Combine(incoming, name);
-            if (Exists(staged)) Move(staged, Path.Combine(workspace.Root, name));
+            if (Exists(staged)) await MoveAsync(staged, Path.Combine(workspace.Root, name), ct);
             if (observer is not null) await observer.ReachedAsync(RestoreCheckpoint.NewItemMoved, name, ct);
         }
         if (observer is not null) await observer.ReachedAsync(RestoreCheckpoint.NewMoved, null, ct);
@@ -258,10 +263,10 @@ public static class WorkspaceBackup
                 if (Exists(old))
                 {
                     if (await DigestAsync(old, ct) != journal.OriginalDigests[name]) throw new IOException("Original recovery state changed. All remaining files were preserved for inspection.");
-                    if (Exists(current)) Move(current, Path.Combine(failed, name));
-                    Move(old, current);
+                    if (Exists(current)) await MoveAsync(current, Path.Combine(failed, name), ct);
+                    await MoveAsync(old, current, ct);
                 }
-                else if (!journal.HadOriginal[name] && Exists(current)) Move(current, Path.Combine(failed, name));
+                else if (!journal.HadOriginal[name] && Exists(current)) await MoveAsync(current, Path.Combine(failed, name), ct);
                 else if (journal.HadOriginal[name] && (!Exists(current) || await DigestAsync(current, ct) != journal.OriginalDigests[name])) throw new IOException("Restore recovery cannot verify an original state item. All remaining files were preserved for inspection.");
             }
         }
