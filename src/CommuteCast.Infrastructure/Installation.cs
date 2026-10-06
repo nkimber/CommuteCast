@@ -9,8 +9,8 @@ public record InstallationPrevious(string PackageId, InstallationSnapshot Snapsh
 public record InstallationState(int FormatVersion, string InstallationId, string? CurrentPackageId, string? AppVersion,
     InstallationPrevious? Previous, IReadOnlyList<string> KnownPackages, DateTimeOffset ChangedUtc);
 public record InstallationResult(InstallationState State, string? Executable, bool AlreadyCurrent = false);
-public record InstallationOverview(InstallationOwner? Owner, InstallationState? State, bool PendingRecovery, string StateHash, string PendingHash, string? PendingOperation);
-public enum InstallationCheckpoint { BackupCreated, StageVerified, PackageStaged, Prepared, StateMigrated, StateRestored, BeforeActivation, Activated, BeforeRemoval, ItemRemoved }
+public record InstallationOverview(InstallationOwner? Owner, InstallationState? State, bool PendingRecovery, string StateHash, string PendingHash, string? PendingOperation, string LauncherHash = "");
+public enum InstallationCheckpoint { BackupCreated, StageVerified, PackageStaged, Prepared, StateMigrated, StateRestored, BeforeActivation, Activated, BeforeRemoval, ItemRemoved, LauncherPrepared, LauncherRemoved, LauncherActivated, LauncherRecorded }
 public interface IInstallationObserver { Task ReachedAsync(InstallationCheckpoint checkpoint, string? item, CancellationToken ct); }
 internal record RemovalScope(string Kind, string Name, bool Directory, IReadOnlyList<ReleaseFile> Files);
 internal record InstallationJournal(int FormatVersion, string Id, string Kind, string? OldStateHash, InstallationState Proposed,
@@ -147,12 +147,13 @@ public sealed class Installation
         {
             await ReleasePackage.ValidateAsync(PackagePath(package.PackageId), ct);
             var database = Path.Combine(lease.Workspace.Root, "queue.db"); if (File.Exists(database)) Compatible(package, await SqliteSchema.ValidateDatabaseAsync(database, ct));
+            await InstalledLauncher.EnsureAsync(Root, owner, PackagePath(package.PackageId), package, ct, observer);
             return new(old, Path.Combine(PackagePath(package.PackageId), "app", "CommuteCast.Desktop.exe"), true);
         }
         if (old?.CurrentPackageId is not null) await ReleasePackage.ValidateAsync(PackagePath(old.CurrentPackageId), ct);
         var snapshot = await SnapshotAsync(lease, ct); var backup = await VerifySnapshotAsync(lease, snapshot, ct); Compatible(package, backup.Manifest.SchemaVersion);
         await Observe(observer, InstallationCheckpoint.BackupCreated, ct);
-        var required = checked(package.Files.Sum(f => f.Bytes) + 64 * 1048576L);
+        var required = checked(package.Files.Sum(f => f.Bytes) + (package.Files.SingleOrDefault(f => f.RelativePath == InstalledLauncher.PackageFile)?.Bytes ?? 0) + 64 * 1048576L);
         if (new DriveInfo(Path.GetPathRoot(Root)!).AvailableFreeSpace < required) throw new IOException("There is insufficient free space to stage a verified release. Current files were retained.");
         var destination = PackagePath(package.PackageId);
         if (!Directory.Exists(destination))
@@ -178,7 +179,8 @@ public sealed class Installation
         Compatible(package, await SqliteSchema.ValidateDatabaseAsync(Path.Combine(lease.Workspace.Root, "queue.db"), ct));
         await Observe(observer, InstallationCheckpoint.BeforeActivation, ct); ct.ThrowIfCancellationRequested();
         await Workspace.AtomicWriteAsync(StatePath, JsonSerializer.Serialize(proposed, Json));
-        await Observe(observer, InstallationCheckpoint.Activated, CancellationToken.None); File.Delete(JournalPath);
+        await Observe(observer, InstallationCheckpoint.Activated, CancellationToken.None);
+        await InstalledLauncher.EnsureAsync(Root, owner, destination, package, CancellationToken.None, observer); File.Delete(JournalPath);
         return new(proposed, Path.Combine(destination, "app", "CommuteCast.Desktop.exe"));
     }
     private static async Task MoveStageAsync(string stage, string destination, CancellationToken ct)
@@ -207,13 +209,15 @@ public sealed class Installation
         await WorkspaceBackup.RestoreAsync(lease, prior.Path, ct: ct); await Observe(observer, InstallationCheckpoint.StateRestored, ct);
         await Observe(observer, InstallationCheckpoint.BeforeActivation, ct); ct.ThrowIfCancellationRequested();
         await Workspace.AtomicWriteAsync(StatePath, JsonSerializer.Serialize(proposed, Json));
-        await Observe(observer, InstallationCheckpoint.Activated, CancellationToken.None); File.Delete(JournalPath);
+        await Observe(observer, InstallationCheckpoint.Activated, CancellationToken.None);
+        await InstalledLauncher.EnsureAsync(Root, owner, PackagePath(package.PackageId), package, CancellationToken.None, observer); File.Delete(JournalPath);
         return new(proposed, Path.Combine(PackagePath(package.PackageId), "app", "CommuteCast.Desktop.exe"));
     }
     private string ScopeRoot(WorkspaceLease lease, RemovalScope scope)
     {
         if (scope.Kind == "Package") return PackagePath(scope.Name);
         if (scope.Kind == "Private" && PrivateNames.Contains(scope.Name, StringComparer.Ordinal)) return Path.Combine(lease.Workspace.Root, scope.Name);
+        if (scope.Kind == "Launcher" && scope.Name == InstalledLauncher.FileName && !scope.Directory) return Path.Combine(Root, scope.Name);
         throw new IOException("The uninstall journal names an unrecognized removal scope. Files were preserved.");
     }
     private static async Task<RemovalScope> CaptureScopeAsync(string kind, string name, string path, CancellationToken ct)
@@ -252,7 +256,7 @@ public sealed class Installation
             foreach (var file in scope.Files)
             {
                 ct.ThrowIfCancellationRequested();
-                await OwnedFileRemoval.DeleteAsync(scope.Directory ? path : lease.Workspace.Root, file, ct: ct);
+                await OwnedFileRemoval.DeleteAsync(scope.Directory ? path : scope.Kind == "Launcher" ? Root : lease.Workspace.Root, file, ct: ct);
                 await Observe(observer, InstallationCheckpoint.ItemRemoved, ct, scope.Kind + "/" + scope.Name + "/" + file.RelativePath);
             }
             if (scope.Directory) OwnedFileRemoval.RemoveEmptyDirectories(path);
@@ -283,6 +287,13 @@ public sealed class Installation
                 }
             }
         }
+        var launcher = await InstalledLauncher.ReadReceiptAsync(Root, owner, ct);
+        if (File.Exists(Path.Combine(Root, InstalledLauncher.FileName)))
+        {
+            if (launcher is null) throw new IOException("Uninstall found an unowned stable launcher. It was preserved.");
+            await InstalledLauncher.VerifyAsync(Root, owner, ct);
+            scopes.Add(new("Launcher", InstalledLauncher.FileName, false, [launcher.File]));
+        }
         if (scopes.Sum(s => s.Files.Count) > 100000) throw new IOException("There are too many recorded files for one bounded uninstall operation.");
         await DeploymentSession.VerifyPrivateReviewAsync(lease, reviewedPrivateFingerprint, ct);
         var proposed = old with { CurrentPackageId = null, AppVersion = null, Previous = null, ChangedUtc = DateTimeOffset.UtcNow };
@@ -294,8 +305,10 @@ public sealed class Installation
     }
     private async Task<bool> RecoverCoreAsync(WorkspaceLease lease, InstallationOwner owner, CancellationToken ct)
     {
+        var launcherPending = InstalledLauncher.HasPending(Root);
+        await InstalledLauncher.RecoverAsync(Root, owner, ct);
         await WorkspaceBackup.RecoverInterruptedAsync(lease, ct);
-        var journal = await ReadAsync<InstallationJournal>(JournalPath, 32 * 1048576, ct); if (journal is null) return false;
+        var journal = await ReadAsync<InstallationJournal>(JournalPath, 32 * 1048576, ct); if (journal is null) return launcherPending;
         if (journal.FormatVersion != 1 || !Id(journal.Id) || journal.Kind is not ("Activate" or "Rollback" or "Uninstall") || journal.Proposed is null ||
             journal.OldStateHash is not null && !Hash(journal.OldStateHash) || journal.Removal is null || journal.Removal.Count > PrivateNames.Length + 1000 ||
             journal.Kind != "Uninstall" && (journal.Removal.Count != 0 || journal.RecoverySnapshot is null) || journal.Kind == "Uninstall" && journal.RecoverySnapshot is not null)
@@ -309,9 +322,9 @@ public sealed class Installation
         {
             ScopeRoot(lease, scope);
             if (scope.Kind == "Package" && (!scope.Directory || !journal.Proposed.KnownPackages.Contains(scope.Name)) || scope.Kind == "Private" && scope.Directory != PrivateDirectories.Contains(scope.Name, StringComparer.Ordinal) ||
-                !scope.Directory && (scope.Kind != "Private" || scope.Files.Count != 1 || scope.Files[0].RelativePath != scope.Name) ||
+                !scope.Directory && (scope.Kind is not ("Private" or "Launcher") || scope.Files.Count != 1 || scope.Files[0].RelativePath != scope.Name) ||
                 scope.Files.Select(f => f.RelativePath).Distinct(StringComparer.OrdinalIgnoreCase).Count() != scope.Files.Count) throw new IOException("The removal scope differs from its recorded ownership.");
-            foreach (var file in scope.Files) OwnedFileRemoval.Resolve(scope.Directory ? ScopeRoot(lease, scope) : lease.Workspace.Root, file.RelativePath);
+            foreach (var file in scope.Files) OwnedFileRemoval.Resolve(scope.Directory ? ScopeRoot(lease, scope) : scope.Kind == "Launcher" ? Root : lease.Workspace.Root, file.RelativePath);
         }
         var currentHash = File.Exists(StatePath) ? await Workspace.HashFileAsync(StatePath, ct) : null;
         var committed = currentHash == CommuteCast.Core.Job.Hash(JsonSerializer.Serialize(journal.Proposed, Json));
@@ -324,6 +337,12 @@ public sealed class Installation
         else if (journal.Kind is "Activate" or "Rollback")
         {
             var snapshot = await VerifySnapshotAsync(lease, journal.RecoverySnapshot!, ct); await WorkspaceBackup.RestoreAsync(lease, snapshot.Path, ct: ct);
+        }
+        var resultingState = await StateAsync(owner, ct);
+        if (journal.Kind != "Uninstall" && resultingState?.CurrentPackageId is not null)
+        {
+            var activePath = PackagePath(resultingState.CurrentPackageId); var activePackage = await ReleasePackage.ValidateAsync(activePath, ct);
+            await InstalledLauncher.EnsureAsync(Root, owner, activePath, activePackage, ct);
         }
         File.Delete(JournalPath); return true;
     }
@@ -347,25 +366,28 @@ public sealed class Installation
         var stateHash = File.Exists(StatePath) ? await Workspace.HashFileAsync(StatePath, ct) : "";
         var state = await StateAsync(owner, ct);
         if ((File.Exists(StatePath) ? await Workspace.HashFileAsync(StatePath, ct) : "") != stateHash) throw new IOException("Installation state changed during review. Review it again.");
-        var pending = HasPendingOperation;
-        if (pending && new FileInfo(JournalPath).Length > 32 * 1048576) throw new IOException("Deployment recovery records exceed their safe limit. Existing files were preserved.");
-        var pendingHash = pending ? await Workspace.HashFileAsync(JournalPath, ct) : "";
+        SqliteSchema.RejectLink(JournalPath); var deploymentPending = File.Exists(JournalPath);
+        if (deploymentPending && new FileInfo(JournalPath).Length > 32 * 1048576) throw new IOException("Deployment recovery records exceed their safe limit. Existing files were preserved.");
+        var pendingHash = deploymentPending ? await Workspace.HashFileAsync(JournalPath, ct) : "";
         var journal = await ReadAsync<InstallationJournal>(JournalPath, 32 * 1048576, ct);
         if (journal is not null && journal.Kind is not ("Activate" or "Rollback" or "Uninstall")) throw new IOException("Deployment recovery records are incompatible. Existing files were preserved.");
         if ((File.Exists(JournalPath) ? await Workspace.HashFileAsync(JournalPath, ct) : "") != pendingHash) throw new IOException("Deployment recovery records changed during review. Review them again.");
+        var launcherHash = await InstalledLauncher.PendingHashAsync(Root, ct);
+        var pending = deploymentPending || launcherHash.Length > 0;
+        if (pending) pendingHash = CommuteCast.Core.Job.Hash(pendingHash + "|" + launcherHash);
         if (!pending && state?.CurrentPackageId is not null)
         {
             var package = await ReleasePackage.ValidateAsync(PackagePath(state.CurrentPackageId), ct);
             if (package.PackageId != state.CurrentPackageId || package.AppVersion != state.AppVersion) throw new IOException("The active release differs from its installation record.");
         }
-        return new(owner, state, pending, stateHash, pendingHash, journal?.Kind);
+        return new(owner, state, pending, stateHash, pendingHash, journal?.Kind ?? (launcherHash.Length > 0 ? "Launcher" : null), await InstalledLauncher.OverviewHashAsync(Root, owner, ct));
     }
     // Maintenance needs trusted active binaries even when the private queue needs repair.
     public Task<InstallationResult> InspectForMaintenanceAsync(WorkspaceLease lease, CancellationToken ct = default) => InspectCoreAsync(lease, false, ct);
     private async Task<InstallationResult> InspectCoreAsync(WorkspaceLease lease, bool validateQueue, CancellationToken ct)
     {
         using var installationLease = Acquire(lease); var owner = await OwnerAsync(lease, false, ct);
-        if (File.Exists(JournalPath)) throw new IOException("Deployment is unfinished. Close the desktop and run recover-install before launching.");
+        if (HasPendingOperation) throw new IOException("Deployment is unfinished. Close the desktop and run recover-install before launching.");
         var state = await StateAsync(owner, ct) ?? throw new IOException("No release is recorded.");
         if (state.CurrentPackageId is null) return new(state, null);
         var package = await ReleasePackage.ValidateAsync(PackagePath(state.CurrentPackageId), ct);
@@ -387,5 +409,5 @@ public sealed class Installation
         GuardSeparation(Path.GetFullPath(owner.WorkspaceRoot)); return owner;
     }
     public bool HasPendingOperation
-    { get { SqliteSchema.RejectLink(JournalPath); return File.Exists(JournalPath); } }
+    { get { SqliteSchema.RejectLink(JournalPath); return File.Exists(JournalPath) || InstalledLauncher.HasPending(Root); } }
 }

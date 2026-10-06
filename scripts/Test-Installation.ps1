@@ -27,6 +27,28 @@ function Fixture-State([string]$Command, [string]$Label) {
     return (($response -join "`n") | ConvertFrom-Json)
 }
 function Same($Actual, $Expected, [string]$Label) { if ($Actual -ne $Expected) { throw "$Label did not match." } }
+$hasLauncher = Test-Path -LiteralPath (Join-Path $portable 'app\CommuteCast.Launcher.exe')
+function Launcher-Plan([switch]$Setup) {
+    $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $installRoot 'CommuteCast.exe'))
+    $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $start.WindowStyle = 'Hidden'
+    $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+    $start.ArgumentList.Add('--inspect'); if ($Setup) { $start.ArgumentList.Add('--setup') }
+    # Inspect the actual host: static CLR, or an extracted CLR under controlled bundle storage.
+    $start.Environment['DOTNET_ROOT'] = Join-Path $fixture 'absent-runtime'
+    $start.Environment['DOTNET_ROOT_X64'] = Join-Path $fixture 'absent-runtime'
+    $start.Environment['DOTNET_MULTILEVEL_LOOKUP'] = '0'
+    $start.Environment['DOTNET_BUNDLE_EXTRACT_BASE_DIR'] = Join-Path $fixture 'launcher-runtime'
+    $process = [Diagnostics.Process]::Start($start)
+    $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+    try {
+        if (-not $process.WaitForExit(30000)) { $process.Kill($true); throw 'Owned launcher inspection timed out.' }
+        $output = $stdout.GetAwaiter().GetResult(); $errors = $stderr.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw "Launcher inspection failed: $errors" }
+        $plan = $output | ConvertFrom-Json
+        if ($plan.bundledRuntimeLoaded -ne $true) { throw 'Launcher did not report a statically linked or isolated extracted CLR.' }
+        return $plan
+    } finally { $process.Dispose() }
+}
 $sealed = Invoke-Tool -Arguments @('seal-package', '--package', $b)
 $original = Fixture-State seed original
 $held = [IO.FileStream]::new((Join-Path $privateRoot 'instance.lease'), [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -34,7 +56,9 @@ try { $refused = Invoke-Tool -Arguments @('install', '--root', $privateRoot, '--
 finally { $held.Dispose() }
 if ($refused -notmatch 'already holds') { throw 'Running workspace did not exclude installation.' }
 $first = Invoke-Tool -Arguments @('install', '--root', $privateRoot, '--install-root', $installRoot, '--package', $a)
+if ($hasLauncher) { Same (Launcher-Plan).Executable $first.Executable 'Stable launcher initial release' }
 $second = Invoke-Tool -Arguments @('install', '--install-root', $installRoot, '--package', $b)
+if ($hasLauncher) { Same (Launcher-Plan).Executable $second.Executable 'Stable launcher updated release' }
 Same $second.State.Previous.PackageId $first.State.CurrentPackageId 'Previous binary identity'
 $later = Fixture-State seed later
 $beforePointer = (Get-FileHash -LiteralPath (Join-Path $installRoot 'installation.json')).Hash
@@ -43,6 +67,7 @@ if ($unconfirmed -notmatch 'requires.*confirm-replace') { throw 'Rollback did no
 Same (Get-FileHash -LiteralPath (Join-Path $installRoot 'installation.json')).Hash $beforePointer 'Unconfirmed rollback preserves activation'
 $rolledBack = Invoke-Tool -Arguments @('rollback', '--install-root', $installRoot, '--confirm-replace-local-data')
 Same $rolledBack.State.CurrentPackageId $first.State.CurrentPackageId 'Rollback binary identity'
+if ($hasLauncher) { Same (Launcher-Plan).Executable $rolledBack.Executable 'Stable launcher rolled-back release' }
 $restored = Fixture-State inspect
 Same $restored.jobs.Count 1 'Pre-update queued job count'
 Same $restored.jobs[0].immutablePayloadHash $original.jobs[0].immutablePayloadHash 'Frozen queued job payload'
@@ -51,14 +76,26 @@ foreach ($field in @('draftHash', 'settingsHash', 'providerPinHash')) { Same $re
 $undone = Invoke-Tool -Arguments @('rollback', '--install-root', $installRoot, '--confirm-replace-local-data')
 Same $undone.State.CurrentPackageId $second.State.CurrentPackageId 'Undo rollback binary identity'
 Same ((Fixture-State inspect).jobs.Count) 2 'Later queued jobs retained by undo snapshot'
+$externalSetup = $null
+if ($hasLauncher) {
+    Same (Launcher-Plan).Executable $undone.Executable 'Stable launcher undo release'
+    $externalSetup = Launcher-Plan -Setup
+    if ($externalSetup.Executable.StartsWith($installRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Setup was staged inside its removal scope.' }
+    $externalPackage = Split-Path -Parent (Split-Path -Parent $externalSetup.Executable)
+    $verifiedSetup = Invoke-Tool -Arguments @('verify-package', '--package', $externalPackage)
+    Same $verifiedSetup.PackageId $second.State.CurrentPackageId 'External setup package identity'
+}
 $export = Join-Path $fixture 'separate-exports\keep-export.txt'; Set-Content -LiteralPath $export -Value 'Separate export sentinel'
 $note = Join-Path $privateRoot 'keep-unrelated.txt'; Set-Content -LiteralPath $note -Value 'Unrelated local sentinel'
 $model = Join-Path $privateRoot 'provisioning-models\keep.txt'; New-Item -ItemType Directory -Path (Split-Path -Parent $model) | Out-Null; Set-Content -LiteralPath $model -Value 'Separate model sentinel'
 if (-not $KeepInstalled) {
     $retained = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'retain')
     if (Test-Path -LiteralPath $undone.Executable) { throw 'Tracked application binary survived uninstall.' }
+    if ($hasLauncher -and (Test-Path -LiteralPath (Join-Path $installRoot 'CommuteCast.exe'))) { throw 'Owned stable launcher survived uninstall.' }
+    if ($externalSetup -and -not (Test-Path -LiteralPath $externalSetup.Executable)) { throw 'External setup was removed while required for recovery.' }
     Same ((Fixture-State inspect).jobs.Count) 2 'Retain-data uninstall keeps queued jobs'
     $reinstalled = Invoke-Tool -Arguments @('install', '--install-root', $installRoot, '--package', $a)
+    if ($hasLauncher) { Same (Launcher-Plan).Executable $reinstalled.Executable 'Stable launcher reinstallation' }
     $removeRefused = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'remove') -ExpectedExit 1
     if ($removeRefused -notmatch 'requires.*confirm-remove') { throw 'Private data removal was not explicitly gated.' }
     $removed = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'remove', '--confirm-remove-local-data')
@@ -68,5 +105,8 @@ if (-not $KeepInstalled) {
     Same (Get-Content -LiteralPath $model -Raw).Trim() 'Separate model sentinel' 'Model preservation'
 }
 $report = [ordered]@{ passed = $true; fixture = $fixture; privateRoot = $privateRoot; installRoot = $installRoot; executable = $undone.Executable; keptInstalledForNativeCheck = [bool]$KeepInstalled; checks = @('real-process workspace exclusion', 'versioned initial install and update', 'queued source/settings/time/receipt/artifact preservation', 'explicit compatible state-and-binary rollback', 'undo snapshot retains later jobs'); uninstallScopesExecuted = (-not $KeepInstalled); sourcePackage = $portable; createdUtc = [datetime]::UtcNow.ToString('O') }
+$report['launcherPlansExecuted'] = $hasLauncher
+$report['bundledRuntimeInspected'] = $hasLauncher
+$report['externalSetup'] = $externalSetup
 $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $fixture 'report.json') -Encoding utf8
 $report | ConvertTo-Json -Depth 5

@@ -82,6 +82,8 @@ public static class ReleasePackage
             throw new IOException("The application and maintenance binary versions differ from this packaging tool. Rebuild the entire package.");
         if (inventory.Contains("app/CommuteCast.Setup.exe") && Build(root, "app/CommuteCast.Setup.exe") != manifest.DesktopBuild)
             throw new IOException("The native setup entry point differs from the desktop build. Rebuild the entire package.");
+        if (inventory.Contains(InstalledLauncher.PackageFile) && Build(root, InstalledLauncher.PackageFile) != manifest.DesktopBuild)
+            throw new IOException("The stable launcher differs from the desktop build. Rebuild the entire package.");
         manifest = manifest with { PackageId = Identity(manifest) };
         ct.ThrowIfCancellationRequested(); await Workspace.AtomicWriteAsync(Path.Combine(root, ManifestName), JsonSerializer.Serialize(manifest, Json));
         return await ValidateAsync(root, ct);
@@ -112,6 +114,8 @@ public static class ReleasePackage
         }
         if (Build(root, "app/CommuteCast.Desktop.exe") != manifest.DesktopBuild || Build(root, "app/CommuteCast.Maintenance.exe") != manifest.MaintenanceBuild || Build(root, "app/coreclr.dll") != manifest.BundledRuntime)
             throw new IOException("The binary build inventory differs from its declaration.");
+        foreach (var entry in new[] { "app/CommuteCast.Setup.exe", InstalledLauncher.PackageFile })
+            if (actual.Contains(entry) && Build(root, entry) != manifest.DesktopBuild) throw new IOException("A deployment entry point differs from the desktop build.");
         return manifest;
     }
 }
