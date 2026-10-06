@@ -43,7 +43,8 @@ public sealed class JobView(Job job, Workspace workspace)
     public string Id => Job.Id;
     public string Title => Job.Title;
     public string Submitted => Job.CreatedUtc.ToLocalTime().ToString("MMM d, yyyy · h:mm tt zzz");
-    public string Status => Job.Stage switch
+    public string Status => Job.CancellationRequested && !Job.ExportCommitted && Job.Stage != JobStage.Cancelled
+        ? "Cancelling · waiting for active work to stop" : Job.Stage switch
     {
         JobStage.WaitingForService => "Waiting for local speech service",
         JobStage.Synthesizing => $"Narrating · {Job.CompletedChunks} of {Job.Chunks.Count} chunks validated",

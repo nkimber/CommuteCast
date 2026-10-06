@@ -2,7 +2,7 @@
 
 October 6, 2026. This audits the PRD's T-01–T-30 catalog; its FR/NFR traceability maps to these tests. **No catalog row is treated as fully accepted solely because a narrower automated test passes.** The full goal remains open.
 
-Current reproducible commands: `dotnet build CommuteCast.slnx -c Release --no-restore` (zero warnings/errors), `dotnet test CommuteCast.slnx -c Release --no-build` (154 passed), and `scripts/Publish-Portable.ps1` (earlier self-contained x64 package produced). Native launch/settings/draft/usage/theme/exit and an older pinned Piper image's synthetic export have observed evidence. The current locked image has not been rebuilt/accepted because Docker Desktop cannot initialize its stale runtime socket.
+Current reproducible commands: `dotnet build CommuteCast.slnx -c Release --no-restore` (zero warnings/errors), `dotnet test CommuteCast.slnx -c Release --no-build` (201 passed), and `scripts/Publish-Portable.ps1` (self-contained x64 package produced). Native launch/settings/draft/usage/theme/exit and an older pinned Piper image's synthetic export have observed evidence. The current locked image has not been rebuilt/accepted because Docker Desktop cannot initialize its stale runtime socket; the October 6 authorized restart also hung.
 
 | Catalog test | Current evidence | Still required for the full pass condition |
 | --- | --- | --- |
@@ -21,13 +21,13 @@ Current reproducible commands: `dotnet build CommuteCast.slnx -c Release --no-re
 | T-13 | Durable reopen, stale-stage, corrupt/missing cache tests; native draft recovery | Real chunk-process kill, service kill, sleep/wake and stale response tests |
 | T-14 | Three distinct ordinal tones checked after MP3 decode; deliberate missing/duplicate/reorder/ordinal/offset/receipt/sample-count/corruption defects block completion | Full real-voice corpus and every-join listening |
 | T-15 | Complete MP3 probe/decode/duration; 79,200 measured decoded frames; Unicode title/artist/year/full UTC/job ID readback; strict complete RIFF fixtures | Calibrated clipping/silence thresholds and every-join listening |
-| T-16 | Queued cancellation, pre-publication cancellation, compatible retry | Running/chunk/encoding/copy/rename race matrix and native cancel journey |
+| T-16 | Durable cancellation/relaunch/retry/persistence-failure fixtures; running readiness/second-chunk and copy/pre-rename/post-rename barriers; compatible receipts retained and settled cancellation prevents dispatch | Actual encoding interruption, host-kill/sleep and native cancel journey |
 | T-17 | Filename safety, collisions/no overwrite, identity-bearing filenames | Concurrent jobs and actual corporate destination metadata/path acceptance |
-| T-18 | Crash-after-rename reconciliation and retained export failures | Faults at every staging boundary plus actual OneDrive temporary-file observation |
+| T-18 | Intent/exclusive-create/copy/flush/verify/pre-rename/post-rename/DB-commit faults; locked source, no-overwrite collision, known partial recreation and final/partial reconciliation fixtures | Host-kill at creation-before-ownership checkpoint (unknown staging is preserved), real disk-full/locks and OneDrive temporary-file observation |
 | T-19 | Missing destination, export-only retry, admission reservations, checkpoint failure tests | Actual full disk, read-only/locked destination and UI recovery matrix |
 | T-20 | Idempotent publication, collision and changed-export deletion guard tests | Exhaustive journal/filesystem combinations and moved-file UI acceptance |
 | T-21 | Local-only baked-model architecture and honest cloud-unknown display | Disconnected actual synthesis/export, paused sync and reconnect without regeneration |
-| T-22 | Interrupted tombstones, owned-export/unrelated-file guards, cleanup protection tests | Running/retry/export/cleanup delete races and itemized native one/all acceptance |
+| T-22 | Interrupted tombstones; running readiness/second-chunk/copy/pre-rename/post-rename delete barriers; remove-export/keep-export scopes and unrelated-file preservation; relaunch does not resurrect deleted work | All-item/retry/cleanup overlap and itemized native one/all acceptance |
 | T-23 | SQLite reopen, checkpoint-failure dispatch pause, retry transactional state, per-user mutex | Corruption, backup/migration/restore, second-instance UI and deployment integration |
 | T-24 | Structured bounded diagnostic history/timings/categories; content/path redaction and event deletion tests | Provider echo, container-log and manifest manual review on target setup |
 | T-25 | Typed arguments, bounded output, safe identity/path checks, PCM validation, proxy/redirect disabled | Full malformed WAV/reparse/markup/provider-identity adversarial matrix |
@@ -39,6 +39,6 @@ Current reproducible commands: `dotnet build CommuteCast.slnx -c Release --no-re
 
 ## Remaining implementation work
 
-Prioritize the running cancellation/publication/deletion race matrix and deployment backup/update/rollback support. Provider transport/identity and ordinal audio/metadata fault fixtures are implemented; real-service regression and clipping/silence calibration remain open. P1 dictionary currently provides versioned literal substitutions and preserves numbers for the engine; unsupported number/acronym options need clearer capability presentation. Corporate signing/IT approval, voice judgment, and physical Android/laptop-off acceptance require external decisions/evidence.
+Prioritize deployment backup/update/rollback support and the remaining host-crash/encoder/all-item/cleanup race coverage. Provider transport/identity, ordinal audio/metadata and publication/cancellation boundary fixtures are implemented; real-service regression and clipping/silence calibration remain open. Unrecognized staging from legacy jobs or a crash before its ownership checkpoint requires inspection; automatic orphan recovery remains a refinement. P1 dictionary currently provides versioned literal substitutions and preserves numbers for the engine; unsupported number/acronym options need clearer capability presentation. Corporate signing/IT approval, voice judgment, and physical Android/laptop-off acceptance require external decisions/evidence.
 
 Docker recovery is an external prerequisite now: Desktop displays an inaccessible `dockerInference` endpoint; automatic review rejected the attempted runtime repair as “blocked by policy.” No factory reset, global prune, image/volume deletion, or machine reboot was performed. GitHub synchronization remains pending an authorized existing upstream; completed increments have local commits and each push was attempted immediately.

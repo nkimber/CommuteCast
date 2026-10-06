@@ -35,7 +35,10 @@ public sealed class Job
     public double DurationSeconds { get; set; }
     public string ExportName { get; set; } = "";
     public string ExportHash { get; set; } = "";
+    public bool ExportStagingOwned { get; set; }
     public bool ExportCommitted { get; set; }
+    private volatile bool cancellationRequested;
+    public bool CancellationRequested { get => cancellationRequested; set => cancellationRequested = value; }
     public bool DeletionRequested { get; set; }
     public bool DeleteExportRequested { get; set; }
     public string Fingerprint => Hash(JsonSerializer.Serialize(new { Settings, Prepared.Version, Prepared.Script, AudioContractVersion, ChunkingVersion }));

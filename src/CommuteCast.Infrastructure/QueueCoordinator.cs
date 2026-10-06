@@ -57,6 +57,11 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             }
             try { await publisher.ReconcileAsync(job, ct); }
             catch (IOException) { job.Error = "Export reconciliation failed. The local job is preserved; inspect the destination and retry."; job.Stage = JobStage.Failed; }
+            if (job.CancellationRequested && !job.ExportCommitted)
+            {
+                job.Stage = JobStage.Cancelled; job.Error = ""; job.FailureCategory = FailureCategory.Cancelled; job.FailedStage = null;
+                await store.SaveAsync(job, ct);
+            }
             if (job.Stage is not (JobStage.Exported or JobStage.Cancelled or JobStage.Failed))
             {
                 job.Stage = JobStage.Queued;
@@ -134,7 +139,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             {
                 lock (sync)
                 {
-                    job = Paused || lifetime.IsCancellationRequested ? null : jobs.FirstOrDefault(j => j.Stage == JobStage.Queued && !j.DeletionRequested);
+                    job = Paused || lifetime.IsCancellationRequested ? null : jobs.FirstOrDefault(j => j.Stage == JobStage.Queued && !j.DeletionRequested && !j.CancellationRequested);
                     if (job is not null)
                     {
                         activeId = job.Id;
@@ -155,9 +160,9 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             try { await RunAsync(job, cancellation.Token); }
             catch (OperationCanceledException)
             {
-                if (!job.ExportCommitted) job.Stage = lifetime.IsCancellationRequested ? JobStage.Queued : JobStage.Cancelled;
+                if (!job.ExportCommitted) job.Stage = job.CancellationRequested || !lifetime.IsCancellationRequested ? JobStage.Cancelled : JobStage.Queued;
                 job.Error = "";
-                job.FailureCategory = lifetime.IsCancellationRequested ? FailureCategory.None : FailureCategory.Cancelled;
+                job.FailureCategory = job.ExportCommitted || (lifetime.IsCancellationRequested && !job.CancellationRequested) ? FailureCategory.None : FailureCategory.Cancelled;
                 job.FailedStage = null;
                 await PersistOutcomeAsync(job);
             }
@@ -214,6 +219,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     }
     private async Task RunAsync(Job job, CancellationToken ct)
     {
+        if (job.CancellationRequested) throw new OperationCanceledException(ct);
         var directory = workspace.JobDirectory(job.Id);
         Workspace.RejectReparsePoints(directory);
         Directory.CreateDirectory(directory);
@@ -298,19 +304,35 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     {
         Task? pending = null;
         Job? job;
+        var saveRequest = false;
         lock (sync)
         {
             job = jobs.FirstOrDefault(j => j.Id == id);
             if (activeId == id)
             {
-                activeCancellation!.Cancel();
                 pending = activeFinished!.Task;
+                if (!job!.ExportCommitted) { job.CancellationRequested = true; saveRequest = true; }
             }
-            else if (job is not null && job.Stage == JobStage.Queued) job.Stage = JobStage.Cancelled;
+            else if (job is not null && job.Stage == JobStage.Queued) { job.CancellationRequested = true; job.Stage = JobStage.Cancelled; job.FailureCategory = FailureCategory.Cancelled; saveRequest = true; }
+            if (job is not null && job.CancellationRequested && !job.ExportCommitted) saveRequest = true;
         }
-        if (pending is not null) await pending;
-        else if (job is not null) await store.SaveAsync(job);
+        Exception? saveFailure = null;
+        if (saveRequest)
+        {
+            try { await store.SaveAsync(job!); }
+            catch (Exception error)
+            {
+                saveFailure = error; Paused = true;
+                PersistenceError = "Queue paused because cancellation could not be recorded. Repair storage and retry the operation. The request may not survive a crash until saved. " + FriendlyError(error);
+            }
+        }
+        // Save the user request before signalling in-flight work; a relaunch must not resume it.
+        lock (sync) if (activeId == id) activeCancellation!.Cancel();
         Notify();
+        if (pending is not null) await pending;
+        else if (job is not null && !saveRequest) await store.SaveAsync(job);
+        Notify();
+        if (saveFailure is not null) throw new IOException(PersistenceError, saveFailure);
     }
     public async Task RetryAsync(string id, string? destination = null)
     {
@@ -336,8 +358,14 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             if (job.DeletionRequested) throw new ArgumentException("This narration is pending deletion. Retry its deletion to finish removal.");
         }
         var queued = JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(job))!;
-        if (destination is not null) { workspace.GuardLocalDestination(destination); queued.Destination = destination; queued.ExportName = ""; queued.ExportHash = ""; }
+        if (destination is not null)
+        {
+            workspace.GuardLocalDestination(destination);
+            await publisher.RemoveOwnedStagingAsync(job, lifetime.Token);
+            queued.Destination = destination; queued.ExportName = ""; queued.ExportHash = ""; queued.ExportStagingOwned = false;
+        }
         queued.Stage = JobStage.Queued; queued.Error = ""; queued.FailureCategory = FailureCategory.None; queued.FailedStage = null;
+        queued.CancellationRequested = false;
         var admission = Snapshot().Where(j => j.Id != id).Append(queued).ToList();
         await CheckStorageBudgetAsync(admission, null, lifetime.Token);
         // Persist queue intent before the worker is allowed to pick up the job.
