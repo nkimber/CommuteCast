@@ -42,7 +42,7 @@ Tests cover source span accounting, chunk ordering, Unicode boundaries, frozen s
 - `services/speech`: pinned CPU Kokoro ONNX and Piper packages/models; a versioned CommuteCast HTTP contract; no runtime downloads or content logging.
 - `tools/CommuteCast.Pilot`: reproducible real-service acceptance runner.
 
-See [implementation decisions](documents/Implementation-Decisions.md), [acceptance record](documents/Acceptance.md), and [third-party notices](THIRD-PARTY-NOTICES.md).
+See [implementation decisions](documents/Implementation-Decisions.md), [acceptance record](documents/Acceptance.md), [full verification matrix](documents/Verification-Matrix.md), and [third-party notices](THIRD-PARTY-NOTICES.md).
 
 ## Recovery and privacy
 

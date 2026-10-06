@@ -10,5 +10,6 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Start-CommuteCast.ps1'),
 Copy-Item -LiteralPath (Join-Path $projectRoot 'services\compose.yaml') -Destination (Join-Path $release 'services')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'services\speech') -Destination (Join-Path $release 'services') -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'documents\Acceptance.md') -Destination (Join-Path $release 'documents')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'documents\Implementation-Decisions.md'), (Join-Path $projectRoot 'documents\Verification-Matrix.md') -Destination (Join-Path $release 'documents')
 Compress-Archive -Path (Join-Path $release '*') -DestinationPath (Join-Path $projectRoot 'artifacts\release\CommuteCast-win-x64.zip') -Force
 Write-Host "Portable application: $application"
