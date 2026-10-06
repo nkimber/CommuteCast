@@ -67,7 +67,9 @@ Publishing also writes `release-manifest.json`: a sorted file inventory with siz
 
 ## Back up and restore local state
 
-Close CommuteCast first. From the portable package's `app` directory:
+In Settings, choose **Open backup & restore**. The app stops its current work and playback, saves the draft/settings and retains the exclusive workspace lease. Create a verified backup, choose and verify an existing completed backup, or recover an interrupted restore. Restore shows the exact backup date, ID and narration/file counts and requires a separate confirmation. Returning to the editor reloads local state; saved queue pause settings control dispatch. To enter maintenance when the queue or settings cannot load, close CommuteCast and launch `CommuteCast.Desktop.exe --maintenance` from the current release. Installed maintenance still verifies the active binary package and workspace binding; it never starts speech services.
+
+For command-line maintenance, close CommuteCast first. From the portable package's `app` directory:
 
 ```powershell
 .\CommuteCast.Maintenance.exe backup
@@ -81,7 +83,7 @@ Backups stay under `%LOCALAPPDATA%\CommuteCast\backups`. They contain private so
 
 Restore validates the entire backup and stages another verified copy before replacing local managed state. Previous files remain under `recovery\restores\<restore ID>\previous`. An unfinished restore is recovered by desktop startup or `recover`; before its durable commit, recovery returns to the verified original state. Incompatible, changed or unsafe artifacts are refused and retained for inspection. Recovery copies and backups can contain private data and consume disk space; narration deletion and cache cleanup do not remove them. Keep the previous state until the restored application has been checked. Failed preparation can also leave retained copies for inspection.
 
-For a reproducible isolated command-line acceptance run, use `.\scripts\Test-Maintenance.ps1` after publishing, or supply `-Executable` with the built maintenance executable. Its synthetic fixtures and report stay under ignored `artifacts\maintenance-acceptance`; it never restores the live user workspace. Native backup controls and fresh-machine acceptance remain open.
+For a reproducible isolated command-line acceptance run, use `.\scripts\Test-Maintenance.ps1` after publishing, or supply `-Executable` with the built maintenance executable. Its synthetic fixtures and report stay under ignored `artifacts\maintenance-acceptance`; it never restores the live user workspace. Native backup creation, restore confirmation/cancellation, editor transitions and lease exclusion have isolated observed evidence. Confirmed replacement and interruption recovery are covered by backend tests; a confirmed native replacement, full accessibility and fresh-machine acceptance remain open.
 
 ## Install, update, roll back and uninstall
 

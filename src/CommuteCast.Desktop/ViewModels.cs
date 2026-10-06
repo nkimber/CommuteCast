@@ -76,6 +76,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private readonly CancellationTokenSource shutdown = new();
     private CancellationTokenSource? draftSave;
     private readonly SemaphoreSlim draftGate = new(1);
+    private readonly OperationLifetime operations = new();
+    private Task? disposal;
     private string page = "compose", source = "", draftTitle = "", statusMessage = "Paste something worth listening to. Queue it when you're ready.", serviceStatus = "Checking local speech…";
     private string providerDetails = "", encoderVersion = "Not checked";
     private string setupDetails = "Setup has not been checked. This inspection does not start or change speech services.";
@@ -195,7 +197,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         MeasureStorageCommand = Command(_ => RefreshStorageAsync());
         CleanCacheCommand = Command(async _ => { ValidateRetention(); queue.CacheQuotaMiB = CacheQuotaMiB; queue.ScratchRetentionDays = ScratchRetentionDays; var result = await queue.CleanCacheAsync(shutdown.Token); await RefreshStorageAsync(); StatusMessage = $"Cleanup removed {result.FilesRemoved} files ({result.BytesRemoved / 1048576.0:0.0} MiB). {result.Failures} files could not be removed. Protected data and exports are retained."; });
     }
-    private ICommand Command(Func<object?, Task> action) => new AsyncCommand(action, e => StatusMessage = QueueCoordinator.FriendlyError(e));
+    private ICommand Command(Func<object?, Task> action) => new AsyncCommand(p => operations.RunAsync(() => action(p)), e => StatusMessage = QueueCoordinator.FriendlyError(e));
     private void Navigate(string value) { page = value; Raise(nameof(IsCompose)); Raise(nameof(IsLibrary)); Raise(nameof(IsSettings)); Raise(nameof(PageHeading)); }
     private Job RequireSelected() => SelectedJob?.Job ?? throw new ArgumentException("Select a narration first.");
     private void RefreshJobs(IReadOnlyList<Job> snapshots)
@@ -208,7 +210,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         Raise(nameof(PauseLabel));
         if (queue.PersistenceError.Length > 0) StatusMessage = queue.PersistenceError;
     }
-    public async Task InitializeAsync()
+    public Task InitializeAsync() => operations.RunAsync(InitializeCoreAsync);
+    private async Task InitializeCoreAsync()
     {
         try { var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; }
         catch (IOException error) { draftLoadFailed = true; StatusMessage = error.Message; }
@@ -352,9 +355,14 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         await File.WriteAllTextAsync(dialog.FileName, package, shutdown.Token);
         StatusMessage = "Redacted diagnostics exported. No source, script, title, audio, or corporate path is included.";
     }
-    public async ValueTask DisposeAsync()
+    public void ValidateForMaintenance() => ValidateRetention();
+    public ValueTask DisposeAsync() => new(disposal ??= DisposeCoreAsync());
+    private async Task DisposeCoreAsync()
     {
+        var settled = operations.StopAsync();
         draftSave?.Cancel(); shutdown.Cancel(); player.Close();
+        await settled.WaitAsync(TimeSpan.FromSeconds(20));
+        player.Close(); // An already admitted playback action may have finished after the first close.
         await queue.DisposeAsync();
         await draftGate.WaitAsync();
         try { if (!draftLoadFailed || draftDirty) await drafts.SaveAsync(new(DraftTitle, Source)); }

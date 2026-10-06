@@ -326,7 +326,10 @@ public sealed class Installation
     }
     public async Task<bool> RecoverAsync(WorkspaceLease lease, CancellationToken ct = default)
     { using var installationLease = Acquire(lease); var owner = await OwnerAsync(lease, false, ct); return await RecoverCoreAsync(lease, owner, ct); }
-    public async Task<InstallationResult> InspectAsync(WorkspaceLease lease, CancellationToken ct = default)
+    public Task<InstallationResult> InspectAsync(WorkspaceLease lease, CancellationToken ct = default) => InspectCoreAsync(lease, true, ct);
+    // Maintenance needs trusted active binaries even when the private queue needs repair.
+    public Task<InstallationResult> InspectForMaintenanceAsync(WorkspaceLease lease, CancellationToken ct = default) => InspectCoreAsync(lease, false, ct);
+    private async Task<InstallationResult> InspectCoreAsync(WorkspaceLease lease, bool validateQueue, CancellationToken ct)
     {
         using var installationLease = Acquire(lease); var owner = await OwnerAsync(lease, false, ct);
         if (File.Exists(JournalPath)) throw new IOException("Deployment is unfinished. Close the desktop and run recover-install before launching.");
@@ -334,7 +337,7 @@ public sealed class Installation
         if (state.CurrentPackageId is null) return new(state, null);
         var package = await ReleasePackage.ValidateAsync(PackagePath(state.CurrentPackageId), ct);
         if (package.PackageId != state.CurrentPackageId || package.AppVersion != state.AppVersion) throw new IOException("The active release differs from its installation record.");
-        var database = Path.Combine(lease.Workspace.Root, "queue.db"); if (File.Exists(database)) Compatible(package, await SqliteSchema.ValidateDatabaseAsync(database, ct));
+        var database = Path.Combine(lease.Workspace.Root, "queue.db"); if (validateQueue && File.Exists(database)) Compatible(package, await SqliteSchema.ValidateDatabaseAsync(database, ct));
         return new(state, Path.Combine(PackagePath(state.CurrentPackageId), "app", "CommuteCast.Desktop.exe"));
     }
     public static string? FindRoot(string applicationDirectory)

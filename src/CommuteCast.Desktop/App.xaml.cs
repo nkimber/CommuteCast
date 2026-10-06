@@ -15,6 +15,7 @@ public partial class App : Application
     private Mutex? instance;
     private bool ownsMutex;
     private WorkspaceLease? workspaceLease;
+    private Installation? installation;
     private static bool dark;
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -24,25 +25,46 @@ public partial class App : Application
         SetTheme();
         try
         {
+            if (e.Args.Length > 0 && !e.Args.SequenceEqual(new[] { "--maintenance" })) throw new IOException("Use CommuteCast.Desktop.exe with no arguments, or --maintenance for offline backup and restore.");
+            var maintenance = e.Args.Length == 1;
             var installationRoot = Installation.FindRoot(AppContext.BaseDirectory);
-            var installation = installationRoot is null ? null : new Installation(installationRoot);
+            installation = installationRoot is null ? null : new Installation(installationRoot);
             var owner = installation is null ? null : await installation.ReadOwnerAsync();
             var workspace = new Workspace(owner?.WorkspaceRoot);
             workspaceLease = WorkspaceLease.Acquire(workspace);
             if (installation?.HasPendingOperation == true) throw new IOException("Deployment is unfinished. Close CommuteCast and run recover-install from an extracted portable package before relaunching.");
-            await WorkspaceBackup.RecoverInterruptedAsync(workspaceLease);
-            if (installation is not null)
+            if (maintenance)
             {
-                var active = await installation.InspectAsync(workspaceLease);
-                if (active.Executable is null || !Path.GetFullPath(active.Executable).Equals(Environment.ProcessPath, StringComparison.OrdinalIgnoreCase))
-                    throw new IOException("This release is archived or uninstalled. Launch the current installed release instead.");
+                await VerifyInstallationAsync(true);
+                var window = new MaintenanceWindow(workspaceLease); MainWindow = window; window.Show();
             }
-            var settings = await workspace.LoadSettingsAsync();
-            var window = new MainWindow(new MainViewModel(settings, workspace));
-            MainWindow = window; window.Show();
+            else await ShowEditorAsync();
         }
-        catch (Exception error) { MessageBox.Show(QueueCoordinator.FriendlyError(error), "CommuteCast startup"); Shutdown(1); }
+        catch (Exception error) { MessageBox.Show(QueueCoordinator.FriendlyError(error) + "\nFor local queue or settings repair, close the application and launch CommuteCast.Desktop.exe --maintenance from the current release. Deployment recovery remains a separate maintenance-tool operation.", "CommuteCast startup"); Shutdown(1); }
     }
+    private async Task VerifyInstallationAsync(bool maintenance)
+    {
+        if (installation is null) return;
+        var active = maintenance ? await installation.InspectForMaintenanceAsync(workspaceLease!) : await installation.InspectAsync(workspaceLease!);
+        if (active.Executable is null || !Path.GetFullPath(active.Executable).Equals(Environment.ProcessPath, StringComparison.OrdinalIgnoreCase))
+            throw new IOException("This release is archived or uninstalled. Launch the current installed release instead.");
+    }
+    private async Task ShowEditorAsync()
+    {
+        await WorkspaceBackup.RecoverInterruptedAsync(workspaceLease!);
+        await VerifyInstallationAsync(false);
+        var workspace = workspaceLease!.Workspace;
+        var database = Path.Combine(workspace.Root, "queue.db");
+        if (installation is null && File.Exists(database)) await SqliteSchema.ValidateDatabaseAsync(database);
+        var settings = await workspace.LoadSettingsAsync();
+        var window = new MainWindow(new MainViewModel(settings, workspace)); MainWindow = window; window.Show();
+    }
+    internal void EnterMaintenance(MainWindow previous)
+    {
+        var window = new MaintenanceWindow(workspaceLease!); MainWindow = window; window.Show(); previous.CloseAfterTransition();
+    }
+    internal async Task ReturnToEditorAsync(MaintenanceWindow previous)
+    { await ShowEditorAsync(); previous.CloseAfterTransition(); }
     public static void ToggleTheme() { dark = !dark; SetTheme(); }
     private static void SetTheme()
     {

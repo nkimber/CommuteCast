@@ -30,8 +30,27 @@ public partial class MainWindow : Window
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
         try { await model.InitializeAsync(); }
-        catch (Exception error) { MessageBox.Show(this, QueueCoordinator.FriendlyError(error), "CommuteCast"); }
+        catch (Exception error) { if (!closing) MessageBox.Show(this, QueueCoordinator.FriendlyError(error), "CommuteCast"); }
     }
+    private async void OpenMaintenance(object sender, RoutedEventArgs e)
+    {
+        if (closing) return;
+        try { model.ValidateForMaintenance(); }
+        catch (Exception error) { MessageBox.Show(this, QueueCoordinator.FriendlyError(error), "Check settings before maintenance"); return; }
+        if (MessageBox.Show(this, "Stop current generation and playback, save the draft and open backup & restore? Validated chunks remain available for resume. Returning to the editor reloads saved local state.", "Open local maintenance", MessageBoxButton.OKCancel, MessageBoxImage.Question, MessageBoxResult.Cancel) != MessageBoxResult.OK) return;
+        closing = true; IsEnabled = false;
+        try
+        {
+            await model.DisposeAsync();
+            ((App)Application.Current).EnterMaintenance(this);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, "Maintenance did not open because current operations or local saves could not settle. Close the application and resolve storage before relaunching with --maintenance. " + QueueCoordinator.FriendlyError(error), "CommuteCast maintenance");
+            closing = false; // Keep the stopped editor disabled; do not run against partly disposed state.
+        }
+    }
+    internal void CloseAfterTransition() { closed = true; Close(); }
     private async void WindowClosing(object? sender, CancelEventArgs e)
     {
         if (closed) return;

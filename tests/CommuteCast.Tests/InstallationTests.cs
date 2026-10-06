@@ -7,6 +7,14 @@ namespace CommuteCast.Tests;
 
 public class InstallationTests
 {
+    [Fact] public async Task MaintenanceEntryVerifiesActivePackageWhileRetainingCorruptQueueForRepair()
+    {
+        using var test = new TestWorkspace(); await SeedAsync(test, "Original"); var package = await PackageAsync(test, "repair"); using var lease = WorkspaceLease.Acquire(test.Workspace); var install = new Installation(Path.Combine(test.Parent, "program"));
+        var active = await install.ActivateAsync(lease, package); byte[] corrupt = [0, 2, 4, 6]; await File.WriteAllBytesAsync(Path.Combine(test.Workspace.Root, "queue.db"), corrupt);
+        await Assert.ThrowsAsync<IOException>(() => install.InspectAsync(lease)); Assert.Equal(active.Executable, (await install.InspectForMaintenanceAsync(lease)).Executable);
+        Assert.Equal(corrupt, await File.ReadAllBytesAsync(Path.Combine(test.Workspace.Root, "queue.db")));
+        await File.WriteAllTextAsync(active.Executable!, "Changed active binary"); await Assert.ThrowsAsync<IOException>(() => install.InspectForMaintenanceAsync(lease));
+    }
     [Fact] public void InstalledRootRecognitionUsesWindowsPathCasing()
     {
         var root = Path.Combine(Path.GetTempPath(), "CommuteCast-Installed");
