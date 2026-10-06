@@ -47,6 +47,10 @@ dotnet run --project tools\CommuteCast.Pilot -- piper
 # Active real inference cancellation, followed by the opposite engine.
 dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-cancellation-example --verify-cancellation
 dotnet run --project tools\CommuteCast.Pilot -- piper artifacts/pilot/piper-cancellation-example --verify-cancellation
+# Isolated fault acceptance: close the desktop and other Pilot runs first.
+# Terminates only the verified owned service during its synthetic request.
+dotnet run --project tools\CommuteCast.Pilot -- piper artifacts/pilot/piper-active-loss-example --verify-active-service-loss
+dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-active-loss-example --verify-active-service-loss
 ```
 
 Tests cover source span accounting, chunk ordering, Unicode boundaries, frozen settings, SQLite relaunch, cancellation, export collisions, rename reconciliation, changed-file deletion guards, cache corruption, and export-only retry. Pipeline tests require FFmpeg and FFprobe. Pilot output and reports are private, ignored files in `artifacts/pilot`; they do not upload to OneDrive.

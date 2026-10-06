@@ -6,8 +6,8 @@ using System.Reflection;
 
 var engine = args.FirstOrDefault() ?? "kokoro";
 if (engine is not ("kokoro" or "piper")) throw new ArgumentException("Use kokoro or piper.");
-if (args.Length > 3 || args.Length == 3 && args[2] is not ("--verify-private-removal" or "--verify-audition" or "--verify-cancellation" or "--verify-stopped-recovery"))
-    throw new ArgumentException("Use an engine, an optional fresh folder under artifacts/pilot, and optional --verify-private-removal, --verify-audition, --verify-cancellation or --verify-stopped-recovery.");
+if (args.Length > 3 || args.Length == 3 && args[2] is not ("--verify-private-removal" or "--verify-audition" or "--verify-cancellation" or "--verify-stopped-recovery" or "--verify-active-service-loss"))
+    throw new ArgumentException("Use an engine, an optional fresh folder under artifacts/pilot, and optional --verify-private-removal, --verify-audition, --verify-cancellation, --verify-stopped-recovery or --verify-active-service-loss.");
 var verifyPrivateRemoval = args.ElementAtOrDefault(2) == "--verify-private-removal";
 var verifyAudition = args.ElementAtOrDefault(2) == "--verify-audition";
 var pilotParent = Path.GetFullPath(Path.Combine("artifacts", "pilot"));
@@ -28,6 +28,11 @@ using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
 var readiness = Stopwatch.StartNew();
 var info = await provider.ReadyAsync(engine, timeout.Token);
 readiness.Stop();
+if (args.ElementAtOrDefault(2) == "--verify-active-service-loss")
+{
+    await ActiveSpeechLossAcceptance.RunAsync(root, workspace, provider, info, timeout.Token);
+    return;
+}
 if (args.ElementAtOrDefault(2) == "--verify-stopped-recovery")
 {
     await StoppedSpeechAcceptance.RunAsync(root, workspace, provider, info, timeout.Token);
