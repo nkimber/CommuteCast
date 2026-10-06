@@ -18,11 +18,11 @@ public sealed class SetupWindow : Window
     private readonly StackPanel panel = new();
     private readonly ProgressBar progress = new() { Height = 4, IsIndeterminate = true, Visibility = Visibility.Collapsed };
     private readonly List<Button> mutations = [];
-    private readonly Button rollback, uninstall, recover, launch, inspect;
+    private readonly Button rollback, uninstall, recover, launch, inspect, cleanCache;
     private DeploymentSession? session;
     private DeploymentReview? review;
     private bool busy;
-    public SetupWindow(string packageRoot, string? installationRoot, string? privateRoot)
+    public SetupWindow(string packageRoot, string? installationRoot, string? privateRoot, bool boundCache = false)
     {
         this.packageRoot = packageRoot; privateOverride = privateRoot;
         Title = "Setup · CommuteCast"; Width = 1050; Height = 850; MinWidth = 700; MinHeight = 560; FontFamily = new("Segoe UI"); FontSize = 14; WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -34,9 +34,9 @@ public sealed class SetupWindow : Window
         var footer = new StackPanel { Margin = new(0, 16, 0, 0) }; AutomationProperties.SetLiveSetting(status, AutomationLiveSetting.Polite); footer.Children.Add(status); footer.Children.Add(progress); DockPanel.SetDock(footer, Dock.Bottom); container.Children.Add(footer);
         container.Children.Add(new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         panel.Children.Add(Text("Installation folder", 16));
-        installRoot = new TextBox { Text = installationRoot ?? Installation.DefaultRoot, Padding = new(12), Margin = new(0, 8, 0, 12) };
+        installRoot = new TextBox { Text = installationRoot ?? Installation.DefaultRoot, IsReadOnly = boundCache, Padding = new(12), Margin = new(0, 8, 0, 12) };
         AutomationProperties.SetName(installRoot, "Per-user installation folder"); ThemeBox(installRoot); panel.Children.Add(installRoot);
-        panel.Children.Add(Text("Use a dedicated local binary folder. Private source and queue data stay in a separate bound folder. Changing the path requires a new review.", 12, new(0, 0, 0, 12)));
+        panel.Children.Add(Text(boundCache ? "This recovery copy is bound to its recorded installation and private folders. Use a separate portable setup to choose another destination." : "Use a dedicated local binary folder. Private source and queue data stay in a separate bound folder. Changing the path requires a new review.", 12, new(0, 0, 0, 12)));
         panel.Children.Add(ActionButton("Review package & installation", ReviewAsync)); ThemeBox(details); AutomationProperties.SetName(details, "Reviewed deployment details"); panel.Children.Add(details);
         inspect = ActionButton("Check prerequisites without changes", InspectAsync); panel.Children.Add(inspect); panel.Children.Add(setup);
         var buttons = new WrapPanel { Margin = new(0, 20, 0, 0) };
@@ -44,9 +44,10 @@ public sealed class SetupWindow : Window
         rollback = ActionButton("Roll back app & local state…", () => ApplyAsync(DeploymentAction.Rollback)); mutations.Add(rollback); buttons.Children.Add(rollback);
         uninstall = ActionButton("Uninstall…", UninstallAsync); mutations.Add(uninstall); buttons.Children.Add(uninstall);
         recover = ActionButton("Recover deployment…", () => ApplyAsync(DeploymentAction.Recover)); mutations.Add(recover); buttons.Children.Add(recover);
+        cleanCache = ActionButton("Clean unused setup copies…", () => ApplyAsync(DeploymentAction.CleanSetupCache)); mutations.Add(cleanCache); buttons.Children.Add(cleanCache);
         launch = ActionButton("Launch installed CommuteCast", LaunchAsync); buttons.Children.Add(launch); panel.Children.Add(buttons);
         panel.Children.Add(Text("Updates take a compatible private snapshot before activation. Rollback restores the recorded previous binary and snapshot; later work is retained in recovery storage. Uninstall defaults to keeping local data. Exports, models and Docker artifacts are separate.", 12, new(0, 10, 0, 0)));
-        panel.Children.Add(Text("Install creates per-user Start Menu shortcuts and a Windows Installed Apps entry. Setup and uninstall open this reviewed flow. Checksums verify inventory; signing remains release work. The installed launcher prepares an external setup recovery copy, which remains after uninstall. Run setup outside the installation folder to remove installed binaries.", 12, new(0, 10, 0, 12)));
+        panel.Children.Add(Text("Install creates per-user Start Menu shortcuts and a Windows Installed Apps entry. Setup and uninstall open this reviewed flow. Checksums verify inventory; signing remains release work. An external setup recovery copy remains after uninstall. Clean unused setup copies removes only reviewed distribution copies; the active recovery kit, running sources and unrecognized entries are kept. Run setup outside the installation folder to remove installed binaries.", 12, new(0, 10, 0, 12)));
         installRoot.TextChanged += (_, _) => { review = null; details.Text = "The installation folder changed. Review this destination before continuing."; setup.Text = "Prerequisites have not been inspected for this destination."; UpdateButtons(); };
         Loaded += async (_, _) => await RunAsync(ReviewAsync); Closing += (_, e) => { if (busy) { e.Cancel = true; status.Text = "Wait for setup to settle before closing. Pending deployment has recorded recovery state."; } };
         UpdateButtons();
@@ -66,6 +67,7 @@ public sealed class SetupWindow : Window
         rollback.IsEnabled = review?.Overview.State?.Previous is not null && !review.Overview.PendingRecovery;
         uninstall.IsEnabled = review?.Overview.State?.CurrentPackageId is not null && !review.Overview.PendingRecovery && !Workspace.IsWithin(review.InstallRoot, AppContext.BaseDirectory);
         recover.IsEnabled = review?.Overview.Owner is not null && review.Overview.PendingRecovery;
+        cleanCache.IsEnabled = review?.Cache?.Copies > 0 && !review.Overview.PendingRecovery;
         launch.IsEnabled = review?.Overview.State?.CurrentPackageId is not null && !review.Overview.PendingRecovery;
         inspect.IsEnabled = review is not null;
     }
@@ -98,7 +100,7 @@ public sealed class SetupWindow : Window
             var outcome = await Task.Run(() => session!.ApplyAsync(selected, action, true));
             await ReviewAsync();
             if (outcome.Setup is not null) setup.Text = outcome.Setup.Display;
-            status.Text = action == DeploymentAction.Recover ? "Deployment recovery settled. Review the resulting state before launch." : "Setup action completed. The reviewed state above reflects the result; voice and device acceptance remain separate.";
+            status.Text = outcome.CacheCleanup is not null ? $"Removed {outcome.CacheCleanup.Copies:N0} verified unused setup copies ({outcome.CacheCleanup.Bytes / 1048576.0:0.0} MiB). Private narration and exports were kept." : action == DeploymentAction.Recover ? "Deployment recovery settled. Review the resulting state before launch." : "Setup action completed. The reviewed state above reflects the result; voice and device acceptance remain separate.";
         }
         catch { details.Text = "The action did not finish. Review the installation again to inspect any pending deployment and its recovery option."; throw; }
     }
@@ -124,12 +126,13 @@ public sealed class SetupConfirmationWindow : Window
         var panel = new DockPanel { Margin = new(26) }; Content = panel;
         var buttons = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 18, 0, 0) };
         buttons.Children.Add(new Button { Content = "Keep current state", IsCancel = true, IsDefault = true, Padding = new(16, 10, 16, 10), Margin = new(0, 0, 10, 0) });
-        var apply = new Button { Content = action switch { DeploymentAction.Install => "Install reviewed package", DeploymentAction.Rollback => "Restore previous release & state", DeploymentAction.Recover => "Recover recorded deployment", _ => "Uninstall reviewed application" }, Padding = new(16, 10, 16, 10) }; apply.Click += (_, _) => DialogResult = true; buttons.Children.Add(apply); DockPanel.SetDock(buttons, Dock.Bottom); panel.Children.Add(buttons);
+        var apply = new Button { Content = action switch { DeploymentAction.Install => "Install reviewed package", DeploymentAction.Rollback => "Restore previous release & state", DeploymentAction.Recover => "Recover recorded deployment", DeploymentAction.CleanSetupCache => "Remove reviewed unused setup copies", _ => "Uninstall reviewed application" }, Padding = new(16, 10, 16, 10) }; apply.Click += (_, _) => DialogResult = true; buttons.Children.Add(apply); DockPanel.SetDock(buttons, Dock.Bottom); panel.Children.Add(buttons);
         var description = action switch
         {
             DeploymentAction.Install => "Verify and stage this package, snapshot the current private state, check compatible schema and activate the release. Create per-user Start Menu and Installed Apps entries. Read-only prerequisite results are reported. No software prerequisites, images or models are installed automatically.",
             DeploymentAction.Rollback => "Restore the recorded previous binary and its pre-update queue, draft, settings and job artifacts. Later work leaves the active library and remains in retained recovery storage; an undo snapshot is recorded.",
             DeploymentAction.Recover => "Settle the recorded deployment journal. Before activation this restores the original private state; after activation it retains the committed release or finishes its recorded uninstall scope.",
+            DeploymentAction.CleanSetupCache => $"Remove {review.Cache?.Copies:N0} verified unused setup distributions, containing {review.Cache?.Files:N0} files ({review.Cache?.Bytes / 1048576.0:0.0} MiB). Keep the active recovery kit, executing sources, in-use copies and unrecognized entries. Private narration, installed releases, exports and engine artifacts are separate. Interrupted removal leaves a recovery journal.",
             _ => removeData == true ? "Remove recorded binary releases and reviewed local queue/history, draft, settings, job audio, backups and recovery files. Exports, models, Docker artifacts and unrelated root files remain separate. Private removal cannot be undone from the files it removes." : "Remove recorded binary releases and keep private source, draft, settings, queue/history, audio, backups and recovery files. Exports, models and Docker artifacts remain separate."
         };
         panel.Children.Add(new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = new TextBlock { Text = description + "\n\n" + review.Summary, TextWrapping = TextWrapping.Wrap } });

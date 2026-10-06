@@ -59,6 +59,36 @@ public static class OwnedFileRemoval
             if (!Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory, false);
         }
     }
+    /// <summary>Admit and verify an entire package under exclusive handles before deleting its first file.</summary>
+    public static async Task<int> DeleteBatchAsync(string root, IReadOnlyList<ReleaseFile> files, Func<string, Task>? removed = null, CancellationToken ct = default)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Managed package removal requires Windows.");
+        if (files.Count > 10001 || files.Select(f => f.RelativePath).Distinct(StringComparer.OrdinalIgnoreCase).Count() != files.Count) throw new IOException("The package removal inventory is unbounded or ambiguous.");
+        var held = new List<(ReleaseFile File, FileStream Stream)>();
+        try
+        {
+            foreach (var file in files.OrderByDescending(f => f.RelativePath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
+            {
+                ct.ThrowIfCancellationRequested(); var path = Resolve(root, file.RelativePath);
+                if (path.StartsWith("\\\\", StringComparison.Ordinal)) throw new IOException("Package removal requires local storage.");
+                var handle = CreateFile("\\\\?\\" + path, 0x80010000, 0, IntPtr.Zero, 3, 0x00200080, IntPtr.Zero);
+                if (handle.IsInvalid)
+                { var error = Marshal.GetLastWin32Error(); handle.Dispose(); if (error is 2 or 3) continue; throw new IOException("A setup package is in use or inaccessible. Its files were preserved; close the application using it and recover cleanup.", new Win32Exception(error)); }
+                if (!GetFileInformationByHandleEx(handle, 9, out var attributes, 8) || (attributes.Attributes & (0x400 | 0x10)) != 0)
+                { handle.Dispose(); throw new IOException("A setup removal item is a directory or reparse point. Files were preserved."); }
+                var stream = new FileStream(handle, FileAccess.Read, 81920, false); held.Add((file, stream));
+                if (stream.Length != file.Bytes || Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)) != file.Sha256) throw new IOException("A setup package file changed. No file in this package was removed.");
+            }
+            foreach (var item in held)
+            {
+                ct.ThrowIfCancellationRequested(); var disposition = new Disposition { DeleteFile = 1 };
+                if (!SetFileInformationByHandle(item.Stream.SafeFileHandle, 4, ref disposition, 1)) throw new IOException("Windows could not remove a verified setup file. Recover cleanup after closing the application using it.", new Win32Exception(Marshal.GetLastWin32Error()));
+                if (removed is not null) await removed(item.File.RelativePath);
+            }
+            return held.Count;
+        }
+        finally { foreach (var item in held) await item.Stream.DisposeAsync(); }
+    }
     [StructLayout(LayoutKind.Sequential)] private struct AttributeTag { public uint Attributes; public uint ReparseTag; }
     [StructLayout(LayoutKind.Sequential)] private struct Disposition { public byte DeleteFile; }
     [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]

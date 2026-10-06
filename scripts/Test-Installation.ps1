@@ -1,4 +1,4 @@
-param([string]$Executable, [switch]$KeepInstalled)
+param([string]$Executable, [switch]$KeepInstalled, [string]$LegacyPackage)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if (-not $Executable) { $Executable = Join-Path $projectRoot 'artifacts\release\CommuteCast-win-x64\app\CommuteCast.Maintenance.exe' }
@@ -11,7 +11,12 @@ $privateRoot = Join-Path $fixture 'private'; $installRoot = Join-Path $fixture '
 $portable = Split-Path -Parent (Split-Path -Parent $Executable)
 $a = Join-Path $fixture 'source-a'; $b = Join-Path $fixture 'source-b'
 New-Item -ItemType Directory -Path $fixture | Out-Null
-Copy-Item -LiteralPath $portable -Destination $a -Recurse
+if ($LegacyPackage) {
+    $LegacyPackage = [IO.Path]::GetFullPath($LegacyPackage)
+    $legacyCheck = & $Executable verify-package --package $LegacyPackage 2>&1
+    if ($LASTEXITCODE -ne 0) { throw 'The requested older fixture package is not verified.' }
+}
+Copy-Item -LiteralPath $(if ($LegacyPackage) { $LegacyPackage } else { $portable }) -Destination $a -Recurse
 Copy-Item -LiteralPath $portable -Destination $b -Recurse
 # A deliberate package revision, explicitly sealed as a developer fixture.
 Add-Content -LiteralPath (Join-Path $b 'README.md') -Value "`nSynthetic installation acceptance revision B."
@@ -29,6 +34,8 @@ function Fixture-State([string]$Command, [string]$Label) {
 function Same($Actual, $Expected, [string]$Label) { if ($Actual -ne $Expected) { throw "$Label did not match." } }
 $hasLauncher = Test-Path -LiteralPath (Join-Path $portable 'app\CommuteCast.Launcher.exe')
 $hasWindowsIntegration = Test-Path -LiteralPath (Join-Path $portable 'app\windows-integration.json')
+$hasSetupCacheCleanup = ((& $Executable --help) -join "`n").Contains('review-setup-cache')
+$cacheCleanupEvidence = $null
 function Verify-WindowsIntegration([bool]$Present) {
     if (-not $hasWindowsIntegration) { return }
     $owner = Get-Content -LiteralPath (Join-Path $installRoot 'installation.owner.json') -Raw | ConvertFrom-Json
@@ -75,6 +82,7 @@ if ($refused -notmatch 'already holds') { throw 'Running workspace did not exclu
 $first = Invoke-Tool -Arguments @('install', '--root', $privateRoot, '--install-root', $installRoot, '--package', $a)
 Verify-WindowsIntegration $true
 if ($hasLauncher) { Same (Launcher-Plan).Executable $first.Executable 'Stable launcher initial release' }
+$firstExternalSetup = if ($hasLauncher -and $hasSetupCacheCleanup) { Launcher-Plan -Setup } else { $null }
 $second = Invoke-Tool -Arguments @('install', '--install-root', $installRoot, '--package', $b)
 if ($hasLauncher) { Same (Launcher-Plan).Executable $second.Executable 'Stable launcher updated release' }
 Same $second.State.Previous.PackageId $first.State.CurrentPackageId 'Previous binary identity'
@@ -104,6 +112,39 @@ if ($hasLauncher) {
     $verifiedSetup = Invoke-Tool -Arguments @('verify-package', '--package', $externalPackage)
     Same $verifiedSetup.PackageId $second.State.CurrentPackageId 'External setup package identity'
 }
+if ($firstExternalSetup -and $hasSetupCacheCleanup) {
+    $oldCopy = Split-Path -Parent (Split-Path -Parent $firstExternalSetup.Executable)
+    $cacheReview = Invoke-Tool -Arguments @('review-setup-cache','--install-root',$installRoot)
+    Same $cacheReview.Copies 1 'One older setup distribution is eligible'
+    # Run a real older/current cached maintenance process read-only. Residency/usage must retain it.
+    $probeStart = [Diagnostics.ProcessStartInfo]::new((Join-Path $oldCopy 'app\CommuteCast.Maintenance.exe'))
+    $probeStart.UseShellExecute = $false; $probeStart.CreateNoWindow = $true; $probeStart.WindowStyle = 'Hidden'
+    $probeStart.RedirectStandardOutput = $true; $probeStart.RedirectStandardError = $true
+    foreach ($argument in @('check-setup','--root',(Join-Path $fixture 'absent-cache-probe-private'))) { $probeStart.ArgumentList.Add($argument) }
+    $probe = [Diagnostics.Process]::Start($probeStart); $probeOutput = $probe.StandardOutput.ReadToEndAsync(); $probeErrors = $probe.StandardError.ReadToEndAsync()
+    try {
+        if ($probe.HasExited) { throw 'Cached-process probe exited before residency observation.' }
+        $busyReview = Invoke-Tool -Arguments @('review-setup-cache','--install-root',$installRoot)
+        Same $busyReview.Copies 0 'Running cached maintenance is preserved'
+        if ($probe.HasExited -or -not ($busyReview.Preserved | Where-Object { $_.Name -eq $first.State.CurrentPackageId -and $_.Reason -match 'in use|running|residency' })) { throw 'No live cached-process preservation evidence was observed.' }
+        if (-not $probe.WaitForExit(45000)) { $probe.Kill($true); throw 'Owned read-only cached-process probe timed out.' }
+        $probeText = $probeOutput.GetAwaiter().GetResult(); $probeErrorText = $probeErrors.GetAwaiter().GetResult()
+        if ($probe.ExitCode -ne 0) { throw "Cached-process probe failed: $probeErrorText" }
+    } finally { if (-not $probe.HasExited) { $probe.Kill($true); $probe.WaitForExit() }; $probe.Dispose() }
+    $cacheReview = Invoke-Tool -Arguments @('review-setup-cache','--install-root',$installRoot)
+    Same $cacheReview.Copies 1 'Closed cached process makes the older copy eligible'
+    $scopeRefused = Invoke-Tool -Arguments @('clean-setup-cache','--install-root',$installRoot,'--confirm-remove-setup-copies','--review-fingerprint',('0' * 64)) -ExpectedExit 1
+    if ($scopeRefused -notmatch 'scope changed') { throw 'Changed cache review fingerprint was not refused.' }
+    $unconfirmedCache = Invoke-Tool -Arguments @('clean-setup-cache','--install-root',$installRoot,'--review-fingerprint',$cacheReview.Fingerprint) -ExpectedExit 1
+    if ($unconfirmedCache -notmatch 'confirm-remove-setup-copies') { throw 'Cache removal did not require explicit confirmation.' }
+    $privateBeforeCacheCleanup = Fixture-State inspect
+    $cacheCleaned = Invoke-Tool -Arguments @('clean-setup-cache','--install-root',$installRoot,'--confirm-remove-setup-copies','--review-fingerprint',$cacheReview.Fingerprint)
+    Same $cacheCleaned.removed.Copies 1 'Reviewed unused setup copy removal'
+    if (Test-Path -LiteralPath $oldCopy) { throw 'The unused owned setup distribution survived cleanup.' }
+    if (-not (Test-Path -LiteralPath $externalSetup.Executable)) { throw 'The active setup kit was removed.' }
+    Same ((Fixture-State inspect) | ConvertTo-Json -Depth 8 -Compress) ($privateBeforeCacheCleanup | ConvertTo-Json -Depth 8 -Compress) 'Cache cleanup preserves private narration state'
+    $cacheCleanupEvidence = [ordered]@{passed=$true;liveCachedProcessPreserved=$true;legacyPackage=$LegacyPackage;copiesRemoved=$cacheCleaned.removed.Copies;bytesReclaimed=$cacheCleaned.removed.Bytes;privateStateUnchanged=$true;requiredKitPreserved=$true}
+}
 $export = Join-Path $fixture 'separate-exports\keep-export.txt'; Set-Content -LiteralPath $export -Value 'Separate export sentinel'
 $note = Join-Path $privateRoot 'keep-unrelated.txt'; Set-Content -LiteralPath $note -Value 'Unrelated local sentinel'
 $model = Join-Path $privateRoot 'provisioning-models\keep.txt'; New-Item -ItemType Directory -Path (Split-Path -Parent $model) | Out-Null; Set-Content -LiteralPath $model -Value 'Separate model sentinel'
@@ -131,5 +172,6 @@ $report['launcherPlansExecuted'] = $hasLauncher
 $report['bundledRuntimeInspected'] = $hasLauncher
 $report['externalSetup'] = $externalSetup
 $report['windowsIntegrationInspected'] = $hasWindowsIntegration
+$report['setupCacheCleanup'] = $cacheCleanupEvidence
 $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $fixture 'report.json') -Encoding utf8
 $report | ConvertTo-Json -Depth 5

@@ -10,7 +10,7 @@ public record InstallationState(int FormatVersion, string InstallationId, string
     InstallationPrevious? Previous, IReadOnlyList<string> KnownPackages, DateTimeOffset ChangedUtc);
 public record InstallationResult(InstallationState State, string? Executable, bool AlreadyCurrent = false);
 public record InstallationOverview(InstallationOwner? Owner, InstallationState? State, bool PendingRecovery, string StateHash, string PendingHash, string? PendingOperation, string LauncherHash = "", string RegistrationHash = "");
-public enum InstallationCheckpoint { BackupCreated, StageVerified, PackageStaged, Prepared, StateMigrated, StateRestored, BeforeActivation, Activated, BeforeRemoval, ItemRemoved, LauncherPrepared, LauncherRemoved, LauncherActivated, LauncherRecorded, RegistrationPrepared, RegistrationValueWritten, RegistrationShortcutRemoved, RegistrationShortcutActivated, RegistrationRecorded }
+public enum InstallationCheckpoint { BackupCreated, StageVerified, PackageStaged, Prepared, StateMigrated, StateRestored, BeforeActivation, Activated, BeforeRemoval, ItemRemoved, LauncherPrepared, LauncherRemoved, LauncherActivated, LauncherRecorded, RegistrationPrepared, RegistrationValueWritten, RegistrationShortcutRemoved, RegistrationShortcutActivated, RegistrationRecorded, SetupCachePrepared, SetupCacheItemRemoved }
 public interface IInstallationObserver { Task ReachedAsync(InstallationCheckpoint checkpoint, string? item, CancellationToken ct); }
 internal record RemovalScope(string Kind, string Name, bool Directory, IReadOnlyList<ReleaseFile> Files);
 internal record InstallationJournal(int FormatVersion, string Id, string Kind, string? OldStateHash, InstallationState Proposed,
@@ -314,11 +314,12 @@ public sealed class Installation
     }
     private async Task<bool> RecoverCoreAsync(WorkspaceLease lease, InstallationOwner owner, CancellationToken ct)
     {
+        var cacheRecovered = await SetupCache.RecoverAsync(Root, owner, await StateAsync(owner, ct), File.Exists(StatePath) ? await Workspace.HashFileAsync(StatePath, ct) : "", ct);
         var launcherPending = InstalledLauncher.HasPending(Root) || OperatingSystem.IsWindows() && WindowsRegistration.HasPending(Root);
         await InstalledLauncher.RecoverAsync(Root, owner, ct);
         if (OperatingSystem.IsWindows()) await WindowsRegistration.RecoverAsync(Root, owner, ct);
         await WorkspaceBackup.RecoverInterruptedAsync(lease, ct);
-        var journal = await ReadAsync<InstallationJournal>(JournalPath, 32 * 1048576, ct); if (journal is null) return launcherPending;
+        var journal = await ReadAsync<InstallationJournal>(JournalPath, 32 * 1048576, ct); if (journal is null) return launcherPending || cacheRecovered;
         if (journal.FormatVersion != 1 || !Id(journal.Id) || journal.Kind is not ("Activate" or "Rollback" or "Uninstall") || journal.Proposed is null ||
             journal.OldStateHash is not null && !Hash(journal.OldStateHash) || journal.Removal is null || journal.Removal.Count > PrivateNames.Length + 1000 ||
             journal.Kind != "Uninstall" && (journal.Removal.Count != 0 || journal.RecoverySnapshot is null) || journal.Kind == "Uninstall" && journal.RecoverySnapshot is not null)
@@ -389,14 +390,15 @@ public sealed class Installation
         if ((File.Exists(JournalPath) ? await Workspace.HashFileAsync(JournalPath, ct) : "") != pendingHash) throw new IOException("Deployment recovery records changed during review. Review them again.");
         var launcherHash = await InstalledLauncher.PendingHashAsync(Root, ct);
         var registrationPending = OperatingSystem.IsWindows() ? await WindowsRegistration.PendingHashAsync(Root, ct) : "";
-        var pending = deploymentPending || launcherHash.Length > 0 || registrationPending.Length > 0;
-        if (pending) pendingHash = CommuteCast.Core.Job.Hash(pendingHash + "|" + launcherHash + "|" + registrationPending);
+        var cachePending = await SetupCache.PendingHashAsync(Root, ct);
+        var pending = deploymentPending || launcherHash.Length > 0 || registrationPending.Length > 0 || cachePending.Length > 0;
+        if (pending) pendingHash = CommuteCast.Core.Job.Hash(pendingHash + "|" + launcherHash + "|" + registrationPending + "|" + cachePending);
         if (!pending && state?.CurrentPackageId is not null)
         {
             var package = await ReleasePackage.ValidateAsync(PackagePath(state.CurrentPackageId), ct);
             if (package.PackageId != state.CurrentPackageId || package.AppVersion != state.AppVersion) throw new IOException("The active release differs from its installation record.");
         }
-        return new(owner, state, pending, stateHash, pendingHash, journal?.Kind ?? (launcherHash.Length > 0 ? "Launcher" : registrationPending.Length > 0 ? "Windows integration" : null), await InstalledLauncher.OverviewHashAsync(Root, owner, ct), OperatingSystem.IsWindows() ? await WindowsRegistration.OverviewHashAsync(Root, owner, ct) : "");
+        return new(owner, state, pending, stateHash, pendingHash, journal?.Kind ?? (launcherHash.Length > 0 ? "Launcher" : registrationPending.Length > 0 ? "Windows integration" : cachePending.Length > 0 ? "Setup cache" : null), await InstalledLauncher.OverviewHashAsync(Root, owner, ct), OperatingSystem.IsWindows() ? await WindowsRegistration.OverviewHashAsync(Root, owner, ct) : "");
     }
     // Maintenance needs trusted active binaries even when the private queue needs repair.
     public Task<InstallationResult> InspectForMaintenanceAsync(WorkspaceLease lease, CancellationToken ct = default) => InspectCoreAsync(lease, false, ct);
@@ -425,5 +427,19 @@ public sealed class Installation
         GuardSeparation(Path.GetFullPath(owner.WorkspaceRoot)); return owner;
     }
     public bool HasPendingOperation
-    { get { SqliteSchema.RejectLink(JournalPath); return File.Exists(JournalPath) || InstalledLauncher.HasPending(Root) || OperatingSystem.IsWindows() && WindowsRegistration.HasPending(Root); } }
+    { get { SqliteSchema.RejectLink(JournalPath); return File.Exists(JournalPath) || InstalledLauncher.HasPending(Root) || SetupCache.HasPending(Root) || OperatingSystem.IsWindows() && WindowsRegistration.HasPending(Root); } }
+    public async Task<SetupCacheReview> ReviewSetupCacheAsync(string? sourceRoot = null, CancellationToken ct = default)
+    {
+        var overview = await ReadOverviewAsync(ct); var owner = overview.Owner ?? throw new IOException("No owned installation is available for setup cleanup.");
+        if (overview.PendingRecovery) throw new IOException("Recover the pending deployment before reviewing setup cache cleanup.");
+        return await SetupCache.ReviewAsync(Root, owner, overview.State, overview.StateHash, sourceRoot, ct);
+    }
+    public async Task<SetupCacheCleanupResult> CleanSetupCacheAsync(WorkspaceLease lease, SetupCacheReview review, bool confirmed, string? sourceRoot = null, IInstallationObserver? observer = null, CancellationToken ct = default)
+    {
+        if (!confirmed) throw new IOException("Confirm the reviewed setup-cache removal before deleting distribution copies.");
+        using var installationLease = Acquire(lease); var owner = await OwnerAsync(lease, false, ct);
+        if (HasPendingOperation) throw new IOException("Recover the pending deployment before setup cache cleanup.");
+        var state = await StateAsync(owner, ct); var stateHash = File.Exists(StatePath) ? await Workspace.HashFileAsync(StatePath, ct) : "";
+        return await SetupCache.CleanAsync(Root, owner, state, stateHash, review, sourceRoot, observer, ct);
+    }
 }

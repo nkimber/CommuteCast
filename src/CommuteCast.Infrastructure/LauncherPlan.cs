@@ -22,21 +22,8 @@ public static class LauncherPlan
         var id = await InstalledLauncher.VerifyForSetupAsync(root, owner, ct);
         var overview = await installation.ReadOverviewAsync(ct);
         if (overview.State?.KnownPackages.Contains(id) != true) throw new IOException("The setup release is not recorded by this installation.");
-        var cache = SetupCacheRoot(root, owner); Workspace.RejectReparsePoints(cache);
-        if (Workspace.IsWithin(cache, owner.WorkspaceRoot) || Workspace.IsWithin(owner.WorkspaceRoot, cache)) throw new IOException("The setup cache overlaps private data. Existing files were preserved.");
-        var ownerPath = Path.Combine(cache, "setup-cache.owner.json"); SqliteSchema.RejectLink(ownerPath);
-        var expected = new SetupCacheOwner(1, owner.InstallationId, installation.Root);
-        if (Directory.Exists(cache))
-        {
-            if (!File.Exists(ownerPath) || new FileInfo(ownerPath).Length > 65536) throw new IOException("The external setup folder is not owned by this installation.");
-            SetupCacheOwner? existing;
-            try { existing = JsonSerializer.Deserialize<SetupCacheOwner>(await File.ReadAllTextAsync(ownerPath, ct)); }
-            catch (JsonException error) { throw new IOException("External setup ownership is unreadable. Files were preserved.", error); }
-            if (existing is null || existing.FormatVersion != expected.FormatVersion || existing.InstallationId != expected.InstallationId ||
-                existing.InstallationRoot is null || !Path.IsPathFullyQualified(existing.InstallationRoot) || !Path.GetFullPath(existing.InstallationRoot).Equals(installation.Root, StringComparison.OrdinalIgnoreCase))
-                throw new IOException("External setup ownership differs. Files were preserved.");
-        }
-        else { Directory.CreateDirectory(cache); await Workspace.AtomicWriteAsync(ownerPath, JsonSerializer.Serialize(expected)); }
+        var cache = (await SetupCache.InspectOwnerAsync(installation.Root, owner, true, ct)).Root;
+        using var cacheUse = SetupCache.AcquireUse(cache, id);
         var packageRoot = Path.Combine(cache, id); SqliteSchema.RejectLink(packageRoot);
         ReleaseManifest package;
         if (Directory.Exists(packageRoot)) package = await ReleasePackage.ValidateAsync(packageRoot, ct);

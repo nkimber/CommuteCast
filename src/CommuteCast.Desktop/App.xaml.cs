@@ -15,6 +15,7 @@ public partial class App : Application
     private Mutex? instance;
     private bool ownsMutex;
     private WorkspaceLease? workspaceLease;
+    private CachedSetupUse? setupCacheUse;
     private Installation? installation;
     private string? launchAfterExit;
     private static bool dark;
@@ -26,11 +27,13 @@ public partial class App : Application
         SetTheme();
         try
         {
+            setupCacheUse = await SetupCache.AcquireHostUseAsync(AppContext.BaseDirectory);
             var startup = DesktopStartup.Parse(e.Args, string.Equals(Path.GetFileName(Environment.ProcessPath), "CommuteCast.Setup.exe", StringComparison.OrdinalIgnoreCase));
+            if (setupCacheUse is not null) startup = startup.BindCachedSetup(setupCacheUse.InstallationRoot, setupCacheUse.PrivateRoot);
             if (startup.Mode == DesktopMode.Setup)
             {
                 var package = Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))!.FullName;
-                var setup = new SetupWindow(package, startup.InstallRoot, startup.PrivateRoot); MainWindow = setup; setup.Show(); return;
+                var setup = new SetupWindow(package, startup.InstallRoot, startup.PrivateRoot, setupCacheUse is not null); MainWindow = setup; setup.Show(); return;
             }
             var maintenance = startup.Mode == DesktopMode.Maintenance;
             var installationRoot = Installation.FindRoot(AppContext.BaseDirectory);
@@ -93,6 +96,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         workspaceLease?.Dispose();
+        setupCacheUse?.Dispose();
         if (ownsMutex) instance?.ReleaseMutex();
         instance?.Dispose();
         base.OnExit(e);

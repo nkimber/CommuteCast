@@ -61,7 +61,7 @@ public static class ReleasePackage
         return files.Order(StringComparer.Ordinal).ToArray();
     }
     private static string Build(string root, string relative) => FileVersionInfo.GetVersionInfo(Resolve(root, relative)).ProductVersion ?? "unavailable";
-    private static string Identity(ReleaseManifest manifest) => Job.Hash(JsonSerializer.Serialize(new
+    internal static string Identity(ReleaseManifest manifest) => Job.Hash(JsonSerializer.Serialize(new
     {
         manifest.AppVersion, manifest.DesktopBuild, manifest.MaintenanceBuild, manifest.BundledRuntime, manifest.Target,
         manifest.MinimumSchema, manifest.MaximumSchema, manifest.ProviderContract, manifest.Files

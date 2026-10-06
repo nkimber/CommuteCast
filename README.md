@@ -71,9 +71,20 @@ Run uninstall from an external portable setup package, since an installed setup 
 
 Installed binaries include a stable `CommuteCast.exe` at the installation root. Launch it normally for the verified active editor, with `--maintenance` for local backup/restore, or with `--setup` for deployment. Updates and rollback refresh its separately recorded binary through a recoverable journal. `--inspect` reports the selected executable and arguments without starting a child. The self-contained launcher uses its bundled runtime.
 
-`CommuteCast.exe --setup` prepares and verifies a complete external setup copy in `CommuteCast-setup-<installation identity>` beside the installation folder. This requires space for another distribution copy and permits removal of installed binaries while setup runs. It retains a setup-capable release when the editor is rolled back to an older package, and can use the cached kit during interrupted uninstall. The external copy contains distribution files, never narration content; it remains for deployment recovery after uninstall. Scoped cache cleanup remains release work. Changed/unowned launchers, ownership records or cached packages are preserved and refused.
+`CommuteCast.exe --setup` prepares and verifies a complete external setup copy in `CommuteCast-setup-<installation identity>` beside the installation folder. This requires space for another distribution copy and permits removal of installed binaries while setup runs. It retains a setup-capable release when the editor is rolled back to an older package, and can use the cached kit during interrupted uninstall. The external copy contains distribution files, never narration content; it remains for deployment recovery after uninstall. Reviewed scoped cache cleanup is available as described below. Changed/unowned launchers, ownership records or cached packages are preserved and refused.
 
 ## Back up and restore local state
+
+Native setup provides **Clean unused setup copies** after a review. It displays the cache folder, selected copy identities, file count and size, then asks for separate confirmation. Cleanup keeps the active editor/recovery kit, the source running setup, any in-use copy, incomplete distributions and unrecognized entries. Interrupted cleanup is recorded and can be settled with deployment recovery. Narration, installed release folders, exports and Docker artifacts are separate. Empty usage-lease and cache ownership records remain for safe coordination.
+
+The external maintenance tool offers the same operation. Close CommuteCast, inspect the scope, and pass the returned fingerprint explicitly:
+
+```powershell
+$review = .\CommuteCast.Maintenance.exe review-setup-cache | ConvertFrom-Json
+.\CommuteCast.Maintenance.exe clean-setup-cache --review-fingerprint $review.Fingerprint --confirm-remove-setup-copies
+```
+
+Use `--install-root` on both commands for a nondefault installation. After uninstall, a separately extracted portable tool can reclaim all verified unused setup copies. A tool running from a cached copy retains itself. Cached native setup is bound to its recorded installation; use the installed launcher for the editor or private-state maintenance, and a separate portable setup for another installation destination.
 
 Current packages create per-user Start Menu shortcuts for **CommuteCast** and **CommuteCast setup**, inside a folder unique to the installation, and a Windows **Installed Apps** entry. Setup/Uninstall opens the reviewed native setup flow through the stable launcher; local data is kept by default. Owned shortcuts and typed registry values are recorded in a bounded recovery journal. Missing owned entries can be repaired by installing the current package again; altered entries stop setup for inspection. Uninstall removes owned integration before its target binaries and preserves unrelated Start Menu files. Windows Settings display, actual shortcut child launch, corporate signing and fresh-machine acceptance still require direct verification.
 

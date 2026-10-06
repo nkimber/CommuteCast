@@ -4,16 +4,17 @@ using System.Text.Json;
 
 namespace CommuteCast.Infrastructure;
 
-public enum DeploymentAction { Install, Rollback, UninstallRetain, UninstallRemove, Recover }
+public enum DeploymentAction { Install, Rollback, UninstallRetain, UninstallRemove, Recover, CleanSetupCache }
 public sealed class DeploymentReview
 {
-    internal DeploymentReview(string packageRoot, ReleaseManifest package, string installRoot, string privateRoot, InstallationOverview overview, PrivateState state)
-    { PackageRoot = packageRoot; Package = package; InstallRoot = installRoot; PrivateRoot = privateRoot; Overview = overview; State = state; }
+    internal DeploymentReview(string packageRoot, ReleaseManifest package, string installRoot, string privateRoot, InstallationOverview overview, PrivateState state, SetupCacheReview? cache = null)
+    { PackageRoot = packageRoot; Package = package; InstallRoot = installRoot; PrivateRoot = privateRoot; Overview = overview; State = state; Cache = cache; }
     public string PackageRoot { get; }
     public ReleaseManifest Package { get; }
     public string InstallRoot { get; }
     public string PrivateRoot { get; }
     public InstallationOverview Overview { get; }
+    public SetupCacheReview? Cache { get; }
     internal PrivateState State { get; }
     public int LocalFiles => State.Files;
     public long LocalBytes => State.Bytes;
@@ -22,10 +23,11 @@ public sealed class DeploymentReview
     public string Summary => $"Package {Package.AppVersion} · {Package.DesktopBuild}\nPackage ID: {Package.PackageId}\n{Package.Files.Count:N0} verified package files · {Package.Files.Sum(f => f.Bytes) / 1048576.0:0.0} MiB · schema {Package.MinimumSchema}–{Package.MaximumSchema}\n\nBinaries: {InstallRoot}\nPrivate local data: {PrivateRoot}\n" +
         (Overview.State?.CurrentPackageId is null ? "No active installed release." : "Current release: " + Overview.State.CurrentPackageId) +
         $"\n{(Narrations.HasValue ? $"{Narrations:N0} narration records" : "Narration count unavailable")} · {LocalFiles:N0} managed private files · {LocalBytes / 1048576.0:0.0} MiB\n{QueueStatus}\n" +
-        (Overview.PendingRecovery ? "Pending " + Overview.PendingOperation + " deployment: recovery is required before install, rollback, removal or launch.\nRecovery journal: " + Overview.PendingHash : Overview.State?.Previous is null ? "No previous release snapshot is recorded." : "Rollback release: " + Overview.State.Previous.PackageId + "\nRollback snapshot: " + Overview.State.Previous.Snapshot.BackupId);
+        (Overview.PendingRecovery ? "Pending " + Overview.PendingOperation + " deployment: recovery is required before install, rollback, removal or launch.\nRecovery journal: " + Overview.PendingHash : Overview.State?.Previous is null ? "No previous release snapshot is recorded." : "Rollback release: " + Overview.State.Previous.PackageId + "\nRollback snapshot: " + Overview.State.Previous.Snapshot.BackupId) +
+        (Cache is null ? "" : $"\n\nSetup cache: {Cache.CacheRoot}\nCleanup: {Cache.Copies:N0} verified unused copies · {Cache.Files:N0} files · {Cache.Bytes / 1048576.0:0.0} MiB.\nReviewed copy identities:\n{string.Join("\n", Cache.PackageIds)}\nPreserved entries: {Cache.Preserved.Count:N0} (active, in use, incomplete or unrecognized). Distribution files only; private narration and exports are separate.");
 }
 internal record PrivateState(string Fingerprint, int Files, long Bytes, long? Narrations, string QueueStatus);
-public record DeploymentOutcome(InstallationResult? Installation, SetupReport? Setup, bool Recovered);
+public record DeploymentOutcome(InstallationResult? Installation, SetupReport? Setup, bool Recovered, SetupCacheCleanupResult? CacheCleanup = null);
 
 /// <summary>A reviewed, single-use offline deployment action. Preview/checks do not create private state.</summary>
 public sealed class DeploymentSession(string packageRoot, string? installRoot = null, string? privateRoot = null, ISetupRuntime? setupRuntime = null)
@@ -98,7 +100,8 @@ public sealed class DeploymentSession(string packageRoot, string? installRoot = 
     public Task<DeploymentReview> ReviewAsync(CancellationToken ct = default) => RunAsync(async () =>
     {
         reviewed = null; var package = await ReleasePackage.ValidateAsync(source, ct); var overview = await installation.ReadOverviewAsync(ct); var root = ResolvePrivateRoot(overview);
-        var state = await InspectPrivateAsync(root, ct); return reviewed = new(source, package, installation.Root, root, overview, state);
+        var state = await InspectPrivateAsync(root, ct); var cache = overview.Owner is not null && !overview.PendingRecovery ? await installation.ReviewSetupCacheAsync(source, ct) : null;
+        return reviewed = new(source, package, installation.Root, root, overview, state, cache);
     });
     private void RequireReview(DeploymentReview review)
     { if (!ReferenceEquals(review, reviewed)) throw new IOException("Review this package and local installation again before choosing an action."); }
@@ -123,6 +126,8 @@ public sealed class DeploymentSession(string packageRoot, string? installRoot = 
         try
         {
             if (action == DeploymentAction.Recover) return new DeploymentOutcome(null, null, await installation.RecoverAsync(lease, ct));
+            if (action == DeploymentAction.CleanSetupCache) return new DeploymentOutcome(null, null, false,
+                await installation.CleanSetupCacheAsync(lease, review.Cache ?? throw new IOException("Review the setup cache first."), true, source, ct: ct));
             SetupReport? setup = null;
             if (action == DeploymentAction.Install)
             {
