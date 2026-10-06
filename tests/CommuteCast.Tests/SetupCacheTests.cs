@@ -5,6 +5,50 @@ namespace CommuteCast.Tests;
 
 public class SetupCacheTests
 {
+    private sealed class CopyObserver(Func<InstallationCheckpoint, string?, CancellationToken, Task> action) : IInstallationObserver
+    { public Task ReachedAsync(InstallationCheckpoint point, string? item, CancellationToken ct) => action(point, item, ct); }
+    [Theory] [InlineData("released")] [InlineData("persistent")] [InlineData("changed")] [InlineData("cancelled")] [InlineData("competing")]
+    public async Task SetupCopyRenameHandlesRealWindowsDirectoryLocksWithoutOverwritingOrChangingPrivateState(string outcome)
+    {
+        using var fixture = await Fixture.CreateAsync(); var before = await InventoryAsync(fixture.Test.Workspace.Root);
+        Assert.True(Workspace.IsWithin(fixture.Test.Parent, fixture.NewCopy)); Directory.Delete(fixture.NewCopy, true);
+        FileStream? held = null; string? stage = null; var retries = 0; using var cancellation = new CancellationTokenSource();
+        var observer = new CopyObserver(async (point, item, ct) =>
+        {
+            if (point == InstallationCheckpoint.SetupCopyVerified)
+            {
+                stage = item; Assert.True(Workspace.IsWithin(fixture.Test.Parent, stage!));
+                held = new FileStream(Path.Combine(stage!, "app", "CommuteCast.Desktop.exe"), FileMode.Open, FileAccess.Read, FileShare.Read);
+            }
+            if (point != InstallationCheckpoint.SetupCopyRenameRetry) return;
+            retries++;
+            if (outcome != "persistent") held!.Dispose();
+            if (outcome == "changed") await File.AppendAllTextAsync(Path.Combine(stage!, "README.md"), "Changed after validation", ct);
+            if (outcome == "cancelled") cancellation.Cancel();
+            if (outcome == "competing") { Directory.CreateDirectory(fixture.NewCopy); await File.WriteAllTextAsync(Path.Combine(fixture.NewCopy, "unknown.txt"), "Keep competing copy", ct); }
+        });
+        try
+        {
+            var action = LauncherPlan.CreateAsync(fixture.Install.Root, setup: true, ct: cancellation.Token, observer: observer);
+            if (outcome == "released")
+            {
+                var plan = await action; Assert.True(File.Exists(plan.Executable)); Assert.False(Directory.Exists(stage)); Assert.Equal(1, retries);
+                Assert.Equal(plan.PackageId, (await ReleasePackage.ValidateAsync(fixture.NewCopy)).PackageId);
+            }
+            else
+            {
+                var error = await Record.ExceptionAsync(() => action);
+                Assert.True(outcome == "cancelled" ? error is OperationCanceledException : error is IOException or UnauthorizedAccessException, error?.ToString());
+                Assert.True(Directory.Exists(stage)); Assert.Equal(outcome == "persistent" ? 3 : 1, retries);
+                if (outcome == "competing") Assert.Equal("Keep competing copy", await File.ReadAllTextAsync(Path.Combine(fixture.NewCopy, "unknown.txt")));
+                else Assert.False(Directory.Exists(fixture.NewCopy));
+                if (outcome != "changed") await ReleasePackage.ValidateAsync(stage!);
+                else Assert.Contains("Changed after validation", await File.ReadAllTextAsync(Path.Combine(stage!, "README.md")));
+            }
+            Assert.Equal(before.OrderBy(p => p.Key), (await InventoryAsync(fixture.Test.Workspace.Root)).OrderBy(p => p.Key));
+        }
+        finally { held?.Dispose(); }
+    }
     private sealed class Interrupt(InstallationCheckpoint point) : IInstallationObserver
     { public Task ReachedAsync(InstallationCheckpoint actual, string? item, CancellationToken ct) => actual == point ? throw new IOException("Synthetic cleanup interruption") : Task.CompletedTask; }
     private sealed class Fixture : IDisposable

@@ -8,7 +8,7 @@ internal record SetupCacheOwner(int FormatVersion, string InstallationId, string
 public static class LauncherPlan
 {
     public static string SetupCacheRoot(string root, InstallationOwner owner) => Path.Combine(Directory.GetParent(Path.GetFullPath(root))!.FullName, "CommuteCast-setup-" + owner.InstallationId);
-    public static async Task<InstalledLaunchPlan> CreateAsync(string root, bool setup = false, bool maintenance = false, CancellationToken ct = default)
+    public static async Task<InstalledLaunchPlan> CreateAsync(string root, bool setup = false, bool maintenance = false, CancellationToken ct = default, IInstallationObserver? observer = null)
     {
         if (setup && maintenance) throw new ArgumentException("Choose setup or local maintenance.");
         var installation = new Installation(root); var owner = await installation.ReadOwnerAsync(ct);
@@ -41,9 +41,27 @@ public static class LauncherPlan
             var manifest = Path.Combine(source, ReleasePackage.ManifestName);
             await InstalledLauncher.CopyVerifiedAsync(manifest, Path.Combine(stage, ReleasePackage.ManifestName), new(ReleasePackage.ManifestName, new FileInfo(manifest).Length, await Workspace.HashFileAsync(manifest, ct)), ct);
             if ((await ReleasePackage.ValidateAsync(stage, ct)).PackageId != id) throw new IOException("The external setup stage differs from the installed release.");
-            Directory.Move(stage, packageRoot);
+            if (observer is not null) await observer.ReachedAsync(InstallationCheckpoint.SetupCopyVerified, stage, ct);
+            await PublishCopyAsync(stage, packageRoot, id, observer, ct);
         }
         if (package.PackageId != id) throw new IOException("The external setup copy differs from its recorded identity.");
         return new(Path.Combine(packageRoot, "app", "CommuteCast.Desktop.exe"), ["--setup", "--install-root", installation.Root], id, true);
+    }
+    private static async Task PublishCopyAsync(string stage, string target, string id, IInstallationObserver? observer, CancellationToken ct)
+    {
+        // An antivirus/scanner may briefly retain a directory handle after copy validation.
+        // Retain the stage on exhaustion; never overwrite a competing target or trust changed bytes.
+        for (var attempt = 0; ; attempt++)
+        {
+            ct.ThrowIfCancellationRequested(); SqliteSchema.RejectLink(stage); SqliteSchema.RejectLink(target);
+            if ((await ReleasePackage.ValidateAsync(stage, ct)).PackageId != id) throw new IOException("The external setup copy changed before publication. It was preserved for inspection.");
+            try { Directory.Move(stage, target); return; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException && OperatingSystem.IsWindows() && attempt < 3 &&
+                !Directory.Exists(target) && !File.Exists(target) && (error.HResult & 0xffff) is 5 or 32)
+            {
+                if (observer is not null) await observer.ReachedAsync(InstallationCheckpoint.SetupCopyRenameRetry, stage, ct);
+                await Task.Delay(100 * (attempt + 1), ct);
+            }
+        }
     }
 }
