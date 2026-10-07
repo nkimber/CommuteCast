@@ -69,6 +69,9 @@ dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-ho
 pwsh -File scripts\Test-PrivatePromotionCrash.ps1
 # Synthetic incomplete private writer/receipt boundaries: four owned child terminations.
 pwsh -File scripts\Test-PrivateWriteCrash.ps1
+# Actual adapter-host loss at five download checkpoints per synthetic contract.
+# No real Docker daemon, HTTP server or speech model is contacted.
+pwsh -File scripts\Test-SpeechWriteCrash.ps1
 # Retained older binary against an isolated current-schema queue.
 # Supply the maintenance executable from a previously extracted older-schema package.
 pwsh -File scripts\Test-SchemaCompatibility.ps1 -OlderMaintenance C:\path\to\older\app\CommuteCast.Maintenance.exe
