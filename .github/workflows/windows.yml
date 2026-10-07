@@ -1,0 +1,77 @@
+name: Windows build and regression
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['documents/**', '*.md']
+  pull_request:
+    paths-ignore: ['documents/**', '*.md']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Install pinned test encoder
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg-8.0.1.zip'
+          Invoke-WebRequest -Uri 'https://github.com/GyanD/codexffmpeg/releases/download/8.0.1/ffmpeg-8.0.1-essentials_build.zip' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive).Hash -ne 'E2AAEAA0FDBC397D4794828086424D4AAA2102CEF1FB6874F6FFD29C0B88B673') { throw 'Test encoder archive checksum mismatch.' }
+          $target = Join-Path $env:RUNNER_TEMP 'commutecast-encoder'
+          Expand-Archive -LiteralPath $archive -DestinationPath $target
+          Join-Path $target 'ffmpeg-8.0.1-essentials_build/bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Verify test prerequisites
+        run: |
+          dotnet --version
+          ffmpeg -version
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg unavailable.' }
+          ffprobe -version
+          if ($LASTEXITCODE -ne 0) { throw 'FFprobe unavailable.' }
+          $protocols = ffmpeg -hide_banner -protocols
+          if ($LASTEXITCODE -ne 0 -or ($protocols -join "`n") -notmatch '(?s)Output:.*\n\s*fd\s*\n') { throw 'Held seekable output protocol unavailable.' }
+      - name: Restore solution
+        run: dotnet restore CommuteCast.sln
+      - name: Build native WPF solution
+        run: dotnet build CommuteCast.sln -c Release --no-restore
+      - name: Run complete synthetic and audio regression
+        run: dotnet test tests/CommuteCast.Tests/CommuteCast.Tests.csproj -c Release --no-build --no-restore --logger 'trx;LogFileName=windows-regression.trx'
+      - name: Publish portable client
+        run: ./scripts/Publish-Portable.ps1
+      - name: Verify fresh portable extraction
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'commutecast-package'
+          Expand-Archive -LiteralPath artifacts/release/CommuteCast-win-x64.zip -DestinationPath $package
+          & (Join-Path $package 'app/CommuteCast.Maintenance.exe') verify-package --package $package
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted package verification failed.' }
+      - name: Retain regression report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-regression-${{ github.sha }}
+          path: tests/CommuteCast.Tests/TestResults/windows-regression.trx
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Retain verified portable ZIP
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: CommuteCast-win-x64-${{ github.sha }}
+          path: artifacts/release/CommuteCast-win-x64.zip
+          if-no-files-found: error
+          retention-days: 7

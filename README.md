@@ -12,6 +12,8 @@ The client project sets `OutputType=WinExe`, `TargetFramework=net10.0-windows`, 
 dotnet build .\CommuteCast.sln -c Release
 ```
 
+GitHub's **Windows build and regression** workflow builds the native solution, runs the complete synthetic/audio regression, publishes a self-contained Windows x64 ZIP and verifies a fresh extraction. It pins .NET SDK 10.0.401 (with patch roll-forward), action commit revisions and the SHA256 of the [FFmpeg 8.0.1 test build](https://github.com/GyanD/codexffmpeg/releases/tag/8.0.1). Test reports and successful ZIPs are retained as seven-day Actions artifacts. A passing workflow establishes build/regression/package integrity; actual Docker, native UI, voice judgment, signing and corporate/phone acceptance remain separate.
+
 ## Run on this machine
 
 Prerequisites: Windows, .NET 10 SDK (or the portable self-contained package), approved Docker Desktop with its local Linux-container context, and FFmpeg / FFprobe on PATH. FFmpeg must advertise `fd` under `Output:` in `ffmpeg -hide_banner -protocols`; the read-only setup check reports this capability. These tools are already present on the development machine. No administrator privileges are needed by the app.
