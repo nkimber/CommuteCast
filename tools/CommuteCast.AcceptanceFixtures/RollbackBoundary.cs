@@ -4,7 +4,7 @@ using System.Text.Json;
 
 internal static class RollbackBoundary
 {
-    internal static async Task RunAsync(WorkspaceLease lease)
+    internal static async Task RunAsync(WorkspaceLease lease, bool afterCommit)
     {
         var parent = Path.GetDirectoryName(lease.Workspace.Root)!;
         var marker = Path.Combine(parent, "rollback-boundary.json");
@@ -12,7 +12,7 @@ internal static class RollbackBoundary
         var installation = new Installation(Path.Combine(parent, "program"));
         await installation.RollbackAsync(lease, new Observer(async checkpoint =>
         {
-            if (checkpoint != InstallationCheckpoint.StateRestored) return;
+            if (checkpoint != (afterCommit ? InstallationCheckpoint.Activated : InstallationCheckpoint.StateRestored)) return;
             var jobs = await new SqliteJobStore(lease.Workspace).LoadAsync();
             await Workspace.AtomicWriteAsync(marker, JsonSerializer.Serialize(new
             {
@@ -21,7 +21,7 @@ internal static class RollbackBoundary
             }));
             await Task.Delay(Timeout.InfiniteTimeSpan);
         }));
-        throw new IOException("Rollback did not reach StateRestored.");
+        throw new IOException("Rollback did not reach the selected checkpoint.");
     }
     private sealed class Observer(Func<InstallationCheckpoint, Task> barrier) : IInstallationObserver
     {

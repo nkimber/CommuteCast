@@ -1,7 +1,8 @@
 param([string]$Executable, [switch]$KeepInstalled, [string]$LegacyPackage,
     [ValidateSet('Prepared','StateMigrated','BeforeActivation','Activated','MigrationBeforeCommit')][string]$ActivationCrashCheckpoint,
-    [switch]$LegacySchemaThree, [switch]$RollbackCrashAfterRestore)
+    [switch]$LegacySchemaThree, [switch]$RollbackCrashAfterRestore, [switch]$RollbackCrashAfterCommit)
 $ErrorActionPreference = 'Stop'
+if ($RollbackCrashAfterRestore -and $RollbackCrashAfterCommit) { throw 'Choose one rollback interruption boundary per fixture.' }
 if ($LegacySchemaThree -and -not $ActivationCrashCheckpoint) { throw 'Legacy schema interruption requires an activation checkpoint.' }
 if ($ActivationCrashCheckpoint -eq 'MigrationBeforeCommit' -and -not $LegacySchemaThree) { throw 'Migration transaction interruption requires LegacySchemaThree.' }
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -144,13 +145,15 @@ $unconfirmed = Invoke-Tool -Arguments @('rollback', '--install-root', $installRo
 if ($unconfirmed -notmatch 'requires.*confirm-replace') { throw 'Rollback did not require explicit replacement intent.' }
 Same (Get-FileHash -LiteralPath (Join-Path $installRoot 'installation.json')).Hash $beforePointer 'Unconfirmed rollback preserves activation'
 $rollbackCrashEvidence = $null
-if ($RollbackCrashAfterRestore) {
+if ($RollbackCrashAfterRestore -or $RollbackCrashAfterCommit) {
+    $rollbackPoint = if ($RollbackCrashAfterCommit) { 'Activated' } else { 'StateRestored' }
     $beforeRollback = Fixture-State inspect
     $rollbackMarker = Join-Path $fixture 'rollback-boundary.json'
     $rollbackStart = [Diagnostics.ProcessStartInfo]::new($fixtureHost)
     $rollbackStart.UseShellExecute = $false; $rollbackStart.CreateNoWindow = $true; $rollbackStart.WindowStyle = 'Hidden'
     $rollbackStart.RedirectStandardOutput = $true; $rollbackStart.RedirectStandardError = $true
     foreach ($argument in @('rollback-barrier',$privateRoot)) { $rollbackStart.ArgumentList.Add($argument) }
+    if ($RollbackCrashAfterCommit) { $rollbackStart.ArgumentList.Add('Activated') }
     $rollbackHost = [Diagnostics.Process]::Start($rollbackStart)
     $rollbackOutput = $rollbackHost.StandardOutput.ReadToEndAsync(); $rollbackErrors = $rollbackHost.StandardError.ReadToEndAsync()
     try {
@@ -161,7 +164,7 @@ if ($RollbackCrashAfterRestore) {
             Start-Sleep -Milliseconds 50
         }
         $rollbackObserved = Get-Content -LiteralPath $rollbackMarker -Raw | ConvertFrom-Json
-        if ($rollbackObserved.processId -ne $rollbackHost.Id -or $rollbackHost.HasExited -or $rollbackObserved.point -ne 'StateRestored' -or $rollbackObserved.restoredJobs -ne 1) { throw 'Rollback marker does not identify the live owned host and restored fixture.' }
+        if ($rollbackObserved.processId -ne $rollbackHost.Id -or $rollbackHost.HasExited -or $rollbackObserved.point -ne $rollbackPoint -or $rollbackObserved.restoredJobs -ne 1) { throw 'Rollback marker does not identify the live owned host and restored fixture.' }
         $rollbackHost.Kill($false)
         if (-not $rollbackHost.WaitForExit(10000)) { throw 'Owned rollback host did not terminate.' }
         $null = $rollbackOutput.GetAwaiter().GetResult(); $null = $rollbackErrors.GetAwaiter().GetResult()
@@ -170,13 +173,14 @@ if ($RollbackCrashAfterRestore) {
         $rollbackHost.Dispose()
     }
     Same (Invoke-Tool -Arguments @('recover-install','--root',$privateRoot,'--install-root',$installRoot)).recovered $true 'Interrupted rollback recovered'
-    Same (Invoke-Tool -Arguments @('inspect-install','--root',$privateRoot,'--install-root',$installRoot)).State.CurrentPackageId $second.State.CurrentPackageId 'Uncommitted rollback retains current package'
-    Same ((Fixture-State inspect) | ConvertTo-Json -Depth 8 -Compress) ($beforeRollback | ConvertTo-Json -Depth 8 -Compress) 'Rollback recovery restores exact later private state'
+    $recoveredRollback = Invoke-Tool -Arguments @('inspect-install','--root',$privateRoot,'--install-root',$installRoot)
+    Same $recoveredRollback.State.CurrentPackageId $(if ($RollbackCrashAfterCommit) { $first.State.CurrentPackageId } else { $second.State.CurrentPackageId }) 'Recovered rollback package side of commit'
+    Same ((Fixture-State inspect) | ConvertTo-Json -Depth 8 -Compress) ($(if ($RollbackCrashAfterCommit) { $original } else { $beforeRollback }) | ConvertTo-Json -Depth 8 -Compress) 'Rollback recovery selects exact private state'
     if (Test-Path -LiteralPath (Join-Path $installRoot 'deployment.pending.json')) { throw 'Rollback recovery retained pending intent.' }
     Verify-WindowsIntegration $true
-    $rollbackCrashEvidence = [ordered]@{passed=$true;parentOnlyLoss=$true;boundary=$rollbackObserved;laterStatePreserved=$true}
+    $rollbackCrashEvidence = [ordered]@{passed=$true;parentOnlyLoss=$true;boundary=$rollbackObserved;recoveredPackage=$recoveredRollback.State.CurrentPackageId;correctPrivateState=$true}
 }
-$rolledBack = Invoke-Tool -Arguments @('rollback', '--install-root', $installRoot, '--confirm-replace-local-data')
+$rolledBack = if ($RollbackCrashAfterCommit) { $recoveredRollback } else { Invoke-Tool -Arguments @('rollback', '--install-root', $installRoot, '--confirm-replace-local-data') }
 Same $rolledBack.State.CurrentPackageId $first.State.CurrentPackageId 'Rollback binary identity'
 if ($hasLauncher) { Same (Launcher-Plan).Executable $rolledBack.Executable 'Stable launcher rolled-back release' }
 $restored = Fixture-State inspect
