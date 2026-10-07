@@ -5,7 +5,8 @@ This is the development licensing inventory, not a substitute for corporate redi
 | Component | License / source | Role |
 | --- | --- | --- |
 | .NET / WPF | MIT; [dotnet/wpf](https://github.com/dotnet/wpf), [.NET](https://github.com/dotnet/runtime) | Windows desktop/runtime |
-| Microsoft.Data.Sqlite / SQLitePCLRaw | MIT; [EF Core](https://github.com/dotnet/efcore), [SQLitePCL.raw](https://github.com/ericsink/SQLitePCL.raw) | Durable queue adapter |
+| Microsoft.Data.Sqlite 10.0.5 / Microsoft.Data.Sqlite.Core 10.0.5 | MIT declared by the exact NuGet package metadata; [EF Core](https://github.com/dotnet/efcore) | Durable queue adapter |
+| SQLitePCLRaw 3.0.5 (`bundle_e_sqlite3`, `config.e_sqlite3`, `core`, `provider.e_sqlite3`) | Apache-2.0 declared by all four exact NuGet package metadata records; [SQLitePCL.raw](https://github.com/ericsink/SQLitePCL.raw/tree/ed046114d5a30534e13294d94d78eb73de896ad4) | SQLite native interop and configuration |
 | SQLite | [Public domain](https://www.sqlite.org/copyright.html) | Local database |
 | Kokoro ONNX | MIT; [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) | Kokoro inference adapter |
 | Kokoro 82M v1.0 | Apache-2.0; [model card](https://huggingface.co/hexgrad/Kokoro-82M) | Kokoro model/voices; ONNX conversion from pinned upstream release |
@@ -19,3 +20,5 @@ This is the development licensing inventory, not a substitute for corporate redi
 | Docker Desktop | [Subscription terms](https://www.docker.com/legal/docker-subscription-service-agreement/) | External prerequisite; corporate entitlement must be verified |
 
 `services/speech/requirements.lock.txt` records resolved Python dependencies and `model-checksums.txt` records the exact model bytes tested. Consult upstream licenses for all transitive packages before redistributing a container. Candidate engine evaluation does not constitute legal or corporate policy approval.
+
+Versioned desktop inventory observation (2026-10-07): verified hosted package build `8353e35` declares the two Microsoft.Data.Sqlite packages above, the four SQLitePCLRaw packages above and `SQLite/3.53.4` in `CommuteCast.Desktop.deps.json`. The installed SQLite package's `LICENSE.txt` states public domain. Both bundled runtime packs (`Microsoft.NETCore.App.Runtime.win-x64` and `Microsoft.WindowsDesktop.App.Runtime.win-x64`) are 10.0.12. These observations come from the actual downloaded dependency manifest and exact locally restored NuGet metadata, rather than a generic library license assumption. The earlier combined MIT classification for SQLitePCLRaw was incorrect and is replaced above. Package declarations are inventory evidence; complete notices/source materials and redistribution review remain release requirements.
