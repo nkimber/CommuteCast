@@ -10,6 +10,8 @@ var validScope = args[0] switch
     "inspect" or "inspect-export" or "export" or "seed-preview-removal" or "recover-preview-removal" => args.Length == 2,
     "restore-barrier" => args.Length is 4 or 5, "recover-barrier" => args.Length is 3 or 4,
     "activation-barrier" => args.Length == 4,
+    "bulk-delete-barrier" => args.Length == 3 && args[2] is "intent-committed" or "first-record-removed",
+    "bulk-delete-recover" => args.Length == 2,
     "legacy-schema-three" or "inspect-schema" => args.Length == 2,
     "uninstall-barrier" => args.Length == 2 || args.Length == 3 && args[2] == "remove-private",
     "rollback-barrier" => args.Length == 2 || args.Length == 3 && args[2] == "Activated",
@@ -60,6 +62,7 @@ if (boundary)
     if (File.Exists(marker) || Directory.Exists(marker) || !Directory.Exists(root)) throw new IOException("A fresh fixture boundary marker and existing private root are required.");
 }
 var workspace = new Workspace(root); using var lease = WorkspaceLease.Acquire(workspace);
+if (args[0] is "bulk-delete-barrier" or "bulk-delete-recover") { await BulkDeletionBoundary.RunAsync(args, workspace, marker); return; }
 if (args[0] == "uninstall-barrier") { await UninstallBoundary.RunAsync(lease, args.Length == 3); return; }
 if (args[0] == "rollback-barrier") { await RollbackBoundary.RunAsync(lease, args.Length == 3); return; }
 if (args[0] is "legacy-schema-three" or "inspect-schema")

@@ -395,3 +395,11 @@ The fixture adds remove-private mode and pauses at ItemRemoved only after the re
 Full installation acceptance passes at `artifacts/installation-acceptance/a1cab0d7be684bcba19ee39e37e5da4c/report.json`, including update, rollback/undo, seven launcher inspections, preview guard/reconciliation, safe cache cleanup, retain-data uninstall and reinstallation. Fixture build has zero warnings/errors; diff checks pass. Boundary build reports base `7509cde` with this harness increment uncommitted. Production runtime is unchanged. The script shares the owned-host barrier launcher between retain-data and private-data modes and rejects selecting both in one fixture.
 
 This closes actual host loss after private queue deletion during committed uninstall. Other file/registration/launcher interruption positions, earlier legacy migrations and native/real-engine/external gates remain open; no new full unit regression is claimed.
+
+## Actual bulk private-deletion host loss (2026-10-07)
+
+Two isolated production QueueCoordinator bulk deletion fixtures terminate the exact live host after all three private-only intents commit, and after the first selected record/files are removed. A delegating IJobStore observer holds only after actual SQLite operations return. Markers validate all remaining selected records carry durable private-only deletion intent, with three/two selected records respectively.
+
+Both fresh-process InitializeAsync recoveries and repeated recovery pass at `artifacts/installation-acceptance/bulk-delete-80bd9a5a113149c487f09aad8b9f298d/report.json`: all three selected records/directories removed, unselected job's exact serialized record and checked owned source artifact unchanged, unrelated-root bytes preserved. No speech or encoder is contacted; the provider throws if invoked. Fixture build has zero warnings/errors. Host build reports base `2c1a21b` with this harness increment uncommitted; production runtime is unchanged.
+
+This closes the selected private-only command-line bulk-deletion process-loss boundaries. Active speech/publication overlap, exported-file process loss, native itemized one/all journeys, OneDrive races and other broader gates remain open. Existing synthetic concurrency/publication tests retain their separate scope; no new full unit regression is claimed.
