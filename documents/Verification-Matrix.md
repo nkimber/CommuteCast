@@ -1,5 +1,7 @@
 # Verification matrix
 
+Current hosted corpus/package checkpoint (2026-10-07): source `8353e35` passes native WPF build, all 24 synthetic corpus runs across 12 texts, **756/756 regression cases with zero failures/skips**, portable publication and fresh extraction. Actual downloaded reports confirm these counts; extracted Maintenance independently verifies 431 files, exact matching builds and schema 0–4. Acceptance.md records archive/package identity. Native, listening/resources, sleep/wake, licensing/signing and external acceptance remain open.
+
 Synthetic release-corpus checkpoint (2026-10-07): a reusable Pilot command verifies 12 distinct synthetic texts (four prose, four technical/structured, two long, two adversarial) under two pronunciation profiles. All 24 local runs pass exact contiguous source accounting, ordered script/chunk coverage and strict UTF-8 chunk validation, including 10k/50k/100k Unicode-scalar inputs. Windows CI now invokes it and retains its report. Acceptance.md records scope; spoken fidelity, representative user content, native latency and resource acceptance remain open.
 
 Current container-log privacy observation (2026-10-07): bounded retained logs from both owned real services contain zero matches for seven known acceptance-source/title/export-path fragments. Raw logs stay in ignored local evidence; source review finds fixed speech errors without request-body logging. See Acceptance.md for scope. This does not prove arbitrary inputs, all failures or complete support-bundle privacy.
