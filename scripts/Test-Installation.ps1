@@ -1,4 +1,5 @@
-param([string]$Executable, [switch]$KeepInstalled, [string]$LegacyPackage)
+param([string]$Executable, [switch]$KeepInstalled, [string]$LegacyPackage,
+    [ValidateSet('Prepared','StateMigrated','BeforeActivation','Activated')][string]$ActivationCrashCheckpoint)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if (-not $Executable) { $Executable = Join-Path $projectRoot 'artifacts\release\CommuteCast-win-x64\app\CommuteCast.Maintenance.exe' }
@@ -89,6 +90,40 @@ $first = Invoke-Tool -Arguments @('install', '--root', $privateRoot, '--install-
 Verify-WindowsIntegration $true
 if ($hasLauncher) { Same (Launcher-Plan).Executable $first.Executable 'Stable launcher initial release' }
 $firstExternalSetup = if ($hasLauncher -and $hasSetupCacheCleanup) { Launcher-Plan -Setup } else { $null }
+$activationCrashEvidence = $null
+if ($ActivationCrashCheckpoint) {
+    $beforeCrashState = Fixture-State inspect
+    $marker = Join-Path $fixture 'boundary.json'
+    $start = [Diagnostics.ProcessStartInfo]::new($fixtureHost)
+    $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $start.WindowStyle = 'Hidden'
+    $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+    foreach ($argument in @('activation-barrier',$privateRoot,$b,$ActivationCrashCheckpoint)) { $start.ArgumentList.Add($argument) }
+    $child = [Diagnostics.Process]::Start($start)
+    $childOutput = $child.StandardOutput.ReadToEndAsync(); $childErrors = $child.StandardError.ReadToEndAsync()
+    try {
+        $deadline = [datetime]::UtcNow.AddSeconds(180)
+        while (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+            if ($child.HasExited) { throw ('Activation host exited early: ' + $childErrors.GetAwaiter().GetResult()) }
+            if ([datetime]::UtcNow -gt $deadline) { throw 'Activation checkpoint was not observed within 180 seconds.' }
+            Start-Sleep -Milliseconds 50
+        }
+        $observed = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
+        if ($observed.processId -ne $child.Id -or $child.HasExited -or $observed.point -ne $ActivationCrashCheckpoint -or $observed.PackageId -ne $sealed.PackageId) { throw 'Activation marker does not identify the live owned process and revision.' }
+        $child.Kill($false)
+        if (-not $child.WaitForExit(10000)) { throw 'Owned activation host did not terminate.' }
+        $null = $childOutput.GetAwaiter().GetResult(); $null = $childErrors.GetAwaiter().GetResult()
+    } finally {
+        if (-not $child.HasExited) { $child.Kill($false); $child.WaitForExit(10000) | Out-Null }
+        $child.Dispose()
+    }
+    $recovery = Invoke-Tool -Arguments @('recover-install','--root',$privateRoot,'--install-root',$installRoot)
+    $afterCrash = Invoke-Tool -Arguments @('inspect-install','--root',$privateRoot,'--install-root',$installRoot)
+    Same $afterCrash.State.CurrentPackageId $(if ($ActivationCrashCheckpoint -eq 'Activated') { $sealed.PackageId } else { $first.State.CurrentPackageId }) 'Recovered activation side of commit'
+    Same ((Fixture-State inspect) | ConvertTo-Json -Depth 8 -Compress) ($beforeCrashState | ConvertTo-Json -Depth 8 -Compress) 'Activation host loss preserves frozen private state'
+    if (Test-Path -LiteralPath (Join-Path $installRoot 'deployment.pending.json')) { throw 'Activation recovery retained pending intent.' }
+    Verify-WindowsIntegration $true
+    $activationCrashEvidence = [ordered]@{passed=$true;point=$ActivationCrashCheckpoint;parentOnlyLoss=$true;boundary=$observed;recoveredPackage=$afterCrash.State.CurrentPackageId;frozenStatePreserved=$true}
+}
 $second = Invoke-Tool -Arguments @('install', '--install-root', $installRoot, '--package', $b)
 if ($hasLauncher) { Same (Launcher-Plan).Executable $second.Executable 'Stable launcher updated release' }
 Same $second.State.Previous.PackageId $first.State.CurrentPackageId 'Previous binary identity'
@@ -193,6 +228,7 @@ $report['bundledRuntimeInspected'] = $hasLauncher
 $report['externalSetup'] = $externalSetup
 $report['windowsIntegrationInspected'] = $hasWindowsIntegration
 $report['previewRemovalGuardExecuted'] = (-not $KeepInstalled)
+$report['activationHostLoss'] = $activationCrashEvidence
 $report['setupCacheCleanup'] = $cacheCleanupEvidence
 $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $fixture 'report.json') -Encoding utf8
 $report | ConvertTo-Json -Depth 5
