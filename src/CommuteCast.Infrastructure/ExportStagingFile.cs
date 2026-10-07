@@ -11,11 +11,14 @@ namespace CommuteCast.Infrastructure;
 public sealed class ExportStagingFile : IAsyncDisposable
 {
     private readonly string root;
+    private string name;
     public FileStream Stream { get; }
     public ExportStagingIdentity Identity { get; }
 
-    private ExportStagingFile(string root, FileStream stream, ExportStagingIdentity identity)
-    { this.root = root; Stream = stream; Identity = identity; }
+    private ExportStagingFile(string root, string name, FileStream stream, ExportStagingIdentity identity)
+    { this.root = root; this.name = name; Stream = stream; Identity = identity; }
+    internal bool IsAt(string directory, string relativeName) =>
+        string.Equals(Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar), Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase) && name.Equals(relativeName, StringComparison.OrdinalIgnoreCase);
 
     public static ExportStagingFile Create(string root, string name) => Open(root, name, true)!;
     public static ExportStagingFile? OpenIfPresent(string root, string name) => Open(root, name, false);
@@ -40,7 +43,7 @@ public sealed class ExportStagingFile : IAsyncDisposable
                 throw new IOException("Windows could not identify the export staging file. Inspection is required.", new Win32Exception(Marshal.GetLastWin32Error()));
             var identity = new ExportStagingIdentity(1, id.Volume, id.Low.ToString("X16") + id.High.ToString("X16"), basic.CreationTime);
             var stream = new FileStream(handle, FileAccess.ReadWrite, 81920, false);
-            return new(root, stream, identity);
+            return new(root, name, stream, identity);
         }
         catch
         {
@@ -89,6 +92,7 @@ public sealed class ExportStagingFile : IAsyncDisposable
             Marshal.Copy(filename, 0, buffer + offset, filename.Length);
             if (!SetInfo(Stream.SafeFileHandle, 3, buffer, (uint)size))
                 throw new IOException("Windows could not publish the verified export without overwrite. The completed private MP3 is retained; repair locks or the destination and retry.", new Win32Exception(Marshal.GetLastWin32Error()));
+            this.name = name;
         }
         finally { Marshal.FreeHGlobal(buffer); }
     }

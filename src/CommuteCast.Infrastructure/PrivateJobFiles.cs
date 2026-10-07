@@ -149,6 +149,28 @@ public static class PrivateJobFiles
         }
     }
 
+    // Finish a provider download without reopening its held file. Both sides carry
+    // identity until the nonoverwriting rename and final receipt have been saved.
+    public static async Task CompleteAndMoveCreatedAsync(Job job, string directory, string source, string destination,
+        ExportStagingFile held, Func<Task> checkpoint, CancellationToken ct)
+    {
+        Inventory(job);
+        if (!held.IsAt(directory, source) || source.Equals(destination, StringComparison.OrdinalIgnoreCase) ||
+            job.PrivateArtifacts.SingleOrDefault(r => r.RelativePath.Equals(source, StringComparison.OrdinalIgnoreCase))?.CreationIdentity is not { } identity || !held.Matches(identity))
+            throw new IOException("Private download completion requires its original creation identity. Files were preserved.");
+        await PrepareOutputAsync(job, directory, destination, ct);
+        await held.Stream.FlushAsync(ct); held.Stream.Flush(true);
+        var hash = await held.HashAsync(ct);
+        job.PrivateArtifacts.RemoveAll(r => r.RelativePath.Equals(source, StringComparison.OrdinalIgnoreCase));
+        job.PrivateArtifacts.Add(new(source, hash, held.Identity));
+        job.PrivateArtifacts.Add(new(destination, hash, held.Identity));
+        await checkpoint(); ct.ThrowIfCancellationRequested();
+        held.Rename(destination);
+        job.PrivateArtifacts.RemoveAll(r => r.RelativePath.Equals(source, StringComparison.OrdinalIgnoreCase) || r.RelativePath.Equals(destination, StringComparison.OrdinalIgnoreCase));
+        job.PrivateArtifacts.Add(new(destination, hash));
+        await checkpoint();
+    }
+
     // Save the destination's expected bytes before moving them. Recovery can
     // recognize either side of a crash without adopting an existing filename.
     public static async Task MoveRecordedAsync(Job job, string directory, string source, string destination,

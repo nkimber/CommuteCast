@@ -101,6 +101,10 @@ public interface ISpeechProvider
     Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct);
     Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct);
 }
+public interface IDurableSpeechProvider : ISpeechProvider
+{
+    Task SynthesizeAsync(Job job, NarrationSettings settings, string text, string output, Func<Task> checkpoint, CancellationToken ct);
+}
 public interface IAudioPipeline
 {
     Task<AudioInfo> ValidateChunkAsync(string path, string text, CancellationToken ct);

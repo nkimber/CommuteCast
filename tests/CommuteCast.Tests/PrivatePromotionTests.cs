@@ -5,6 +5,38 @@ namespace CommuteCast.Tests;
 
 public class PrivatePromotionTests
 {
+    [Fact] public async Task DownloadPromotionPreservesIdenticalReplacementOfPendingSource()
+    {
+        using var test = new TestWorkspace(); var job = new Job(); var store = new SqliteJobStore(test.Workspace);
+        var directory = test.Workspace.JobDirectory(job.Id); Directory.CreateDirectory(directory);
+        const string source = "inference.partial.wav.attempt-original.partial";
+        await using (var held = ExportStagingFile.Create(directory, source))
+        {
+            await held.Stream.WriteAsync(new byte[] { 1, 2, 3 });
+            job.PrivateArtifacts.Add(new(source, "", CreationIdentity: held.Identity)); await store.SaveAsync(job);
+            await Assert.ThrowsAsync<IOException>(() => PrivateJobFiles.CompleteAndMoveCreatedAsync(job, directory, source, "inference.partial.wav", held, async () =>
+            {
+                await store.SaveAsync(job); throw new IOException("Simulate loss after durable rename intent");
+            }, default));
+        }
+        File.Move(Path.Combine(directory, source), Path.Combine(directory, "preserved-original.partial"));
+        await File.WriteAllBytesAsync(Path.Combine(directory, source), new byte[] { 1, 2, 3 });
+        var reopened = Assert.Single(await store.LoadAsync()); Assert.Equal(2, reopened.PrivateArtifacts.Count);
+        await Assert.ThrowsAsync<IOException>(() => PrivateJobFiles.ReconcilePromotionsAsync(reopened, directory, () => store.SaveAsync(reopened), default));
+        Assert.Equal(new byte[] { 1, 2, 3 }, await File.ReadAllBytesAsync(Path.Combine(directory, source)));
+        Assert.Equal(new byte[] { 1, 2, 3 }, await File.ReadAllBytesAsync(Path.Combine(directory, "preserved-original.partial")));
+    }
+
+    [Fact] public async Task DownloadPromotionRefusesHeldHandleAtDifferentNameBeforeCheckpoint()
+    {
+        using var test = new TestWorkspace(); var job = new Job(); var directory = test.Workspace.JobDirectory(job.Id); Directory.CreateDirectory(directory);
+        await using var held = ExportStagingFile.Create(directory, "actual.partial");
+        job.PrivateArtifacts.Add(new("claimed.partial", "", CreationIdentity: held.Identity));
+        await Assert.ThrowsAsync<IOException>(() => PrivateJobFiles.CompleteAndMoveCreatedAsync(job, directory, "claimed.partial", "target.wav", held,
+            () => throw new InvalidOperationException("Must not checkpoint"), default));
+        Assert.True(File.Exists(Path.Combine(directory, "actual.partial"))); Assert.False(File.Exists(Path.Combine(directory, "target.wav")));
+    }
+
     [Theory]
     [InlineData("normalized.partial.wav", "chunk-00000.wav", 1)]
     [InlineData("normalized.partial.wav", "chunk-00000.wav", 2)]

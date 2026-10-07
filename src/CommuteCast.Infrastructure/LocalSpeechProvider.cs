@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace CommuteCast.Infrastructure;
 
-public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
+public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDisposable
 {
     private readonly Workspace workspace;
     private readonly ILocalSpeechRuntime runtime;
@@ -206,20 +206,32 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
         }
         return total;
     }
-    public async Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
+    public Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct) =>
+        SynthesizeWithJournalAsync(null, settings, text, output, null, ct);
+
+    public Task SynthesizeAsync(Job job, NarrationSettings settings, string text, string output, Func<Task> checkpoint, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        PrivateJobFiles.Inventory(job);
+        if (!string.Equals(Path.GetDirectoryName(Path.GetFullPath(output)), workspace.JobDirectory(job.Id), StringComparison.OrdinalIgnoreCase))
+            throw new IOException("Durable speech output must stay in its own job directory.");
+        return SynthesizeWithJournalAsync(job, settings, text, output, checkpoint, ct);
+    }
+
+    private async Task SynthesizeWithJournalAsync(Job? job, NarrationSettings settings, string text, string output, Func<Task>? checkpoint, CancellationToken ct)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Synthesis);
         var entered = false;
         try
         {
             await admissionGate.WaitAsync(deadline.Token); entered = true;
-            await SynthesizeCoreAsync(settings, text, output, deadline.Token);
+            await SynthesizeCoreAsync(job, settings, text, output, checkpoint, deadline.Token);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         { throw new TimeoutException("Speech synthesis exceeded its five-minute admission/request/retry budget. Validated chunks and any unresolved reservation are retained; check readiness and retry."); }
         finally { if (entered) admissionGate.Release(); }
     }
-    private async Task SynthesizeCoreAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
+    private async Task SynthesizeCoreAsync(Job? job, NarrationSettings settings, string text, string output, Func<Task>? checkpoint, CancellationToken ct)
     {
         settings.ValidateProviderImage();
         settings.Profile?.Validate(settings.Engine);
@@ -230,13 +242,19 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
         if (File.Exists(output) && File.GetAttributes(output).HasFlag(FileAttributes.ReparsePoint)) throw new IOException("Speech output is a symbolic link. Generation was refused.");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Synthesis);
         var temporary = output + ".attempt-" + Guid.NewGuid().ToString("N") + ".partial";
+        var originalOutputReceipt = job?.PrivateArtifacts.FirstOrDefault(r => r.RelativePath.Equals(Path.GetFileName(output), StringComparison.OrdinalIgnoreCase));
         ExportStagingFile? attemptFile = null;
         async Task RemoveAttemptAsync()
         {
             var held = attemptFile;
             if (held is null) return;
-            try { held.Delete(); }
-            finally { attemptFile = null; await held.DisposeAsync(); }
+            var removed = false;
+            try { held.Delete(); removed = true; }
+            finally
+            {
+                if (removed && job is not null) job.PrivateArtifacts.RemoveAll(r => r.RelativePath.Equals(Path.GetFileName(temporary), StringComparison.OrdinalIgnoreCase) || r.RelativePath.Equals(Path.GetFileName(output), StringComparison.OrdinalIgnoreCase) && !ReferenceEquals(r, originalOutputReceipt));
+                attemptFile = null; await held.DisposeAsync();
+            }
         }
         var settlementAttempted = true;
         async Task SettleAttemptAsync() { settlementAttempted = true; await ReconcileAdmissionAsync(CancellationToken.None); }
@@ -271,6 +289,11 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
                     await using (var stream = await response.Content.ReadAsStreamAsync(deadline.Token))
                     {
                         attemptFile = ExportStagingFile.Create(Path.GetDirectoryName(temporary)!, Path.GetFileName(temporary));
+                        if (job is not null)
+                        {
+                            job.PrivateArtifacts.Add(new(Path.GetFileName(temporary), "", CreationIdentity: attemptFile.Identity));
+                            await checkpoint!(); deadline.Token.ThrowIfCancellationRequested();
+                        }
                         var received = await CopyBoundedAsync(stream, attemptFile.Stream, MaximumAudioBytes, deadline.Token);
                         if (received < 44 || response.Content.Headers.ContentLength is { } declared && declared != received) throw new IOException("The speech response is truncated or its declared size is inconsistent.");
                         await attemptFile.Stream.FlushAsync(deadline.Token);
@@ -281,8 +304,12 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
                     // A failed settlement must not leave a published, unrecorded WAV.
                     await SettleAttemptAsync();
                     deadline.Token.ThrowIfCancellationRequested();
-                    try { attemptFile.Rename(Path.GetFileName(output)); }
-                    catch (IOException error) { throw new IOException("The speech output is occupied or inaccessible. Existing files were preserved; repair private storage and retry.", error); }
+                    if (job is null)
+                    {
+                        try { attemptFile.Rename(Path.GetFileName(output)); }
+                        catch (IOException error) { throw new IOException("The speech output is occupied or inaccessible. Existing files were preserved; repair private storage and retry.", error); }
+                    }
+                    else await PrivateJobFiles.CompleteAndMoveCreatedAsync(job, Path.GetDirectoryName(output)!, Path.GetFileName(temporary), Path.GetFileName(output), attemptFile, checkpoint!, deadline.Token);
                     var published = attemptFile; attemptFile = null;
                     await published.DisposeAsync();
                     return;

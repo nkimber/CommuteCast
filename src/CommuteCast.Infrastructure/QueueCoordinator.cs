@@ -297,9 +297,14 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                         var raw = Path.Combine(directory, "inference.partial.wav");
                         var normalized = Path.Combine(directory, "normalized.partial.wav");
                         await PrivateJobFiles.PrepareOutputAsync(job, directory, Path.GetFileName(raw), ct);
-                        await provider.SynthesizeAsync(job.Settings, chunk.Text, raw, ct);
-                        await PrivateJobFiles.RecordAsync(job, directory, Path.GetFileName(raw), ct);
-                        await store.SaveAsync(job, ct);
+                        if (provider is IDurableSpeechProvider durable)
+                            await durable.SynthesizeAsync(job, job.Settings, chunk.Text, raw, () => store.SaveAsync(job, ct), ct);
+                        else
+                        {
+                            await provider.SynthesizeAsync(job.Settings, chunk.Text, raw, ct);
+                            await PrivateJobFiles.RecordAsync(job, directory, Path.GetFileName(raw), ct);
+                            await store.SaveAsync(job, ct);
+                        }
                         await audio.NormalizeAsync(job, raw, normalized, () => store.SaveAsync(job, ct), ct);
                         var checkedAudio = await audio.ValidateChunkAsync(normalized, chunk.Text, ct);
                         var hash = await Workspace.HashFileAsync(normalized, ct);
