@@ -52,7 +52,9 @@ public partial class ProviderContractTests
     [Fact] public async Task StreamedSizeLimitIsEnforcedWithoutAContentLengthHeader()
     {
         using var fixture = new Fixture(); fixture.Http.Speech = (_, _) => Task.FromResult(fixture.AudioContent(new StreamContent(new OversizedStream())));
-        using var provider = fixture.Provider(); var error = await Assert.ThrowsAsync<IOException>(() => provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default));
+        // Exercise the unchanged 64 MiB streaming bound independently of the
+        // three-second fixture deadline used by ordinary tiny responses.
+        using var provider = fixture.Provider(Fixture.ShortLimits with { Synthesis = TimeSpan.FromMinutes(1) }); var error = await Assert.ThrowsAsync<IOException>(() => provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default));
         Assert.Contains("size", error.Message); Assert.False(File.Exists(fixture.Output)); Assert.Empty(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"));
     }
     [Theory] [InlineData("kokoro")] [InlineData("piper")]
