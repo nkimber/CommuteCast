@@ -62,4 +62,3 @@ if (-not $dirty -and $result.applicationBuild -ne ('0.1.0+' + $sourceCommit)) { 
 $report = [ordered]@{sourceCommit=$sourceCommit;applicationBuild=$result.applicationBuild;workingTreeDirty=$dirty;cases=$results.Count;passed=$true;results=$results;scope='Ten actual owned preview-host terminations through production AuditionGenerator and LocalSpeechProvider. Original-file recovery, source-free history, reservation retirement and durable retry across synthetic contracts; no real Docker/HTTP/model, native playback or pre-identity-checkpoint acceptance.'}
 $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $evidence 'report.json')
 Write-Output (Join-Path $evidence 'report.json')
-
