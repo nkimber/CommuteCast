@@ -1,8 +1,9 @@
 param([string]$Executable, [switch]$KeepInstalled, [string]$LegacyPackage,
-    [ValidateSet('Prepared','StateMigrated','BeforeActivation','Activated')][string]$ActivationCrashCheckpoint,
+    [ValidateSet('Prepared','StateMigrated','BeforeActivation','Activated','MigrationBeforeCommit')][string]$ActivationCrashCheckpoint,
     [switch]$LegacySchemaThree)
 $ErrorActionPreference = 'Stop'
 if ($LegacySchemaThree -and -not $ActivationCrashCheckpoint) { throw 'Legacy schema interruption requires an activation checkpoint.' }
+if ($ActivationCrashCheckpoint -eq 'MigrationBeforeCommit' -and -not $LegacySchemaThree) { throw 'Migration transaction interruption requires LegacySchemaThree.' }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if (-not $Executable) { $Executable = Join-Path $projectRoot 'artifacts\release\CommuteCast-win-x64\app\CommuteCast.Maintenance.exe' }
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) { throw 'Publish the portable application first.' }
@@ -112,7 +113,10 @@ if ($ActivationCrashCheckpoint) {
         }
         $observed = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
         if ($observed.processId -ne $child.Id -or $child.HasExited -or $observed.point -ne $ActivationCrashCheckpoint -or $observed.PackageId -ne $sealed.PackageId) { throw 'Activation marker does not identify the live owned process and revision.' }
-        Same $observed.schemaVersion $(if ($LegacySchemaThree -and $ActivationCrashCheckpoint -eq 'Prepared') { 3 } else { 4 }) 'Schema at actual host-loss boundary'
+        Same $observed.schemaVersion $(if ($LegacySchemaThree -and $ActivationCrashCheckpoint -in @('Prepared','MigrationBeforeCommit')) { 3 } else { 4 }) 'Committed schema at host-loss boundary'
+        if ($ActivationCrashCheckpoint -eq 'MigrationBeforeCommit') {
+            Same $observed.migrationFrom 3 'Migration transaction source'; Same $observed.migrationTo 4 'Migration transaction target'
+        }
         $child.Kill($false)
         if (-not $child.WaitForExit(10000)) { throw 'Owned activation host did not terminate.' }
         $null = $childOutput.GetAwaiter().GetResult(); $null = $childErrors.GetAwaiter().GetResult()
