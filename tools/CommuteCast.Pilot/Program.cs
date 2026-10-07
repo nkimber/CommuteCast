@@ -81,6 +81,7 @@ if (verifyAudition)
     const string selection = "The API processes 24 requests per second.";
     var requests = new[] { AuditionRequest.Standard(job.Settings), AuditionRequest.Selection(text, text.IndexOf(selection, StringComparison.Ordinal), selection.Length, job.Settings) };
     var samples = new List<object>();
+    var auditionOwnership = new AuditionOwnershipStore(workspace);
     foreach (var request in requests)
     {
         var auditionWatch = Stopwatch.StartNew();
@@ -93,13 +94,20 @@ if (verifyAudition)
             string.Concat(audio.Prepared.Spans.Select(s => s.Original)) != request.Source || audio.Prepared.Script.Length > AuditionRequest.MaximumCharacters ||
             await Workspace.HashFileAsync(audioPath) != audio.Hash || auditionGate.CurrentCount != 1)
             throw new IOException("The audition differs from its captured selection, preferences or live provider identity.");
-        if (!await generator.RemoveAsync(audio) || File.Exists(audioPath) || await generator.RemoveAsync(audio)) throw new IOException("Completed audition removal or idempotency failed.");
+        var journals = await auditionOwnership.LoadAsync(timeout.Token);
+        if (audio.OwnershipId is null || journals.Count != 1 || journals[0].Id != audio.OwnershipId || journals[0].Artifacts.Count != 1 ||
+            journals[0].Artifacts[0].RelativePath != Path.GetFileName(audioPath) || journals[0].Artifacts[0].Hash != audio.Hash ||
+            journals[0].Artifacts[0].CreationIdentity is not null || journals[0].Artifacts[0].PromotionIdentity is null)
+            throw new IOException("Completed audition lacks its exact durable original-file ownership receipt.");
+        if (!await generator.RemoveAsync(audio) || File.Exists(audioPath) || await generator.RemoveAsync(audio) ||
+            (await auditionOwnership.LoadAsync(timeout.Token)).Count != 0) throw new IOException("Completed audition removal, ownership retirement or idempotency failed.");
         samples.Add(new { kind = request.SelectionStart is null ? "standard" : "selected excerpt", sourceCharacters = request.Source.Length,
             preparedCharacters = audio.Prepared.Script.Length, selectionStart = request.SelectionStart, sourceAccounted = true,
             frozenSettingsVerified = true, capturedImageId = audio.Settings.ProviderImageId, nativeWavValidated = true, wavBytes,
-            sha256 = audio.Hash, wallSeconds = auditionWatch.Elapsed.TotalSeconds, ownedCleanupPassed = true, gateReleased = true });
+            sha256 = audio.Hash, wallSeconds = auditionWatch.Elapsed.TotalSeconds, durableOwnershipVerified = true, ownershipRetired = true, ownedCleanupPassed = true, gateReleased = true });
     }
-    if (File.Exists(Path.Combine(workspace.Root, "queue.db")) || Directory.Exists(Path.Combine(workspace.Root, "jobs")) || Directory.GetFiles(destination).Length != 0 ||
+    if ((await store.LoadAsync(timeout.Token)).Count != 0 || (await store.ReadDiagnosticEventsAsync(timeout.Token)).Count != 0 ||
+        (await auditionOwnership.LoadAsync(timeout.Token)).Count != 0 || Directory.Exists(Path.Combine(workspace.Root, "jobs")) || Directory.GetFiles(destination).Length != 0 ||
         await File.ReadAllTextAsync(legacy) != "Preserve untracked legacy audition fixture" || Directory.GetFiles(Path.Combine(workspace.Root, "auditions")).Length != 0)
         throw new IOException("Audition created queue/export content or failed to preserve the untracked legacy fixture.");
     var auditionReport = new { engine, applicationBuild = typeof(Job).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
