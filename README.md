@@ -2,6 +2,16 @@
 
 A native Windows WPF utility that turns pasted text into a single MP3 using local Docker speech. Source, preparation, queue, chunks, and diagnostics stay under `%LOCALAPPDATA%\CommuteCast`. Only a completed, validated MP3 is published to your chosen local folder. OneDrive handles synchronization separately; the application reports **cloud upload unknown**.
 
+## Build in Visual Studio
+
+Open **CommuteCast.sln** in Visual Studio 2026 with the **.NET desktop development** workload and .NET 10 SDK. The checked-in `.vsconfig` identifies that workload. The solution contains all eight projects and lists **CommuteCast.Desktop** first. Select it as the startup project if Visual Studio has saved a different choice, build the solution, then press F5 to run the native WPF client. **CommuteCast.slnx** contains the same projects for tools that use the XML solution format. Microsoft documents this WPF/.NET 10 setup in its [Visual Studio tutorial](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/getting-started).
+
+The client project sets `OutputType=WinExe`, `TargetFramework=net10.0-windows`, and `UseWPF=true`; its application and windows are compiled XAML with C# code-behind. A Release build produces `src\CommuteCast.Desktop\bin\Release\net10.0-windows\CommuteCast.Desktop.exe`. Docker, FFmpeg and speech provisioning are runtime prerequisites for narration; they are not required to compile or open the client.
+
+```powershell
+dotnet build .\CommuteCast.sln -c Release
+```
+
 ## Run on this machine
 
 Prerequisites: Windows, .NET 10 SDK (or the portable self-contained package), approved Docker Desktop with its local Linux-container context, and FFmpeg / FFprobe on PATH. These tools are already present on the development machine. No administrator privileges are needed by the app.
@@ -57,7 +67,7 @@ dotnet run --project tools\CommuteCast.Pilot -- piper artifacts/pilot/piper-host
 dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-host-loss-example --verify-queue-host-loss
 # Synthetic completed private-audio rename boundaries: four owned child terminations.
 pwsh -File scripts\Test-PrivatePromotionCrash.ps1
-# Retained older binary against an isolated schema-2 queue.
+# Retained older binary against an isolated current-schema queue.
 # Supply the maintenance executable from a previously extracted schema-1 package.
 pwsh -File scripts\Test-SchemaCompatibility.ps1 -OlderMaintenance C:\path\to\older\app\CommuteCast.Maintenance.exe
 ```
