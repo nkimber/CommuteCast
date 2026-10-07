@@ -11,6 +11,21 @@ public sealed class AuditionOwnershipStore(Workspace workspace)
     private readonly SqliteJobStore database = new(workspace);
     private static IOException StorageError(SqliteException error) => new("The preview ownership checkpoint or read failed. Check free disk space and permissions, then retry. Durable records were preserved.", error);
     public const int MaximumRecords = 256;
+    internal static async Task RequireSettledAsync(Workspace workspace, CancellationToken ct)
+    {
+        var path = Path.Combine(workspace.Root, "queue.db");
+        if (!File.Exists(path)) return;
+        SqliteSchema.RejectLink(path);
+        try
+        {
+            await using var connection = new SqliteConnection(SqliteSchema.ConnectionString(path, SqliteOpenMode.ReadOnly));
+            await connection.OpenAsync(ct);
+            var version = await SqliteSchema.ValidateSchemaAsync(connection, false, ct);
+            if (version >= 4 && (await ValidateRowsAsync(connection, ct)).Count != 0)
+                throw new IOException("Voice previews must be stopped or reconciled in the original workspace before removing private data. Preview files and ownership records were preserved.");
+        }
+        catch (SqliteException error) { throw StorageError(error); }
+    }
     public static void Validate(AuditionWriteJournal journal)
     {
         if (journal is null || !Regex.IsMatch(journal.Id ?? "", "^[a-f0-9]{32}$", RegexOptions.CultureInvariant) || journal.CreatedUtc <= DateTimeOffset.MinValue ||

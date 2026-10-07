@@ -256,6 +256,8 @@ public sealed class Installation
     }
     private async Task RemoveCoreAsync(WorkspaceLease lease, IReadOnlyList<RemovalScope> scopes, IInstallationObserver? observer, CancellationToken ct)
     {
+        if (scopes.Any(s => s.Kind == "Private" && s.Name == "queue.db"))
+            await AuditionOwnershipStore.RequireSettledAsync(lease.Workspace, ct);
         await Observe(observer, InstallationCheckpoint.BeforeRemoval, ct); await VerifyRemovalAsync(lease, scopes, ct);
         foreach (var scope in scopes)
         {
@@ -285,6 +287,7 @@ public sealed class Installation
         if (removePrivateData)
         {
             await WorkspaceBackup.RecoverInterruptedAsync(lease, ct);
+            await AuditionOwnershipStore.RequireSettledAsync(lease.Workspace, ct);
             foreach (var name in PrivateNames)
             {
                 var path = Path.Combine(lease.Workspace.Root, name);

@@ -7,6 +7,49 @@ namespace CommuteCast.Tests;
 
 public class InstallationTests
 {
+    [Fact] public async Task PendingPrivateUninstallCannotDiscardNewPreviewOwnershipOnRecovery()
+    {
+        using var test = new TestWorkspace(); await SeedAsync(test, "Retain recoverable preview");
+        var package = await PackageAsync(test, "pending-preview"); using var lease = WorkspaceLease.Acquire(test.Workspace);
+        var install = new Installation(Path.Combine(test.Parent, "program")); var active = await install.ActivateAsync(lease, package);
+        var ledger = new AuditionOwnershipStore(test.Workspace);
+        var journal = new AuditionWriteJournal(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, []);
+        await Assert.ThrowsAsync<IOException>(() => install.UninstallAsync(lease, true, new Observer(async (stage, _, _) =>
+        {
+            if (stage == InstallationCheckpoint.Activated) { await ledger.SaveAsync(journal); throw new IOException("Fixture loss after activation"); }
+        })));
+        Assert.True(install.HasPendingOperation);
+        var database = Path.Combine(test.Workspace.Root, "queue.db"); var before = await Workspace.HashFileAsync(database);
+        var error = await Assert.ThrowsAsync<IOException>(() => install.RecoverAsync(lease)); Assert.Contains("previews", error.Message);
+        Assert.Equal(before, await Workspace.HashFileAsync(database)); Assert.Single(await ledger.LoadAsync());
+        Assert.True(install.HasPendingOperation); Assert.True(File.Exists(active.Executable));
+    }
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public async Task PrivateUninstallPreservesUnsettledPreviewLedgerAndBytes(bool hasFile)
+    {
+        using var test = new TestWorkspace(); await SeedAsync(test, "Preserve narration");
+        var package = await PackageAsync(test, "preview"); using var lease = WorkspaceLease.Acquire(test.Workspace);
+        var install = new Installation(Path.Combine(test.Parent, "program")); var active = await install.ActivateAsync(lease, package);
+        var journal = new AuditionWriteJournal(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, []);
+        var directory = Path.Combine(test.Workspace.Root, "auditions"); Directory.CreateDirectory(directory);
+        var name = "audition-" + journal.Id + ".wav";
+        if (hasFile)
+        {
+            await using var held = ExportStagingFile.Create(directory, name);
+            await held.Stream.WriteAsync(new byte[] { 1, 2, 3 });
+            journal.Artifacts.Add(new(name, "", CreationIdentity: held.Identity));
+        }
+        var ledger = new AuditionOwnershipStore(test.Workspace); await ledger.SaveAsync(journal);
+        var database = Path.Combine(test.Workspace.Root, "queue.db");
+        var before = await Workspace.HashFileAsync(database);
+        var error = await Assert.ThrowsAsync<IOException>(() => install.UninstallAsync(lease, true)); Assert.Contains("previews", error.Message);
+        Assert.Equal(before, await Workspace.HashFileAsync(database)); Assert.Single(await ledger.LoadAsync());
+        Assert.False(install.HasPendingOperation); Assert.True(File.Exists(active.Executable));
+        if (hasFile) Assert.Equal(new byte[] { 1, 2, 3 }, await File.ReadAllBytesAsync(Path.Combine(directory, name)));
+        // Retain-data uninstall preserves the same ledger and audio without requiring cleanup.
+        await install.UninstallAsync(lease, false); Assert.Single(await ledger.LoadAsync());
+        Assert.True(File.Exists(database)); if (hasFile) Assert.True(File.Exists(Path.Combine(directory, name)));
+    }
     [Fact] public async Task MaintenanceEntryVerifiesActivePackageWhileRetainingCorruptQueueForRepair()
     {
         using var test = new TestWorkspace(); await SeedAsync(test, "Original"); var package = await PackageAsync(test, "repair"); using var lease = WorkspaceLease.Acquire(test.Workspace); var install = new Installation(Path.Combine(test.Parent, "program"));
