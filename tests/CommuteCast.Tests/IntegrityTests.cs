@@ -61,7 +61,28 @@ public class IntegrityTests
     [Theory]
     [InlineData("# Hello commute\nMore text", "Hello commute")]
     [InlineData("A useful first sentence. And another.", "A useful first sentence.")]
+    [InlineData("Opening sentence.\n## First heading\n# Second heading", "First heading")]
+    [InlineData("\n\t\nA heading-free thought! Another thought.", "A heading-free thought!")]
+    [InlineData("Is this useful? More detail.", "Is this useful?")]
+    [InlineData("Version 1.2 costs 12.50 today. Next sentence.", "Version 1.2 costs 12.50 today.")]
     public void TitleIsDeterministic(string text, string expected) => Assert.Equal(expected, TextPreparation.SuggestTitle(text));
+    [Theory]
+    [InlineData("")]
+    [InlineData(" \t\r\n ")]
+    [InlineData("***")]
+    public void EmptySuggestedTitleUsesCurrentLocalTimestamp(string source)
+    {
+        var before = $"CommuteCast {DateTimeOffset.Now:yyyy-MM-dd HH:mm}";
+        var title = TextPreparation.SuggestTitle(source);
+        var after = $"CommuteCast {DateTimeOffset.Now:yyyy-MM-dd HH:mm}";
+        Assert.Contains(title, new[] { before, after });
+    }
+    [Fact]
+    public void HeadingFreeLongTitleRetainsTheBoundedPrefix()
+    {
+        var first = new string('a', 100);
+        Assert.Equal(first, TextPreparation.SuggestTitle(first + new string('b', 500)));
+    }
     [Theory]
     [InlineData(2_100)]
     [InlineData(249_900)]
