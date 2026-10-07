@@ -38,26 +38,20 @@ public sealed class AsyncCommand(Func<object?, Task> execute, Action<Exception> 
         finally { running = false; CanExecuteChanged?.Invoke(this, EventArgs.Empty); }
     }
 }
-public sealed class JobView(Job job, Workspace workspace)
+public sealed class JobView(Job job, Workspace workspace, bool paused = false)
 {
     public Job Job { get; } = job;
     public string Id => Job.Id;
     public string Title => Job.Title;
     public string Submitted => Job.CreatedUtc.ToLocalTime().ToString("MMM d, yyyy · h:mm tt zzz");
-    public string Status => Job.CancellationRequested && !Job.ExportCommitted && Job.Stage != JobStage.Cancelled
-        ? "Cancelling · waiting for active work to stop" : Job.Stage switch
-    {
-        JobStage.WaitingForService => "Waiting for local speech service",
-        JobStage.Synthesizing => $"Narrating · {Job.CompletedChunks} of {Job.Chunks.Count} chunks validated",
-        JobStage.Exported => "Exported locally · upload unknown",
-        JobStage.Generated => "Generated · ready to export",
-        JobStage.Failed => $"Needs attention at {Job.FailedStage?.ToString() ?? "reconciliation"} · preserved for retry",
-        JobStage.Cancelled => "Cancelled · ready to resume",
-        _ => Job.Stage.ToString()
-    };
+    private JobProgress Presentation => JobProgress.Describe(Job, paused);
+    public string Status => Presentation.Status;
+    public string Guidance => Presentation.Guidance;
+    public bool IsWorking => Presentation.IsWorking;
+    public bool NeedsAttention => Presentation.NeedsAttention;
     public double Progress => Job.CompletedChunks;
     public double ChunkTotal => Math.Max(1, Job.Chunks.Count);
-    public string Details => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
+    public string Details => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.FailedStage is { } stage ? $"\nStopped during: {stage}" : "") + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
     public string Error => string.Join(Environment.NewLine, new[] { Job.Error,
         string.IsNullOrWhiteSpace(Job.ExportNotice) || Job.Error.Contains(Job.ExportNotice, StringComparison.Ordinal) ? "" : Job.ExportNotice,
         Job.PrivateStorageNotice }.Where(s => !string.IsNullOrWhiteSpace(s)));
@@ -90,6 +84,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private Task? disposal;
     private string page = "compose", source = "", draftTitle = "", statusMessage = "Paste something worth listening to. Queue it when you're ready.", serviceStatus = "Checking local speech…";
     private string providerDetails = "", encoderVersion = "Not checked";
+    private string operationError = "", speechError = "";
     private string setupDetails = "Setup has not been checked. This inspection does not start or change speech services.";
     private string storageSummary = "Usage has not been measured.";
     private bool loading = true, queueLoaded, draftLoadFailed, draftDirty;
@@ -156,10 +151,25 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public string SetupDetails { get => setupDetails; private set => Set(ref setupDetails, value); }
     public string ServiceStatus { get => serviceStatus; private set => Set(ref serviceStatus, value); }
     public string StatusMessage { get => statusMessage; private set => Set(ref statusMessage, value); }
-    public string LibrarySummary => !queueLoaded ? "Local records have not loaded. Repair storage or restore a verified backup." : $"{Jobs.Count} narrations · {Jobs.Count(j => j.Job.Stage == JobStage.Queued)} queued · {Jobs.Count(j => j.Job.Stage == JobStage.Exported)} exported locally";
+    public JobView? LatestJob => Jobs.MaxBy(j => j.Job.CreatedUtc);
+    public bool HasLatestJob => LatestJob is not null;
+    private JobView? AttentionJob => Jobs.Where(j => j.NeedsAttention).MaxBy(j => j.Job.CreatedUtc);
+    public bool HasAttention => AttentionMessage.Length > 0;
+    public string AttentionHeading => queue.PersistenceError.Length > 0 ? "Queue stopped · storage needs attention"
+        : operationError.Length > 0 ? "Action could not finish"
+        : speechError.Length > 0 ? "Speech unavailable · setup needs attention" : "A saved narration needs attention";
+    public string AttentionMessage => queue.PersistenceError.Length > 0 ? queue.PersistenceError
+        : operationError.Length > 0 ? operationError
+        : speechError.Length > 0 ? speechError + "\nCheck speech readiness after setup. Saved narrations remain in Your library; retry the existing item after resolving its error."
+        : AttentionJob is { } job ? $"{job.Title}: {job.Error}\n{job.Guidance}" : "";
+    private void RaiseAttention() { Raise(nameof(HasAttention)); Raise(nameof(AttentionHeading)); Raise(nameof(AttentionMessage)); }
+    private void ReportError(string message) { operationError = message; StatusMessage = message; RaiseAttention(); }
+    public string LibrarySummary => !queueLoaded ? "Local records have not loaded. Repair storage or restore a verified backup." : $"{Jobs.Count} narrations · {Jobs.Count(j => j.Job.Stage == JobStage.Queued)} queued · {Jobs.Count(j => j.IsWorking)} working · {Jobs.Count(j => j.NeedsAttention)} need attention · {Jobs.Count(j => j.Job.Stage == JobStage.Exported)} exported locally";
     public string PauseLabel => queue.Paused ? "Resume queue" : "Pause future jobs";
     public JobView? SelectedJob { get => selectedJob; set => Set(ref selectedJob, value); }
     public ICommand NavigateCommand { get; }
+    public ICommand ViewLatestCommand { get; }
+    public ICommand ViewAttentionCommand { get; }
     public ICommand QueueCommand { get; }
     public ICommand ReviewCommand { get; }
     public ICommand ChooseFolderCommand { get; }
@@ -197,9 +207,11 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         queue = new(Workspace, store, provider, new(settings), publisher) { Paused = settings.QueuePaused, CacheQuotaMiB = settings.CacheQuotaMiB, ScratchRetentionDays = settings.ScratchRetentionDays, PrivateStorageLimitMiB = settings.PrivateStorageLimitMiB };
         auditions = new(Workspace, provider, queue.InferenceGate, (engine, ct) => provider.ReadyAsync(engine, ct, true));
         queue.Changed += _ => Application.Current.Dispatcher.InvokeAsync(() => RefreshJobs(queue.Snapshot()));
-        player.MediaFailed += (_, _) => StatusMessage = "Playback failed. Check that the local audio exists and is decodable.";
+        player.MediaFailed += (_, _) => ReportError("Playback failed. Check that the local audio exists and is decodable.");
         Voices.Add(settings.Voice);
-        NavigateCommand = Command(p => { Navigate(p?.ToString() ?? "compose"); return Task.CompletedTask; });
+        NavigateCommand = Command(p => { Navigate(p?.ToString() ?? "compose"); return Task.CompletedTask; }, false);
+        ViewLatestCommand = Command(_ => { SelectedJob = LatestJob; Navigate("library"); return Task.CompletedTask; }, false);
+        ViewAttentionCommand = Command(_ => { SelectedJob = AttentionJob ?? LatestJob; Navigate("library"); return Task.CompletedTask; }, false);
         QueueCommand = Command(_ => SubmitAsync());
         ReviewCommand = Command(async _ => { var text = Source; var omit = ExcludeCode; var dictionary = Pronunciation; var profile = CaptureProfile(); var prepared = await Task.Run(() => TextPreparation.Prepare(text, omit, dictionary, profile, shutdown.Token), shutdown.Token); ShowPreparation(prepared, text); });
         ChooseFolderCommand = Command(async _ => { var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); settings.Destination = path; Raise(nameof(DestinationDisplay)); await SaveSettingsAsync(); StatusMessage = "Output folder saved. Only completed MP3s will be exported here."; } });
@@ -216,8 +228,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         SaveSettingsCommand = Command(async _ => { CaptureProfile(); TextPreparation.ValidateDictionary(Pronunciation); await SaveSettingsAsync(); StatusMessage = "Settings saved for future submissions."; });
         ResetPronunciationCommand = Command(_ => { settings.PronunciationProfile = new(); RaiseProfile(); StatusMessage = "English profile selected for new narrations. Save settings to retain it."; return Task.CompletedTask; });
         CheckEncoderCommand = Command(_ => CheckEncoderAsync());
-        ThemeCommand = Command(_ => { App.ToggleTheme(); return Task.CompletedTask; });
-        PauseCommand = Command(async _ => { if (queue.Paused && queue.PersistenceError.Length > 0) throw new IOException(queue.PersistenceError); queue.Paused = !queue.Paused; settings.QueuePaused = queue.Paused; Raise(nameof(PauseLabel)); await SaveSettingsAsync(); StatusMessage = queue.Paused ? "Future dispatch paused. The current narration can finish." : "Queue resumed."; });
+        ThemeCommand = Command(_ => { App.ToggleTheme(); return Task.CompletedTask; }, false);
+        PauseCommand = Command(async _ => { if (queue.Paused && queue.PersistenceError.Length > 0) throw new IOException(queue.PersistenceError); queue.Paused = !queue.Paused; settings.QueuePaused = queue.Paused; RefreshJobs(queue.Snapshot()); await SaveSettingsAsync(); StatusMessage = queue.Paused ? "Future dispatch paused. The current narration can finish." : "Queue resumed."; });
         MoveEarlierCommand = Command(_ => queue.MovePendingAsync(RequireSelected().Id, -1, shutdown.Token));
         MoveLaterCommand = Command(_ => queue.MovePendingAsync(RequireSelected().Id, 1, shutdown.Token));
         PlayCommand = Command(async _ => { var job = RequireSelected(); await StopPlaybackAsync(false); var file = Workspace.FinalPath(job); if (!File.Exists(file) || job.FinalHash.Length == 0 || await Infrastructure.Workspace.HashFileAsync(file) != job.FinalHash) throw new IOException("No validated local audio is available for this narration."); player.Open(new Uri(file)); player.Play(); StatusMessage = "Playing local audio. Use Stop playback to stop."; });
@@ -234,31 +246,36 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         MeasureStorageCommand = Command(_ => RefreshStorageAsync());
         CleanCacheCommand = Command(async _ => { ValidateRetention(); queue.CacheQuotaMiB = CacheQuotaMiB; queue.ScratchRetentionDays = ScratchRetentionDays; var result = await queue.CleanCacheAsync(shutdown.Token); await RefreshStorageAsync(); StatusMessage = $"Cleanup removed {result.FilesRemoved} files ({result.BytesRemoved / 1048576.0:0.0} MiB). {result.Failures} files could not be removed. Protected data and exports are retained."; });
     }
-    private ICommand Command(Func<object?, Task> action) => new AsyncCommand(p => operations.RunAsync(() => action(p)), e => StatusMessage = QueueCoordinator.FriendlyError(e));
+    private ICommand Command(Func<object?, Task> action, bool clearsError = true) => new AsyncCommand(async p =>
+    {
+        await operations.RunAsync(() => action(p));
+        if (clearsError) { operationError = ""; RaiseAttention(); }
+    }, e => ReportError(QueueCoordinator.FriendlyError(e)));
     private void Navigate(string value) { page = value; Raise(nameof(IsCompose)); Raise(nameof(IsLibrary)); Raise(nameof(IsSettings)); Raise(nameof(PageHeading)); }
     private Job RequireSelected() => SelectedJob?.Job ?? throw new ArgumentException("Select a narration first.");
     private void RefreshJobs(IReadOnlyList<Job> snapshots)
     {
         var id = SelectedJob?.Id;
         Jobs.Clear();
-        foreach (var job in snapshots.Where(j => j.Stage == JobStage.Queued).Concat(snapshots.Where(j => j.Stage != JobStage.Queued).OrderByDescending(j => j.CreatedUtc))) Jobs.Add(new(job, Workspace));
+        foreach (var job in snapshots.Where(j => j.Stage == JobStage.Queued).Concat(snapshots.Where(j => j.Stage != JobStage.Queued).OrderByDescending(j => j.CreatedUtc))) Jobs.Add(new(job, Workspace, queue.Paused));
         SelectedJob = Jobs.FirstOrDefault(j => j.Id == id) ?? Jobs.FirstOrDefault();
         Raise(nameof(LibrarySummary));
         Raise(nameof(PauseLabel));
+        Raise(nameof(LatestJob)); Raise(nameof(HasLatestJob)); RaiseAttention();
         if (queue.PersistenceError.Length > 0) StatusMessage = queue.PersistenceError;
     }
     public Task InitializeAsync() => operations.RunAsync(InitializeCoreAsync);
     private async Task InitializeCoreAsync()
     {
         try { var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; }
-        catch (IOException error) { draftLoadFailed = true; StatusMessage = error.Message; }
+        catch (IOException error) { draftLoadFailed = true; ReportError(error.Message); }
         loading = false;
         string? previewNotice = null;
         try { await Task.Run(() => auditions.RecoverAsync(shutdown.Token)); }
         catch (IOException) { previewNotice = "An interrupted voice preview needs inspection. Its files were preserved in private storage."; }
         await Task.Run(() => queue.InitializeAsync(shutdown.Token)); queueLoaded = true; Raise(nameof(LibrarySummary));
-        try { await CheckReadinessAsync(); } catch (Exception error) { ServiceStatus = "Speech needs setup"; StatusMessage = QueueCoordinator.FriendlyError(error); }
-        if (previewNotice is not null) StatusMessage = previewNotice;
+        try { await CheckReadinessAsync(); } catch (Exception error) { StatusMessage = QueueCoordinator.FriendlyError(error); }
+        if (previewNotice is not null) ReportError(previewNotice);
     }
     private void ScheduleDraftSave()
     {
@@ -282,7 +299,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
             finally { draftGate.Release(); }
         }
         catch (OperationCanceledException) { }
-        catch (IOException) { StatusMessage = "Draft autosave failed. Keep this window open and check disk space."; }
+        catch (IOException) { ReportError("Draft autosave failed. Keep this window open and check disk space."); }
     }
     private Task SaveSettingsAsync()
     {
@@ -305,7 +322,17 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     {
         var engine = Engine;
         ServiceStatus = "Checking " + engine + " locally…";
-        var info = await provider.ReadyAsync(engine, shutdown.Token, explicitRetry);
+        ProviderInfo info;
+        try { info = await provider.ReadyAsync(engine, shutdown.Token, explicitRetry); }
+        catch (Exception error)
+        {
+            if (engine == Engine)
+            {
+                ServiceStatus = "Speech unavailable · needs attention";
+                speechError = engine + ": " + QueueCoordinator.FriendlyError(error); RaiseAttention();
+            }
+            throw;
+        }
         settings.Providers[engine] = info;
         await SaveSettingsAsync();
         if (engine == Engine)
@@ -314,6 +341,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
             Voices.Clear(); foreach (var item in info.Voices) Voices.Add(item);
             Voice = info.Voices.Contains(voice) ? voice : info.Voices.First();
             ServiceStatus = engine + " · ready on this laptop";
+            speechError = ""; RaiseAttention();
             ProviderDetails = $"Contract v1 · {info.Engine}\nModel: {info.Fingerprint}\nEncoder: {encoderVersion}";
         }
         return info;
@@ -338,8 +366,11 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         settings.Providers[engine] = info;
         var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint, profile, info.ImageId), Destination = destination };
         await queue.AddAsync(job, shutdown.Token);
+        RefreshJobs(queue.Snapshot());
+        SelectedJob = Jobs.Single(j => j.Id == job.Id);
+        Navigate("library");
         if (Source == text) { Source = ""; DraftTitle = ""; }
-        StatusMessage = "Narration saved to the durable queue. Follow progress in Your library, or paste your next narration here.";
+        StatusMessage = "Narration saved. Its progress is shown here. You do not need to queue it again.";
         DraftQueued?.Invoke();
         await SaveSettingsAsync();
     }

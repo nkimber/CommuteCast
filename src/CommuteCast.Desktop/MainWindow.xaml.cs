@@ -25,7 +25,7 @@ public partial class MainWindow : Window
         this.model = model;
         InitializeComponent();
         DataContext = model;
-        model.DraftQueued += () => SourceInput.Focus();
+        model.DraftQueued += () => NarrationList.Focus();
     }
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
