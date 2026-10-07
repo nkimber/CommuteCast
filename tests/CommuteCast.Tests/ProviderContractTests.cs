@@ -248,7 +248,7 @@ public partial class ProviderContractTests
         Assert.Equal("Competing output", await File.ReadAllTextAsync(fixture.Output));
         Assert.Empty(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"));
     }
-    [Fact] public async Task AttemptPathReusedAfterPublicationIsNeverRemovedBySettlementCleanup()
+    [Fact] public async Task SettlementCompletesBeforePublicationAndAttemptRemainsHeld()
     {
         using var fixture = new Fixture(); string? attempt = null;
         fixture.Http.Speech = (_, _) => Task.FromResult(fixture.AudioContent(new StreamContent(new ObservedStream(fixture.Wave,
@@ -256,12 +256,59 @@ public partial class ProviderContractTests
         fixture.Http.Control = (route, body, _) =>
         {
             fixture.Http.Sequence = Math.Max(fixture.Http.Sequence, body.GetProperty("sequence").GetInt64());
-            if (route == "/settle" && attempt is not null) File.WriteAllText(attempt, "Unknown later file");
+            if (route == "/settle" && attempt is not null)
+            {
+                Assert.False(File.Exists(fixture.Output));
+                Assert.Throws<IOException>(() => File.WriteAllText(attempt, "Unknown later file"));
+                Assert.Throws<IOException>(() => File.Delete(attempt));
+            }
             return Task.FromResult(fixture.Http.ControlResponse(body, route == "/reserve" ? "reserved" : "settled"));
         };
         using var provider = fixture.Provider(); await provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default);
         Assert.NotNull(attempt); Assert.Equal(fixture.Wave, await File.ReadAllBytesAsync(fixture.Output));
-        Assert.Equal("Unknown later file", await File.ReadAllTextAsync(attempt));
+        Assert.False(File.Exists(attempt));
+        Assert.False(File.Exists(Path.Combine(fixture.Test.Workspace.Root, "speech-admission.json")));
+    }
+    [Theory] [InlineData("kokoro")] [InlineData("piper")]
+    public async Task FailedSettlementLeavesNoPublishedAudioAndRetryReconcilesFence(string engine)
+    {
+        using var fixture = new Fixture(engine);
+        fixture.Http.Control = (route, body, _) =>
+        {
+            fixture.Http.Sequence = Math.Max(fixture.Http.Sequence, body.GetProperty("sequence").GetInt64());
+            if (route == "/settle") Assert.False(File.Exists(fixture.Output));
+            return Task.FromResult(fixture.Http.ControlResponse(body, "reserved"));
+        };
+        using var provider = fixture.Provider();
+        await Assert.ThrowsAsync<IOException>(() => provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default));
+        Assert.False(File.Exists(fixture.Output));
+        Assert.Empty(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"));
+        Assert.True(File.Exists(Path.Combine(fixture.Test.Workspace.Root, "speech-admission.json")));
+        Assert.Equal(1, fixture.Http.Posts);
+        fixture.Http.Control = null;
+        await provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default);
+        Assert.Equal(2, fixture.Http.Posts);
+        Assert.Equal(fixture.Wave, await File.ReadAllBytesAsync(fixture.Output));
+        Assert.False(File.Exists(Path.Combine(fixture.Test.Workspace.Root, "speech-admission.json")));
+    }
+    [Theory] [InlineData("kokoro", false)] [InlineData("kokoro", true)] [InlineData("piper", false)] [InlineData("piper", true)]
+    public async Task CancellationDuringSettlementCannotPublishAudioOrReplaceOccupiedOutput(string engine, bool occupied)
+    {
+        using var fixture = new Fixture(engine); using var cancel = new CancellationTokenSource();
+        if (occupied) await File.WriteAllTextAsync(fixture.Output, "Unknown output");
+        fixture.Http.Control = (route, body, _) =>
+        {
+            fixture.Http.Sequence = Math.Max(fixture.Http.Sequence, body.GetProperty("sequence").GetInt64());
+            if (route == "/settle") cancel.Cancel();
+            return Task.FromResult(fixture.Http.ControlResponse(body, route == "/reserve" ? "reserved" : "settled"));
+        };
+        using var provider = fixture.Provider();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, cancel.Token));
+        Assert.Equal(1, fixture.Http.Posts);
+        if (occupied) Assert.Equal("Unknown output", await File.ReadAllTextAsync(fixture.Output));
+        else Assert.False(File.Exists(fixture.Output));
+        Assert.Empty(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"));
+        Assert.False(File.Exists(Path.Combine(fixture.Test.Workspace.Root, "speech-admission.json")));
     }
     private sealed class ObservedStream(byte[] bytes, Action observe) : MemoryStream(bytes)
     {

@@ -277,12 +277,14 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
                         attemptFile.Stream.Flush(true);
                     }
                     WaveAudio.DataRegion(attemptFile.Stream, false);
+                    // Keep validated audio private until the reservation is retired.
+                    // A failed settlement must not leave a published, unrecorded WAV.
+                    await SettleAttemptAsync();
                     deadline.Token.ThrowIfCancellationRequested();
                     try { attemptFile.Rename(Path.GetFileName(output)); }
                     catch (IOException error) { throw new IOException("The speech output is occupied or inaccessible. Existing files were preserved; repair private storage and retry.", error); }
                     var published = attemptFile; attemptFile = null;
                     await published.DisposeAsync();
-                    await SettleAttemptAsync();
                     return;
                 }
                 catch (HttpRequestException) when (attempt < limits.TransientRetries && !deadline.IsCancellationRequested)
