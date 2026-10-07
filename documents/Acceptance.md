@@ -211,4 +211,12 @@ Storage/checkpoint follow-up: **61 tests pass**, including aggregate future-audi
 
 ## Git synchronization
 
-The supplied folder had no Git repository or configured GitHub destination. Local work can be committed; publishing awaits the user's existing GitHub repository destination. No private material is published to an invented remote.
+The user authorized the public repository [nkimber/CommuteCast](https://github.com/nkimber/CommuteCast). `origin` is configured and local `main` tracks `origin/main`. Completed validated increments are committed, pushed, and checked against the actual remote branch before synchronization is reported.
+
+## Held-file audio process foundation (2026-10-06)
+
+`ProcessRunner.RunToFileAsync` starts a Windows child suspended, assigns an owned job with kill-on-close, and restricts inherited handles to an exclusive regular-file output and standard input/diagnostics. It waits on the native process handle after termination before returning cancellation or timeout. FFmpeg's [fd protocol](https://ffmpeg.org/ffmpeg-protocols.html#fd) retains regular-file seeking, including WAV length headers and MP3 gapless metadata. Output size is monitored and rejected when exceeded; this is not a kernel-enforced write quota.
+
+The six held-output cases and three existing process-runner cases passed together (`held-process-complete.trx`): seekable canonical WAV, exclusive output ownership, exact 24,000-sample MP3 decode with quoted Unicode metadata, caller cancellation, timeout, oversized-output rejection, and bounded capture while draining 400,000 diagnostic characters. An initial cancellation case exposed premature file release; the native termination wait fixed it. The conventional solution also built with zero warnings/errors.
+
+This is a preparatory API checkpoint. Production normalization and MP3 encoding still use the existing runner; durable creation integration and true parent-only process-loss acceptance remain open. The verified distribution archive still contains implementation `26e5b553`, and native UI automation remains stopped by the user.

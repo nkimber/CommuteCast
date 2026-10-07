@@ -3,7 +3,7 @@ using System.Diagnostics;
 namespace CommuteCast.Infrastructure;
 
 public record ProcessResult(int ExitCode, string Output, string Error);
-public static class ProcessRunner
+public static partial class ProcessRunner
 {
     public static async Task<ProcessResult> RunAsync(string executable, IEnumerable<string> arguments, TimeSpan timeout, CancellationToken ct = default)
     {
