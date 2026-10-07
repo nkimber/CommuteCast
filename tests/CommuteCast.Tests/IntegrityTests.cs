@@ -63,6 +63,21 @@ public class IntegrityTests
     [InlineData("A useful first sentence. And another.", "A useful first sentence.")]
     public void TitleIsDeterministic(string text, string expected) => Assert.Equal(expected, TextPreparation.SuggestTitle(text));
     [Theory]
+    [InlineData(false, 99)]
+    [InlineData(true, 99)]
+    [InlineData(false, 98)]
+    [InlineData(true, 98)]
+    public void SuggestedTitleKeepsSupplementaryUnicodeWhole(bool heading, int prefixLength)
+    {
+        var prefix = new string('x', prefixLength);
+        var source = (heading ? "# " : "") + prefix + "😀 trailing text";
+        var title = TextPreparation.SuggestTitle(source);
+        Assert.Equal(prefixLength == 98 ? prefix + "😀" : prefix, title);
+        Assert.InRange(title.Length, 1, 100);
+        var strictUtf8 = new System.Text.UTF8Encoding(false, true);
+        Assert.Equal(title, strictUtf8.GetString(strictUtf8.GetBytes(title)));
+    }
+    [Theory]
     [InlineData(16)] [InlineData(57)] [InlineData(450)] [InlineData(900)]
     public void ChunkerNeverLosesDuplicatesOrReorders(int maximum)
     {

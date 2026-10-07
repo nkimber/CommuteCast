@@ -98,7 +98,10 @@ public static partial class TextPreparation
         text = text.Trim().Trim('#', '*', '`', ' ');
         var end = Regex.Match(text, @"[.!?](?:\s|$)");
         if (!heading.Success && end.Success) text = text[..(end.Index + 1)];
-        return text.Length == 0 ? $"CommuteCast {DateTimeOffset.Now:yyyy-MM-dd HH:mm}" : text[..Math.Min(100, text.Length)];
+        if (text.Length == 0) return $"CommuteCast {DateTimeOffset.Now:yyyy-MM-dd HH:mm}";
+        var length = Math.Min(100, text.Length);
+        if (length < text.Length && char.IsHighSurrogate(text[length - 1]) && char.IsLowSurrogate(text[length])) length--;
+        return text[..length];
     }
 
     [GeneratedRegex(@"[^\n]*\n|[^\n]+$", RegexOptions.CultureInvariant)] private static partial Regex Lines();
