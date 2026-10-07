@@ -1,4 +1,6 @@
 # Verification matrix
+Latest Compose correction (2026-10-07): automatic title inspection covers the full supported input limit rather than the first 2,000 characters. Late-heading core cases and all 36 focused IntegrityTests pass; Visual Studio MSBuild builds native WPF. Native setter interaction/latency and updated full regression/package remain unverified.
+
 Latest source correction (2026-10-07): suggested-title truncation preserves valid UTF-16 surrogate pairs at the 100-unit boundary. All 34 focused IntegrityTests pass; the previously verified `d8592d3` package predates this correction. Full updated regression/package and native/real-engine/external acceptance remain separate.
 
 Current downloaded-package refresh (2026-10-07): `d8592d3` Maintenance CLI backup/restore and installation lifecycle acceptance pass, including both uninstall data scopes, preview ownership guard, seven launcher/runtime inspection plans, Windows registration and reviewed cache cleanup. Exact reports and same-runtime synthetic revision limits appear in Acceptance.md. Native interaction, current real-engine and external acceptance remain open.

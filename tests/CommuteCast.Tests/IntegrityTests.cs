@@ -63,6 +63,15 @@ public class IntegrityTests
     [InlineData("A useful first sentence. And another.", "A useful first sentence.")]
     public void TitleIsDeterministic(string text, string expected) => Assert.Equal(expected, TextPreparation.SuggestTitle(text));
     [Theory]
+    [InlineData(2_100)]
+    [InlineData(249_900)]
+    public void SuggestedTitlePrefersHeadingLateInSupportedInput(int introductionLength)
+    {
+        var source = "Opening sentence.\n" + new string('x', introductionLength) + "\n# The full document heading\nFinal paragraph.";
+        Assert.True(source.Length <= TextPreparation.MaximumCharacters);
+        Assert.Equal("The full document heading", TextPreparation.SuggestTitle(source));
+    }
+    [Theory]
     [InlineData(false, 99)]
     [InlineData(true, 99)]
     [InlineData(false, 98)]

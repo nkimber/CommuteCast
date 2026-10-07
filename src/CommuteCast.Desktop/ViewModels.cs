@@ -109,7 +109,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         {
             if (!Set(ref source, value)) return;
             Raise(nameof(CharacterCount));
-            if (DraftTitle.Length == 0 && source.Length > 0) DraftTitle = TextPreparation.SuggestTitle(source[..Math.Min(source.Length, 2000)]);
+            if (DraftTitle.Length == 0 && source.Length > 0) DraftTitle = TextPreparation.SuggestTitle(source[..Math.Min(source.Length, TextPreparation.MaximumCharacters)]);
             ScheduleDraftSave();
         }
     }
