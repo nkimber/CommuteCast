@@ -4,6 +4,12 @@ using System.Text.Json;
 using System.Diagnostics;
 using System.Reflection;
 
+if (args.FirstOrDefault() == "--verify-corpus")
+{
+    await PreparationCorpus.RunAsync(args);
+    return;
+}
+
 if (args.FirstOrDefault() == "--queue-host-child")
 {
     await QueueHostLossAcceptance.ChildAsync(args);

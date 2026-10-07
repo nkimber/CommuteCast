@@ -1,5 +1,7 @@
 # Verification matrix
 
+Synthetic release-corpus checkpoint (2026-10-07): a reusable Pilot command verifies 12 distinct synthetic texts (four prose, four technical/structured, two long, two adversarial) under two pronunciation profiles. All 24 local runs pass exact contiguous source accounting, ordered script/chunk coverage and strict UTF-8 chunk validation, including 10k/50k/100k Unicode-scalar inputs. Windows CI now invokes it and retains its report. Acceptance.md records scope; spoken fidelity, representative user content, native latency and resource acceptance remain open.
+
 Current container-log privacy observation (2026-10-07): bounded retained logs from both owned real services contain zero matches for seven known acceptance-source/title/export-path fragments. Raw logs stay in ignored local evidence; source review finds fixed speech errors without request-body logging. See Acceptance.md for scope. This does not prove arbitrary inputs, all failures or complete support-bundle privacy.
 
 Current real private-removal refresh (2026-10-07): clean `601fbde` passes both engines' five-chunk technical-profile generation and completed-job private deletion. Eight private receipts are verified; unknown files and durable intent survive refusal, retry removes owned private files/history, and managed exports/unrelated output remain intact. Export hashes are independently rechecked. Exact reports and timing scope appear in Acceptance.md. Active cancellation, host interruption, native deletion and remaining manual/external gates remain separate.

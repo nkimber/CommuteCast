@@ -50,6 +50,8 @@ jobs:
         run: dotnet restore CommuteCast.sln
       - name: Build native WPF solution
         run: dotnet build CommuteCast.sln -c Release --no-restore
+      - name: Verify synthetic preparation corpus
+        run: dotnet tools/CommuteCast.Pilot/bin/Release/net10.0/CommuteCast.Pilot.dll --verify-corpus artifacts/corpus/windows
       - name: Run complete synthetic and audio regression
         # Independent process/encoder collections compete for runner CPU and disk.
         # Each race test still controls its own concurrent workers and barriers.
@@ -76,4 +78,12 @@ jobs:
           name: CommuteCast-win-x64-${{ github.sha }}
           path: artifacts/release/CommuteCast-win-x64.zip
           if-no-files-found: error
+          retention-days: 7
+      - name: Retain synthetic corpus report
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: preparation-corpus-${{ github.sha }}
+          path: artifacts/corpus/windows/report.json
+          if-no-files-found: warn
           retention-days: 7

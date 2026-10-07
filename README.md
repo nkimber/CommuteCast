@@ -56,6 +56,8 @@ dotnet test CommuteCast.slnx
 # Real Docker speech → normalized PCM → one MP3 → verified local export.
 dotnet run --project tools\CommuteCast.Pilot -- kokoro
 dotnet run --project tools\CommuteCast.Pilot -- piper
+# Synthetic 12-text preparation/chunk corpus; requires no Docker service.
+dotnet run --project tools\CommuteCast.Pilot -- --verify-corpus
 # Active real inference cancellation, followed by the opposite engine.
 dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-cancellation-example --verify-cancellation
 dotnet run --project tools\CommuteCast.Pilot -- piper artifacts/pilot/piper-cancellation-example --verify-cancellation
