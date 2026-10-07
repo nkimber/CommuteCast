@@ -22,7 +22,8 @@ internal static class ActivationBoundary
             await Workspace.AtomicWriteAsync(marker, JsonSerializer.Serialize(new
             {
                 processId = Environment.ProcessId, point = point.ToString(), package.PackageId,
-                applicationBuild = typeof(Installation).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                applicationBuild = typeof(Installation).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+                schemaVersion = await SqliteSchema.ValidateDatabaseAsync(Path.Combine(lease.Workspace.Root, "queue.db"))
             }));
             await Task.Delay(Timeout.InfiniteTimeSpan);
         }));

@@ -10,6 +10,7 @@ var validScope = args[0] switch
     "inspect" or "inspect-export" or "export" or "seed-preview-removal" or "recover-preview-removal" => args.Length == 2,
     "restore-barrier" => args.Length is 4 or 5, "recover-barrier" => args.Length is 3 or 4,
     "activation-barrier" => args.Length == 4,
+    "legacy-schema-three" or "inspect-schema" => args.Length == 2,
     "export-barrier" => args.Length == 3,
     "promotion-barrier" => args.Length == 4 && args[2] is "chunk" or "final" && args[3] is "before" or "after",
     "promotion-recover" => args.Length == 2,
@@ -57,6 +58,24 @@ if (boundary)
     if (File.Exists(marker) || Directory.Exists(marker) || !Directory.Exists(root)) throw new IOException("A fresh fixture boundary marker and existing private root are required.");
 }
 var workspace = new Workspace(root); using var lease = WorkspaceLease.Acquire(workspace);
+if (args[0] is "legacy-schema-three" or "inspect-schema")
+{
+    var database = Path.Combine(root, "queue.db");
+    var version = await SqliteSchema.ValidateDatabaseAsync(database);
+    if (args[0] == "legacy-schema-three")
+    {
+        if (version != 4) throw new IOException("Use a current synthetic queue for the legacy fixture.");
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection(SqliteSchema.ConnectionString(database, Microsoft.Data.Sqlite.SqliteOpenMode.ReadWrite));
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM audition_ownership";
+        if (Convert.ToInt64(await command.ExecuteScalarAsync()) != 0) throw new IOException("Legacy fixture requires settled preview ownership.");
+        using var transaction = connection.BeginTransaction(); command.Transaction = transaction;
+        command.CommandText = "DROP TABLE audition_ownership; DELETE FROM schema_history WHERE version>3; PRAGMA user_version=3;";
+        await command.ExecuteNonQueryAsync(); transaction.Commit();
+    }
+    Console.WriteLine(JsonSerializer.Serialize(new { version = await SqliteSchema.ValidateDatabaseAsync(database) })); return;
+}
 if (args[0] == "activation-barrier")
 {
     await ActivationBoundary.RunAsync(args, lease, marker); return;

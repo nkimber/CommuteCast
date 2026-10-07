@@ -1,6 +1,8 @@
 param([string]$Executable, [switch]$KeepInstalled, [string]$LegacyPackage,
-    [ValidateSet('Prepared','StateMigrated','BeforeActivation','Activated')][string]$ActivationCrashCheckpoint)
+    [ValidateSet('Prepared','StateMigrated','BeforeActivation','Activated')][string]$ActivationCrashCheckpoint,
+    [switch]$LegacySchemaThree)
 $ErrorActionPreference = 'Stop'
+if ($LegacySchemaThree -and -not $ActivationCrashCheckpoint) { throw 'Legacy schema interruption requires an activation checkpoint.' }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if (-not $Executable) { $Executable = Join-Path $projectRoot 'artifacts\release\CommuteCast-win-x64\app\CommuteCast.Maintenance.exe' }
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) { throw 'Publish the portable application first.' }
@@ -93,6 +95,7 @@ $firstExternalSetup = if ($hasLauncher -and $hasSetupCacheCleanup) { Launcher-Pl
 $activationCrashEvidence = $null
 if ($ActivationCrashCheckpoint) {
     $beforeCrashState = Fixture-State inspect
+    if ($LegacySchemaThree) { Same (Fixture-State legacy-schema-three).version 3 'Initial legacy schema' }
     $marker = Join-Path $fixture 'boundary.json'
     $start = [Diagnostics.ProcessStartInfo]::new($fixtureHost)
     $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $start.WindowStyle = 'Hidden'
@@ -109,6 +112,7 @@ if ($ActivationCrashCheckpoint) {
         }
         $observed = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
         if ($observed.processId -ne $child.Id -or $child.HasExited -or $observed.point -ne $ActivationCrashCheckpoint -or $observed.PackageId -ne $sealed.PackageId) { throw 'Activation marker does not identify the live owned process and revision.' }
+        Same $observed.schemaVersion $(if ($LegacySchemaThree -and $ActivationCrashCheckpoint -eq 'Prepared') { 3 } else { 4 }) 'Schema at actual host-loss boundary'
         $child.Kill($false)
         if (-not $child.WaitForExit(10000)) { throw 'Owned activation host did not terminate.' }
         $null = $childOutput.GetAwaiter().GetResult(); $null = $childErrors.GetAwaiter().GetResult()
@@ -117,12 +121,15 @@ if ($ActivationCrashCheckpoint) {
         $child.Dispose()
     }
     $recovery = Invoke-Tool -Arguments @('recover-install','--root',$privateRoot,'--install-root',$installRoot)
+    Same $recovery.recovered $true 'Pending activation recovered'
+    $recoveredSchema = (Fixture-State inspect-schema).version
+    Same $recoveredSchema $(if ($LegacySchemaThree -and $ActivationCrashCheckpoint -ne 'Activated') { 3 } else { 4 }) 'Schema before ordinary queue reopening'
     $afterCrash = Invoke-Tool -Arguments @('inspect-install','--root',$privateRoot,'--install-root',$installRoot)
     Same $afterCrash.State.CurrentPackageId $(if ($ActivationCrashCheckpoint -eq 'Activated') { $sealed.PackageId } else { $first.State.CurrentPackageId }) 'Recovered activation side of commit'
     Same ((Fixture-State inspect) | ConvertTo-Json -Depth 8 -Compress) ($beforeCrashState | ConvertTo-Json -Depth 8 -Compress) 'Activation host loss preserves frozen private state'
     if (Test-Path -LiteralPath (Join-Path $installRoot 'deployment.pending.json')) { throw 'Activation recovery retained pending intent.' }
     Verify-WindowsIntegration $true
-    $activationCrashEvidence = [ordered]@{passed=$true;point=$ActivationCrashCheckpoint;parentOnlyLoss=$true;boundary=$observed;recoveredPackage=$afterCrash.State.CurrentPackageId;frozenStatePreserved=$true}
+    $activationCrashEvidence = [ordered]@{passed=$true;point=$ActivationCrashCheckpoint;parentOnlyLoss=$true;boundary=$observed;recoveredPackage=$afterCrash.State.CurrentPackageId;recoveredSchema=$recoveredSchema;legacySchemaThree=[bool]$LegacySchemaThree;frozenStatePreserved=$true}
 }
 $second = Invoke-Tool -Arguments @('install', '--install-root', $installRoot, '--package', $b)
 if ($hasLauncher) { Same (Launcher-Plan).Executable $second.Executable 'Stable launcher updated release' }
