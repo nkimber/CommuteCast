@@ -12,6 +12,17 @@ The client project sets `OutputType=WinExe`, `TargetFramework=net10.0-windows`, 
 dotnet build .\CommuteCast.sln -c Release
 ```
 
+If opening the solution appears to close Visual Studio, check whether an existing **CommuteCast** window is still open. A loaded solution shows **8 of 8 projects** in Solution Explorer. To capture a recurring failure, launch the IDE directly with [activity logging](https://learn.microsoft.com/en-us/visualstudio/ide/reference/log-devenv-exe?view=visualstudio) from the repository folder:
+
+```powershell
+$vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Workload.ManagedDesktop -property installationPath
+if (-not $vsPath) { throw 'Visual Studio with the .NET desktop development workload was not found.' }
+$log = Join-Path $env:TEMP ("CommuteCast-VS-" + [guid]::NewGuid().ToString('N') + '.xml')
+& (Join-Path $vsPath 'Common7\IDE\devenv.exe') (Join-Path $PWD 'CommuteCast.sln') /Log $log
+```
+
+The log can contain local paths and IDE details; inspect it locally. If the failure repeats, launch with `/SafeMode /Log $log` to compare with the [default IDE environment and services](https://learn.microsoft.com/en-us/visualstudio/ide/reference/safemode-devenv-exe?view=visualstudio). Preserve the failing log before retrying. A successful SDK or Visual Studio command-line build establishes compilation, while interactive loading and F5 need separate observation.
+
 GitHub's **Windows build and regression** workflow builds the native solution, runs the complete synthetic/audio regression, publishes a self-contained Windows x64 ZIP and verifies a fresh extraction. It pins .NET SDK 10.0.401 (with patch roll-forward), action commit revisions and the SHA256 of the [FFmpeg 8.0.1 test build](https://github.com/GyanD/codexffmpeg/releases/tag/8.0.1). Test reports and successful ZIPs are retained as seven-day Actions artifacts. A passing workflow establishes build/regression/package integrity; actual Docker, native UI, voice judgment, signing and corporate/phone acceptance remain separate.
 
 ## Run on this machine
