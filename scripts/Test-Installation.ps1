@@ -155,6 +155,19 @@ $export = Join-Path $fixture 'separate-exports\keep-export.txt'; Set-Content -Li
 $note = Join-Path $privateRoot 'keep-unrelated.txt'; Set-Content -LiteralPath $note -Value 'Unrelated local sentinel'
 $model = Join-Path $privateRoot 'provisioning-models\keep.txt'; New-Item -ItemType Directory -Path (Split-Path -Parent $model) | Out-Null; Set-Content -LiteralPath $model -Value 'Separate model sentinel'
 if (-not $KeepInstalled) {
+    $preview = Fixture-State seed-preview-removal
+    $previewBefore = Fixture-State inspect
+    $pointerBeforePreview = (Get-FileHash -LiteralPath (Join-Path $installRoot 'installation.json')).Hash
+    $previewRefused = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'remove', '--confirm-remove-local-data') -ExpectedExit 1
+    if ($previewRefused -notmatch 'previews must be stopped or reconciled') { throw 'Unresolved preview ownership did not block packaged private removal.' }
+    Same (Get-FileHash -LiteralPath $preview.path).Hash $preview.hash 'Uninstall refusal preserves original preview bytes'
+    Same (Get-FileHash -LiteralPath (Join-Path $installRoot 'installation.json')).Hash $pointerBeforePreview 'Preview refusal preserves activation'
+    if (Test-Path -LiteralPath (Join-Path $installRoot 'deployment.pending.json')) { throw 'Preview refusal wrote uninstall intent.' }
+    Same ((Fixture-State inspect) | ConvertTo-Json -Depth 8 -Compress) ($previewBefore | ConvertTo-Json -Depth 8 -Compress) 'Preview refusal preserves frozen narration state'
+    Verify-WindowsIntegration $true
+    $previewRecovery = Fixture-State recover-preview-removal
+    Same $previewRecovery.reconciled 1 'Original-workspace preview reconciliation'
+    if (Test-Path -LiteralPath $preview.path) { throw 'Reconciled original preview survived.' }
     $retained = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'retain')
     Verify-WindowsIntegration $false
     if (Test-Path -LiteralPath $undone.Executable) { throw 'Tracked application binary survived uninstall.' }
@@ -179,6 +192,7 @@ $report['launcherPlanTimings'] = $launcherPlanTimings.ToArray()
 $report['bundledRuntimeInspected'] = $hasLauncher
 $report['externalSetup'] = $externalSetup
 $report['windowsIntegrationInspected'] = $hasWindowsIntegration
+$report['previewRemovalGuardExecuted'] = (-not $KeepInstalled)
 $report['setupCacheCleanup'] = $cacheCleanupEvidence
 $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $fixture 'report.json') -Encoding utf8
 $report | ConvertTo-Json -Depth 5

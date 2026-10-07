@@ -7,7 +7,7 @@ if (args.Length < 2) throw new ArgumentException("Choose an isolated fixture ope
 var validScope = args[0] switch
 {
     "seed" or "seed-audio" or "seed-export" => args.Length is 2 or 3 && (args.Length == 2 || args[2] is "original" or "later"),
-    "inspect" or "inspect-export" or "export" => args.Length == 2,
+    "inspect" or "inspect-export" or "export" or "seed-preview-removal" or "recover-preview-removal" => args.Length == 2,
     "restore-barrier" => args.Length is 4 or 5, "recover-barrier" => args.Length is 3 or 4,
     "export-barrier" => args.Length == 3,
     "promotion-barrier" => args.Length == 4 && args[2] is "chunk" or "final" && args[3] is "before" or "after",
@@ -56,6 +56,10 @@ if (boundary)
     if (File.Exists(marker) || Directory.Exists(marker) || !Directory.Exists(root)) throw new IOException("A fresh fixture boundary marker and existing private root are required.");
 }
 var workspace = new Workspace(root); using var lease = WorkspaceLease.Acquire(workspace);
+if (args[0] is "seed-preview-removal" or "recover-preview-removal")
+{
+    await PreviewRemovalFixture.RunAsync(args[0], workspace); return;
+}
 if (args[0] is "audition-write-barrier" or "audition-write-recover")
 {
     await AuditionWriteBoundary.RunAsync(args, workspace, marker); return;
