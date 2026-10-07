@@ -8,7 +8,7 @@ using System.Text.Json;
 // observations are synthetic, in process; this host never contacts a daemon.
 internal static class SpeechWriteBoundary
 {
-    private const string Image = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    internal const string Image = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private static readonly DateTimeOffset Created = new(2026, 10, 6, 12, 0, 0, TimeSpan.Zero);
     private const string Source = "Preserve this frozen synthetic source.";
     internal static async Task RunAsync(string[] args, Workspace workspace, string marker)
@@ -82,7 +82,7 @@ internal static class SpeechWriteBoundary
         }
     }
 
-    private sealed class BoundaryBody(byte[] wave, Func<Task> barrier) : MemoryStream(wave)
+    internal sealed class BoundaryBody(byte[] wave, Func<Task> barrier) : MemoryStream(wave)
     {
         private int reads;
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
@@ -91,7 +91,7 @@ internal static class SpeechWriteBoundary
             return await base.ReadAsync(buffer, ct);
         }
     }
-    private sealed class SyntheticHttp(NarrationSettings settings, byte[] wave) : HttpMessageHandler
+    internal sealed class SyntheticHttp(NarrationSettings settings, byte[] wave) : HttpMessageHandler
     {
         private long sequence; private readonly string instance = new('d', 32);
         public Func<Stream>? Body { get; set; }
@@ -112,7 +112,7 @@ internal static class SpeechWriteBoundary
         }
         private static HttpResponseMessage Json(object value) => new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(value), System.Text.Encoding.UTF8, "application/json") };
     }
-    private sealed class SyntheticRuntime(string engine) : ILocalSpeechRuntime
+    internal sealed class SyntheticRuntime(string engine) : ILocalSpeechRuntime
     {
         public Task<ProcessResult> DockerAsync(IReadOnlyList<string> args, TimeSpan timeout, CancellationToken ct)
         {

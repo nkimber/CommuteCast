@@ -16,7 +16,8 @@ var validScope = args[0] switch
     "write-recover" => args.Length == 2,
     "audio-write-barrier" or "audio-write-recover" => args.Length == 3 && args[2] is "wav" or "mp3",
     "speech-write-barrier" => args.Length == 4 && args[2] is "kokoro" or "piper" && args[3] is "before-copy" or "during-copy" or "before-rename" or "after-rename" or "after-complete-save",
-    "speech-write-recover" => args.Length == 3 && args[2] is "kokoro" or "piper", _ => false
+    "speech-write-recover" or "audition-write-recover" => args.Length == 3 && args[2] is "kokoro" or "piper",
+    "audition-write-barrier" => args.Length == 4 && args[2] is "kokoro" or "piper" && args[3] is "before-copy" or "during-copy" or "before-rename" or "after-rename" or "after-complete-save", _ => false
 };
 if (!validScope) throw new ArgumentException("Invalid fixture command scope.");
 var repository = new DirectoryInfo(AppContext.BaseDirectory);
@@ -55,6 +56,10 @@ if (boundary)
     if (File.Exists(marker) || Directory.Exists(marker) || !Directory.Exists(root)) throw new IOException("A fresh fixture boundary marker and existing private root are required.");
 }
 var workspace = new Workspace(root); using var lease = WorkspaceLease.Acquire(workspace);
+if (args[0] is "audition-write-barrier" or "audition-write-recover")
+{
+    await AuditionWriteBoundary.RunAsync(args, workspace, marker); return;
+}
 if (args[0] is "speech-write-barrier" or "speech-write-recover")
 {
     await SpeechWriteBoundary.RunAsync(args, workspace, marker); return;

@@ -72,6 +72,8 @@ pwsh -File scripts\Test-PrivateWriteCrash.ps1
 # Actual adapter-host loss at five download checkpoints per synthetic contract.
 # No real Docker daemon, HTTP server or speech model is contacted.
 pwsh -File scripts\Test-SpeechWriteCrash.ps1
+# Actual preview-host loss at five checkpoints per synthetic contract; source-free ledger recovery.
+pwsh -File scripts\Test-AuditionWriteCrash.ps1
 # Retained older binary against an isolated current-schema queue.
 # Supply the maintenance executable from a previously extracted older-schema package.
 pwsh -File scripts\Test-SchemaCompatibility.ps1 -OlderMaintenance C:\path\to\older\app\CommuteCast.Maintenance.exe
