@@ -1,6 +1,6 @@
 param([string]$Executable, [switch]$KeepInstalled, [string]$LegacyPackage,
     [ValidateSet('Prepared','StateMigrated','BeforeActivation','Activated','MigrationBeforeCommit')][string]$ActivationCrashCheckpoint,
-    [switch]$LegacySchemaThree)
+    [switch]$LegacySchemaThree, [switch]$RollbackCrashAfterRestore)
 $ErrorActionPreference = 'Stop'
 if ($LegacySchemaThree -and -not $ActivationCrashCheckpoint) { throw 'Legacy schema interruption requires an activation checkpoint.' }
 if ($ActivationCrashCheckpoint -eq 'MigrationBeforeCommit' -and -not $LegacySchemaThree) { throw 'Migration transaction interruption requires LegacySchemaThree.' }
@@ -143,6 +143,39 @@ $beforePointer = (Get-FileHash -LiteralPath (Join-Path $installRoot 'installatio
 $unconfirmed = Invoke-Tool -Arguments @('rollback', '--install-root', $installRoot) -ExpectedExit 1
 if ($unconfirmed -notmatch 'requires.*confirm-replace') { throw 'Rollback did not require explicit replacement intent.' }
 Same (Get-FileHash -LiteralPath (Join-Path $installRoot 'installation.json')).Hash $beforePointer 'Unconfirmed rollback preserves activation'
+$rollbackCrashEvidence = $null
+if ($RollbackCrashAfterRestore) {
+    $beforeRollback = Fixture-State inspect
+    $rollbackMarker = Join-Path $fixture 'rollback-boundary.json'
+    $rollbackStart = [Diagnostics.ProcessStartInfo]::new($fixtureHost)
+    $rollbackStart.UseShellExecute = $false; $rollbackStart.CreateNoWindow = $true; $rollbackStart.WindowStyle = 'Hidden'
+    $rollbackStart.RedirectStandardOutput = $true; $rollbackStart.RedirectStandardError = $true
+    foreach ($argument in @('rollback-barrier',$privateRoot)) { $rollbackStart.ArgumentList.Add($argument) }
+    $rollbackHost = [Diagnostics.Process]::Start($rollbackStart)
+    $rollbackOutput = $rollbackHost.StandardOutput.ReadToEndAsync(); $rollbackErrors = $rollbackHost.StandardError.ReadToEndAsync()
+    try {
+        $deadline = [datetime]::UtcNow.AddSeconds(180)
+        while (-not (Test-Path -LiteralPath $rollbackMarker -PathType Leaf)) {
+            if ($rollbackHost.HasExited) { throw ('Rollback host exited early: ' + $rollbackErrors.GetAwaiter().GetResult()) }
+            if ([datetime]::UtcNow -gt $deadline) { throw 'Rollback boundary was not observed within 180 seconds.' }
+            Start-Sleep -Milliseconds 50
+        }
+        $rollbackObserved = Get-Content -LiteralPath $rollbackMarker -Raw | ConvertFrom-Json
+        if ($rollbackObserved.processId -ne $rollbackHost.Id -or $rollbackHost.HasExited -or $rollbackObserved.point -ne 'StateRestored' -or $rollbackObserved.restoredJobs -ne 1) { throw 'Rollback marker does not identify the live owned host and restored fixture.' }
+        $rollbackHost.Kill($false)
+        if (-not $rollbackHost.WaitForExit(10000)) { throw 'Owned rollback host did not terminate.' }
+        $null = $rollbackOutput.GetAwaiter().GetResult(); $null = $rollbackErrors.GetAwaiter().GetResult()
+    } finally {
+        if (-not $rollbackHost.HasExited) { $rollbackHost.Kill($false); $rollbackHost.WaitForExit(10000) | Out-Null }
+        $rollbackHost.Dispose()
+    }
+    Same (Invoke-Tool -Arguments @('recover-install','--root',$privateRoot,'--install-root',$installRoot)).recovered $true 'Interrupted rollback recovered'
+    Same (Invoke-Tool -Arguments @('inspect-install','--root',$privateRoot,'--install-root',$installRoot)).State.CurrentPackageId $second.State.CurrentPackageId 'Uncommitted rollback retains current package'
+    Same ((Fixture-State inspect) | ConvertTo-Json -Depth 8 -Compress) ($beforeRollback | ConvertTo-Json -Depth 8 -Compress) 'Rollback recovery restores exact later private state'
+    if (Test-Path -LiteralPath (Join-Path $installRoot 'deployment.pending.json')) { throw 'Rollback recovery retained pending intent.' }
+    Verify-WindowsIntegration $true
+    $rollbackCrashEvidence = [ordered]@{passed=$true;parentOnlyLoss=$true;boundary=$rollbackObserved;laterStatePreserved=$true}
+}
 $rolledBack = Invoke-Tool -Arguments @('rollback', '--install-root', $installRoot, '--confirm-replace-local-data')
 Same $rolledBack.State.CurrentPackageId $first.State.CurrentPackageId 'Rollback binary identity'
 if ($hasLauncher) { Same (Launcher-Plan).Executable $rolledBack.Executable 'Stable launcher rolled-back release' }
@@ -240,6 +273,7 @@ $report['externalSetup'] = $externalSetup
 $report['windowsIntegrationInspected'] = $hasWindowsIntegration
 $report['previewRemovalGuardExecuted'] = (-not $KeepInstalled)
 $report['activationHostLoss'] = $activationCrashEvidence
+$report['rollbackHostLoss'] = $rollbackCrashEvidence
 $report['setupCacheCleanup'] = $cacheCleanupEvidence
 $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $fixture 'report.json') -Encoding utf8
 $report | ConvertTo-Json -Depth 5
