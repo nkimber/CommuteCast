@@ -1,5 +1,7 @@
 # Verification matrix
 
+Current container-log privacy observation (2026-10-07): bounded retained logs from both owned real services contain zero matches for seven known acceptance-source/title/export-path fragments. Raw logs stay in ignored local evidence; source review finds fixed speech errors without request-body logging. See Acceptance.md for scope. This does not prove arbitrary inputs, all failures or complete support-bundle privacy.
+
 Current real private-removal refresh (2026-10-07): clean `601fbde` passes both engines' five-chunk technical-profile generation and completed-job private deletion. Eight private receipts are verified; unknown files and durable intent survive refusal, retry removes owned private files/history, and managed exports/unrelated output remain intact. Export hashes are independently rechecked. Exact reports and timing scope appear in Acceptance.md. Active cancellation, host interruption, native deletion and remaining manual/external gates remain separate.
 
 Current hosted package refresh (2026-10-07): source `5d54826` passes native WPF build, **756/756 hosted regression cases, zero failures/skips**, publication and extraction. Downloaded TRX and fresh extracted Maintenance independently verify matching builds, 431 files and schema 0–4. Exact archive/package identity and report appear in Acceptance.md. Production runtime is unchanged since `db166a8`; prior lifecycle evidence retains its package scope. Native, listening/resources, sleep/wake, signing/licensing and external acceptance remain open.
