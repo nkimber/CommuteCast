@@ -1,4 +1,6 @@
 # Verification matrix
+Current hosted checkpoint (2026-10-07): source `db166a8`, including both title corrections and the expanded corpus, passes **756/756 hosted regression cases, zero failures/skips**, native WPF build, portable publication and fresh extraction. The downloaded ZIP independently verifies 431 files, matching application builds and schema 0–4. Acceptance.md records run, package/hash and private report. Earlier package/lifecycle evidence retains its earlier build scope; current native/real-engine/external gates remain open.
+
 Latest Compose correction (2026-10-07): automatic title inspection covers the full supported input limit rather than the first 2,000 characters. Late-heading core cases and all 36 focused IntegrityTests pass; Visual Studio MSBuild builds native WPF. Native setter interaction/latency and updated full regression/package remain unverified.
 
 Latest source correction (2026-10-07): suggested-title truncation preserves valid UTF-16 surrogate pairs at the 100-unit boundary. All 34 focused IntegrityTests pass; the previously verified `d8592d3` package predates this correction. Full updated regression/package and native/real-engine/external acceptance remain separate.
