@@ -1,7 +1,9 @@
 param([string]$Executable, [switch]$KeepInstalled, [string]$LegacyPackage,
     [ValidateSet('Prepared','StateMigrated','BeforeActivation','Activated','MigrationBeforeCommit')][string]$ActivationCrashCheckpoint,
-    [switch]$LegacySchemaThree, [switch]$RollbackCrashAfterRestore, [switch]$RollbackCrashAfterCommit)
+    [switch]$LegacySchemaThree, [switch]$RollbackCrashAfterRestore, [switch]$RollbackCrashAfterCommit,
+    [switch]$UninstallCrashAfterItem)
 $ErrorActionPreference = 'Stop'
+if ($UninstallCrashAfterItem -and $KeepInstalled) { throw 'Uninstall interruption requires the uninstall suite.' }
 if ($RollbackCrashAfterRestore -and $RollbackCrashAfterCommit) { throw 'Choose one rollback interruption boundary per fixture.' }
 if ($LegacySchemaThree -and -not $ActivationCrashCheckpoint) { throw 'Legacy schema interruption requires an activation checkpoint.' }
 if ($ActivationCrashCheckpoint -eq 'MigrationBeforeCommit' -and -not $LegacySchemaThree) { throw 'Migration transaction interruption requires LegacySchemaThree.' }
@@ -237,6 +239,7 @@ if ($firstExternalSetup -and $hasSetupCacheCleanup) {
 $export = Join-Path $fixture 'separate-exports\keep-export.txt'; Set-Content -LiteralPath $export -Value 'Separate export sentinel'
 $note = Join-Path $privateRoot 'keep-unrelated.txt'; Set-Content -LiteralPath $note -Value 'Unrelated local sentinel'
 $model = Join-Path $privateRoot 'provisioning-models\keep.txt'; New-Item -ItemType Directory -Path (Split-Path -Parent $model) | Out-Null; Set-Content -LiteralPath $model -Value 'Separate model sentinel'
+$uninstallCrashEvidence = $null
 if (-not $KeepInstalled) {
     $preview = Fixture-State seed-preview-removal
     $previewBefore = Fixture-State inspect
@@ -251,7 +254,39 @@ if (-not $KeepInstalled) {
     $previewRecovery = Fixture-State recover-preview-removal
     Same $previewRecovery.reconciled 1 'Original-workspace preview reconciliation'
     if (Test-Path -LiteralPath $preview.path) { throw 'Reconciled original preview survived.' }
-    $retained = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'retain')
+    if ($UninstallCrashAfterItem) {
+        $beforeUninstall = Fixture-State inspect
+        $uninstallMarker = Join-Path $fixture 'uninstall-boundary.json'
+        $uninstallStart = [Diagnostics.ProcessStartInfo]::new($fixtureHost)
+        $uninstallStart.UseShellExecute = $false; $uninstallStart.CreateNoWindow = $true; $uninstallStart.WindowStyle = 'Hidden'
+        $uninstallStart.RedirectStandardOutput = $true; $uninstallStart.RedirectStandardError = $true
+        foreach ($argument in @('uninstall-barrier',$privateRoot)) { $uninstallStart.ArgumentList.Add($argument) }
+        $uninstallHost = [Diagnostics.Process]::Start($uninstallStart)
+        $uninstallOutput = $uninstallHost.StandardOutput.ReadToEndAsync(); $uninstallErrors = $uninstallHost.StandardError.ReadToEndAsync()
+        try {
+            $deadline = [datetime]::UtcNow.AddSeconds(180)
+            while (-not (Test-Path -LiteralPath $uninstallMarker -PathType Leaf)) {
+                if ($uninstallHost.HasExited) { throw ('Uninstall host exited early: ' + $uninstallErrors.GetAwaiter().GetResult()) }
+                if ([datetime]::UtcNow -gt $deadline) { throw 'Uninstall boundary was not observed within 180 seconds.' }
+                Start-Sleep -Milliseconds 50
+            }
+            $uninstallObserved = Get-Content -LiteralPath $uninstallMarker -Raw | ConvertFrom-Json
+            if ($uninstallObserved.processId -ne $uninstallHost.Id -or $uninstallHost.HasExited -or $uninstallObserved.point -ne 'ItemRemoved' -or -not $uninstallObserved.item.StartsWith('Package/') -or (Test-Path -LiteralPath $uninstallObserved.removed)) { throw 'Uninstall marker does not identify the live owned host and actual removal.' }
+            $uninstallHost.Kill($false)
+            if (-not $uninstallHost.WaitForExit(10000)) { throw 'Owned uninstall host did not terminate.' }
+            $null = $uninstallOutput.GetAwaiter().GetResult(); $null = $uninstallErrors.GetAwaiter().GetResult()
+        } finally {
+            if (-not $uninstallHost.HasExited) { $uninstallHost.Kill($false); $uninstallHost.WaitForExit(10000) | Out-Null }
+            $uninstallHost.Dispose()
+        }
+        Same (Invoke-Tool -Arguments @('recover-install','--root',$privateRoot,'--install-root',$installRoot)).recovered $true 'Interrupted uninstall recovered'
+        $retained = Invoke-Tool -Arguments @('inspect-install','--root',$privateRoot,'--install-root',$installRoot)
+        Same $retained.State.CurrentPackageId $null 'Recovered uninstall has no active package'
+        Same ((Fixture-State inspect) | ConvertTo-Json -Depth 8 -Compress) ($beforeUninstall | ConvertTo-Json -Depth 8 -Compress) 'Retain-data recovery preserves exact private state'
+        if (Test-Path -LiteralPath (Join-Path $installRoot 'deployment.pending.json')) { throw 'Uninstall recovery retained pending intent.' }
+        Same (Invoke-Tool -Arguments @('recover-install','--root',$privateRoot,'--install-root',$installRoot)).recovered $false 'Uninstall recovery idempotence'
+        $uninstallCrashEvidence = [ordered]@{passed=$true;parentOnlyLoss=$true;boundary=$uninstallObserved;privateStatePreserved=$true;idempotent=$true}
+    } else { $retained = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'retain') }
     Verify-WindowsIntegration $false
     if (Test-Path -LiteralPath $undone.Executable) { throw 'Tracked application binary survived uninstall.' }
     if ($hasLauncher -and (Test-Path -LiteralPath (Join-Path $installRoot 'CommuteCast.exe'))) { throw 'Owned stable launcher survived uninstall.' }
@@ -278,6 +313,7 @@ $report['windowsIntegrationInspected'] = $hasWindowsIntegration
 $report['previewRemovalGuardExecuted'] = (-not $KeepInstalled)
 $report['activationHostLoss'] = $activationCrashEvidence
 $report['rollbackHostLoss'] = $rollbackCrashEvidence
+$report['uninstallHostLoss'] = $uninstallCrashEvidence
 $report['setupCacheCleanup'] = $cacheCleanupEvidence
 $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $fixture 'report.json') -Encoding utf8
 $report | ConvertTo-Json -Depth 5

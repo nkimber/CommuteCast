@@ -10,7 +10,7 @@ var validScope = args[0] switch
     "inspect" or "inspect-export" or "export" or "seed-preview-removal" or "recover-preview-removal" => args.Length == 2,
     "restore-barrier" => args.Length is 4 or 5, "recover-barrier" => args.Length is 3 or 4,
     "activation-barrier" => args.Length == 4,
-    "legacy-schema-three" or "inspect-schema" => args.Length == 2,
+    "legacy-schema-three" or "inspect-schema" or "uninstall-barrier" => args.Length == 2,
     "rollback-barrier" => args.Length == 2 || args.Length == 3 && args[2] == "Activated",
     "export-barrier" => args.Length == 3,
     "promotion-barrier" => args.Length == 4 && args[2] is "chunk" or "final" && args[3] is "before" or "after",
@@ -59,6 +59,7 @@ if (boundary)
     if (File.Exists(marker) || Directory.Exists(marker) || !Directory.Exists(root)) throw new IOException("A fresh fixture boundary marker and existing private root are required.");
 }
 var workspace = new Workspace(root); using var lease = WorkspaceLease.Acquire(workspace);
+if (args[0] == "uninstall-barrier") { await UninstallBoundary.RunAsync(lease); return; }
 if (args[0] == "rollback-barrier") { await RollbackBoundary.RunAsync(lease, args.Length == 3); return; }
 if (args[0] is "legacy-schema-three" or "inspect-schema")
 {
