@@ -5,7 +5,8 @@ using System.Text.Json;
 
 internal static class BulkDeletionBoundary
 {
-    private sealed record Plan(string[] Selected, string Unselected, string UnselectedJson, string ArtifactHash);
+    private sealed record ExportFile(string Id, string Name, string Hash);
+    private sealed record Plan(string[] Selected, string Unselected, string UnselectedJson, string ArtifactHash, bool DeleteExports, ExportFile[] Exports);
     internal static async Task RunAsync(string[] args, Workspace workspace, string marker)
     {
         var durable = new SqliteJobStore(workspace);
@@ -14,32 +15,46 @@ internal static class BulkDeletionBoundary
         {
             if ((await durable.LoadAsync()).Count != 0 || File.Exists(marker) || File.Exists(planPath)) throw new IOException("Use a fresh bulk deletion fixture.");
             var jobs = new List<Job>();
+            var exports = new List<ExportFile>();
+            var exportRoot = Path.Combine(Path.GetDirectoryName(workspace.Root)!, "separate-exports");
+            var withExports = args.Length == 4;
+            var deleteExports = withExports && args[3] == "remove-exports";
+            if (withExports) { Directory.CreateDirectory(exportRoot); await File.WriteAllTextAsync(Path.Combine(exportRoot, "unrelated.mp3"), "Preserve unrelated export sentinel."); }
             for (var index = 0; index < 4; index++)
             {
                 var job = new Job { Title = "Synthetic bulk " + index, Source = "Preserve unselected narration.", Stage = JobStage.Failed };
                 var directory = workspace.JobDirectory(job.Id); Directory.CreateDirectory(directory);
                 await File.WriteAllTextAsync(Path.Combine(directory, "source.json"), "Synthetic owned source " + index);
-                await PrivateJobFiles.RecordAsync(job, directory, "source.json", default); await durable.SaveAsync(job); jobs.Add(job);
+                await PrivateJobFiles.RecordAsync(job, directory, "source.json", default);
+                if (withExports)
+                {
+                    job.Destination = exportRoot; job.ExportName = ExportPublisher.Filename(job);
+                    // File-ownership sentinels, not encoded/audio acceptance samples.
+                    var export = Path.Combine(exportRoot, job.ExportName); await File.WriteAllTextAsync(export, "Synthetic recorded export " + index);
+                    job.ExportHash = await Workspace.HashFileAsync(export); job.ExportCommitted = true; job.Stage = JobStage.Exported;
+                    exports.Add(new(job.Id, job.ExportName, job.ExportHash));
+                }
+                await durable.SaveAsync(job); jobs.Add(job);
             }
             await File.WriteAllTextAsync(Path.Combine(workspace.Root, "unrelated.txt"), "Preserve unrelated root bytes.");
             var plan = new Plan(jobs.Take(3).Select(j => j.Id).ToArray(), jobs[3].Id, JsonSerializer.Serialize(jobs[3]),
-                await Workspace.HashFileAsync(Path.Combine(workspace.JobDirectory(jobs[3].Id), "source.json")));
+                await Workspace.HashFileAsync(Path.Combine(workspace.JobDirectory(jobs[3].Id), "source.json")), deleteExports, exports.ToArray());
             await Workspace.AtomicWriteAsync(planPath, JsonSerializer.Serialize(plan));
             async Task HoldAsync(string point)
             {
                 if (point != args[2]) return;
                 var remaining = (await durable.LoadAsync()).Where(j => plan.Selected.Contains(j.Id)).ToArray();
-                if (remaining.Any(j => !j.DeletionRequested || j.DeleteExportRequested)) throw new IOException("All remaining selected intents must be durable with private-only scope.");
+                if (remaining.Any(j => !j.DeletionRequested || j.DeleteExportRequested != deleteExports)) throw new IOException("All remaining selected intents must preserve recorded export consent.");
                 await Workspace.AtomicWriteAsync(marker, JsonSerializer.Serialize(new
                 {
-                    processId = Environment.ProcessId, point, remainingSelected = remaining.Length,
+                    processId = Environment.ProcessId, point, remainingSelected = remaining.Length, withExports, deleteExports,
                     applicationBuild = typeof(QueueCoordinator).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                 }));
                 await Task.Delay(Timeout.InfiniteTimeSpan);
             }
             var observed = new ObservedStore(durable, HoldAsync);
             await using var queue = Queue(workspace, observed); queue.Paused = true; await queue.InitializeAsync();
-            await queue.DeleteManyAsync(plan.Selected, false);
+            await queue.DeleteManyAsync(plan.Selected, deleteExports);
             throw new IOException("Bulk deletion did not reach the selected boundary.");
         }
         var saved = JsonSerializer.Deserialize<Plan>(await File.ReadAllTextAsync(planPath)) ?? throw new IOException("Missing bulk fixture plan.");
@@ -50,7 +65,16 @@ internal static class BulkDeletionBoundary
             saved.Selected.Any(id => Directory.Exists(workspace.JobDirectory(id))) ||
             await File.ReadAllTextAsync(Path.Combine(workspace.Root, "unrelated.txt")) != "Preserve unrelated root bytes.")
             throw new IOException("Bulk recovery changed unselected state or retained selected files.");
-        Console.WriteLine(JsonSerializer.Serialize(new { passed = true, selectedRemoved = 3, unselectedPreserved = true, unrelatedPreserved = true }));
+        var destination = Path.Combine(Path.GetDirectoryName(workspace.Root)!, "separate-exports");
+        foreach (var export in saved.Exports)
+        {
+            var path = Path.Combine(destination, export.Name);
+            if (saved.DeleteExports && saved.Selected.Contains(export.Id))
+            { if (File.Exists(path)) throw new IOException("Consented selected export survived recovery."); }
+            else if (!File.Exists(path) || await Workspace.HashFileAsync(path) != export.Hash) throw new IOException("Preserved export bytes changed.");
+        }
+        if (saved.Exports.Length != 0 && await File.ReadAllTextAsync(Path.Combine(destination, "unrelated.mp3")) != "Preserve unrelated export sentinel.") throw new IOException("Unrelated export changed.");
+        Console.WriteLine(JsonSerializer.Serialize(new { passed = true, selectedRemoved = 3, unselectedPreserved = true, unrelatedPreserved = true, exportScopeVerified = saved.Exports.Length != 0, saved.DeleteExports }));
     }
     private static QueueCoordinator Queue(Workspace workspace, IJobStore store) => new(workspace, store, new NeverProvider(), new(new()), new(workspace, store));
     private sealed class NeverProvider : ISpeechProvider
