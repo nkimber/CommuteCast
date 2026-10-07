@@ -105,6 +105,11 @@ public interface IDurableSpeechProvider : ISpeechProvider
 {
     Task SynthesizeAsync(Job job, NarrationSettings settings, string text, string output, Func<Task> checkpoint, CancellationToken ct);
 }
+public sealed record AuditionWriteJournal(string Id, DateTimeOffset CreatedUtc, List<PrivateArtifactReceipt> Artifacts);
+public interface IDurableAuditionSpeechProvider : ISpeechProvider
+{
+    Task SynthesizeAuditionAsync(AuditionWriteJournal journal, NarrationSettings settings, string text, string output, Func<Task> checkpoint, CancellationToken ct);
+}
 public interface IAudioPipeline
 {
     Task<AudioInfo> ValidateChunkAsync(string path, string text, CancellationToken ct);

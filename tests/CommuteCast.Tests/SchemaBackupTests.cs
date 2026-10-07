@@ -7,11 +7,41 @@ namespace CommuteCast.Tests;
 
 public class SchemaBackupTests
 {
+    [Fact] public async Task VersionThreeMigrationAddsEmptyPreviewOwnershipAndPreservesExactPayloadAndSnapshot()
+    {
+        using var test = new TestWorkspace(); var job = MakeJob();
+        job.PrivateArtifacts.Add(new("assembled.wav", "", CreationIdentity: new(1, 1, new string('A', 32), 1)));
+        var store = new SqliteJobStore(test.Workspace); await store.SaveAsync(job);
+        await ExecuteAsync(Database(test), "DROP TABLE audition_ownership; DELETE FROM schema_history WHERE version>3; PRAGMA user_version=3");
+        var original = await PayloadAsync(Database(test)); Assert.Equal(3, await SqliteSchema.ValidateDatabaseAsync(Database(test)));
+        await store.LoadAsync(); Assert.Equal(original, await PayloadAsync(Database(test)));
+        Assert.Equal(SqliteSchema.CurrentVersion, await SqliteSchema.ValidateDatabaseAsync(Database(test)));
+        Assert.Equal(0, await ScalarAsync(Database(test), "SELECT count(*) FROM audition_ownership"));
+        var snapshot = Assert.Single(Directory.GetFiles(Path.Combine(test.Workspace.Root, "schema-backups"), "*.db"));
+        Assert.Equal(3, await SqliteSchema.ValidateDatabaseAsync(snapshot)); Assert.Equal(original, await PayloadAsync(snapshot));
+        using var receipt = JsonDocument.Parse(await File.ReadAllTextAsync(snapshot + ".json"));
+        Assert.Equal(await Workspace.HashFileAsync(snapshot), receipt.RootElement.GetProperty("sha256").GetString());
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public async Task VersionThreeMigrationFailureOrCancellationPreservesOriginalTablesAndPayload(bool cancel)
+    {
+        using var test = new TestWorkspace(); await new SqliteJobStore(test.Workspace).SaveAsync(MakeJob());
+        await ExecuteAsync(Database(test), "DROP TABLE audition_ownership; DELETE FROM schema_history WHERE version>3; PRAGMA user_version=3");
+        var payload = await PayloadAsync(Database(test)); using var cancellation = new CancellationTokenSource();
+        var store = new SqliteJobStore(test.Workspace, cancel ? new CancelMigration(cancellation) : new FailingMigration());
+        if (cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.LoadAsync(cancellation.Token));
+        else await Assert.ThrowsAsync<IOException>(() => store.LoadAsync());
+        Assert.Equal(3, await SqliteSchema.ValidateDatabaseAsync(Database(test))); Assert.Equal(payload, await PayloadAsync(Database(test)));
+        Assert.Equal(0, await ScalarAsync(Database(test), "SELECT count(*) FROM sqlite_schema WHERE name='audition_ownership'"));
+        Assert.Equal(3, await ScalarAsync(Database(test), "SELECT count(*) FROM schema_history"));
+    }
+
     [Fact] public async Task VersionTwoMigrationPreservesPayloadAndVerifiedOriginalSnapshot()
     {
         using var test = new TestWorkspace(); var job = MakeJob(); var store = new SqliteJobStore(test.Workspace);
         await store.SaveAsync(job);
-        await ExecuteAsync(Database(test), "DELETE FROM schema_history WHERE version>2; PRAGMA user_version=2");
+        await ExecuteAsync(Database(test), "DROP TABLE audition_ownership; DELETE FROM schema_history WHERE version>2; PRAGMA user_version=2");
         var original = await PayloadAsync(Database(test));
         Assert.Equal(2, await SqliteSchema.ValidateDatabaseAsync(Database(test)));
         Assert.Equal(JsonSerializer.Serialize(job), JsonSerializer.Serialize(Assert.Single(await store.LoadAsync())));
@@ -32,7 +62,7 @@ public class SchemaBackupTests
         await using (var held = ExportStagingFile.OpenIfPresent(directory, "complete.mp3")!)
             job.PrivateArtifacts.Add(new("complete.mp3", await held.HashAsync(default), held.Identity));
         var store = new SqliteJobStore(test.Workspace); await store.SaveAsync(job);
-        await ExecuteAsync(Database(test), "DELETE FROM schema_history WHERE version>1; PRAGMA user_version=1");
+        await ExecuteAsync(Database(test), "DROP TABLE audition_ownership; DELETE FROM schema_history WHERE version>1; PRAGMA user_version=1");
         var originalPayload = await PayloadAsync(Database(test)); var audioHash = await Workspace.HashFileAsync(audio);
         var restored = Assert.Single(await store.LoadAsync());
         Assert.Equal(originalPayload, await PayloadAsync(Database(test)));
@@ -51,7 +81,7 @@ public class SchemaBackupTests
     public async Task VersionOneMigrationFailureOrCancellationLeavesVersionHistoryAndPayloadIntact(bool cancel)
     {
         using var test = new TestWorkspace(); await new SqliteJobStore(test.Workspace).SaveAsync(MakeJob());
-        await ExecuteAsync(Database(test), "DELETE FROM schema_history WHERE version>1; PRAGMA user_version=1");
+        await ExecuteAsync(Database(test), "DROP TABLE audition_ownership; DELETE FROM schema_history WHERE version>1; PRAGMA user_version=1");
         var payload = await PayloadAsync(Database(test)); using var cancellation = new CancellationTokenSource();
         var store = new SqliteJobStore(test.Workspace, cancel ? new CancelMigration(cancellation) : new FailingMigration());
         if (cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.LoadAsync(cancellation.Token));
@@ -63,7 +93,7 @@ public class SchemaBackupTests
     [Fact] public async Task ReadOnlyVersionOneValidationDoesNotUpgradeOrCreateSnapshot()
     {
         using var test = new TestWorkspace(); await new SqliteJobStore(test.Workspace).SaveAsync(MakeJob());
-        await ExecuteAsync(Database(test), "DELETE FROM schema_history WHERE version>1; PRAGMA user_version=1");
+        await ExecuteAsync(Database(test), "DROP TABLE audition_ownership; DELETE FROM schema_history WHERE version>1; PRAGMA user_version=1");
         var hash = await Workspace.HashFileAsync(Database(test));
         Assert.Equal(1, await SqliteSchema.ValidateDatabaseAsync(Database(test))); Assert.Equal(hash, await Workspace.HashFileAsync(Database(test)));
         Assert.False(Directory.Exists(Path.Combine(test.Workspace.Root, "schema-backups")));

@@ -152,7 +152,7 @@ public static class PrivateJobFiles
     // Finish a provider download without reopening its held file. Both sides carry
     // identity until the nonoverwriting rename and final receipt have been saved.
     public static async Task CompleteAndMoveCreatedAsync(Job job, string directory, string source, string destination,
-        ExportStagingFile held, Func<Task> checkpoint, CancellationToken ct)
+        ExportStagingFile held, Func<Task> checkpoint, CancellationToken ct, bool retainDestinationIdentity = false)
     {
         Inventory(job);
         if (!held.IsAt(directory, source) || source.Equals(destination, StringComparison.OrdinalIgnoreCase) ||
@@ -167,7 +167,7 @@ public static class PrivateJobFiles
         await checkpoint(); ct.ThrowIfCancellationRequested();
         held.Rename(destination);
         job.PrivateArtifacts.RemoveAll(r => r.RelativePath.Equals(source, StringComparison.OrdinalIgnoreCase) || r.RelativePath.Equals(destination, StringComparison.OrdinalIgnoreCase));
-        job.PrivateArtifacts.Add(new(destination, hash));
+        job.PrivateArtifacts.Add(new(destination, hash, retainDestinationIdentity ? held.Identity : null));
         await checkpoint();
     }
 

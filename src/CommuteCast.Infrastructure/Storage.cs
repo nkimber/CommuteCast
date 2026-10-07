@@ -111,7 +111,7 @@ public sealed class SqliteJobStore : IJobStore
         this.workspace = workspace; this.migrationObserver = migrationObserver;
         connectionString = SqliteSchema.ConnectionString(Path.Combine(workspace.Root, "queue.db"));
     }
-    private async Task<SqliteConnection> OpenAsync(CancellationToken ct)
+    internal async Task<SqliteConnection> OpenAsync(CancellationToken ct)
     {
         var connection = new SqliteConnection(connectionString);
         try

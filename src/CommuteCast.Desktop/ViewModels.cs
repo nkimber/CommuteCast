@@ -253,8 +253,12 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         try { var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; }
         catch (IOException error) { draftLoadFailed = true; StatusMessage = error.Message; }
         loading = false;
+        string? previewNotice = null;
+        try { await Task.Run(() => auditions.RecoverAsync(shutdown.Token)); }
+        catch (IOException) { previewNotice = "An interrupted voice preview needs inspection. Its files were preserved in private storage."; }
         await Task.Run(() => queue.InitializeAsync(shutdown.Token)); queueLoaded = true; Raise(nameof(LibrarySummary));
         try { await CheckReadinessAsync(); } catch (Exception error) { ServiceStatus = "Speech needs setup"; StatusMessage = QueueCoordinator.FriendlyError(error); }
+        if (previewNotice is not null) StatusMessage = previewNotice;
     }
     private void ScheduleDraftSave()
     {

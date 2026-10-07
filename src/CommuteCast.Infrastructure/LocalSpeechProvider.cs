@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace CommuteCast.Infrastructure;
 
-public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDisposable
+public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditionSpeechProvider, IDisposable
 {
     private readonly Workspace workspace;
     private readonly ILocalSpeechRuntime runtime;
@@ -218,20 +218,28 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDisposable
         return SynthesizeWithJournalAsync(job, settings, text, output, checkpoint, ct);
     }
 
-    private async Task SynthesizeWithJournalAsync(Job? job, NarrationSettings settings, string text, string output, Func<Task>? checkpoint, CancellationToken ct)
+    public Task SynthesizeAuditionAsync(AuditionWriteJournal journal, NarrationSettings settings, string text, string output, Func<Task> checkpoint, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(checkpoint); AuditionOwnershipStore.Validate(journal);
+        if (!string.Equals(Path.GetFullPath(output), OwnedFileRemoval.Resolve(workspace.Root, "auditions/audition-" + journal.Id + ".wav"), StringComparison.OrdinalIgnoreCase))
+            throw new IOException("Durable preview output must stay in its own private audition path.");
+        return SynthesizeWithJournalAsync(new Job { Id = journal.Id, PrivateArtifacts = journal.Artifacts }, settings, text, output, checkpoint, ct, true);
+    }
+
+    private async Task SynthesizeWithJournalAsync(Job? job, NarrationSettings settings, string text, string output, Func<Task>? checkpoint, CancellationToken ct, bool retainIdentity = false)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Synthesis);
         var entered = false;
         try
         {
             await admissionGate.WaitAsync(deadline.Token); entered = true;
-            await SynthesizeCoreAsync(job, settings, text, output, checkpoint, deadline.Token);
+            await SynthesizeCoreAsync(job, settings, text, output, checkpoint, deadline.Token, retainIdentity);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         { throw new TimeoutException("Speech synthesis exceeded its five-minute admission/request/retry budget. Validated chunks and any unresolved reservation are retained; check readiness and retry."); }
         finally { if (entered) admissionGate.Release(); }
     }
-    private async Task SynthesizeCoreAsync(Job? job, NarrationSettings settings, string text, string output, Func<Task>? checkpoint, CancellationToken ct)
+    private async Task SynthesizeCoreAsync(Job? job, NarrationSettings settings, string text, string output, Func<Task>? checkpoint, CancellationToken ct, bool retainIdentity)
     {
         settings.ValidateProviderImage();
         settings.Profile?.Validate(settings.Engine);
@@ -309,7 +317,7 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDisposable
                         try { attemptFile.Rename(Path.GetFileName(output)); }
                         catch (IOException error) { throw new IOException("The speech output is occupied or inaccessible. Existing files were preserved; repair private storage and retry.", error); }
                     }
-                    else await PrivateJobFiles.CompleteAndMoveCreatedAsync(job, Path.GetDirectoryName(output)!, Path.GetFileName(temporary), Path.GetFileName(output), attemptFile, checkpoint!, deadline.Token);
+                    else await PrivateJobFiles.CompleteAndMoveCreatedAsync(job, Path.GetDirectoryName(output)!, Path.GetFileName(temporary), Path.GetFileName(output), attemptFile, checkpoint!, deadline.Token, retainIdentity);
                     var published = attemptFile; attemptFile = null;
                     await published.DisposeAsync();
                     return;

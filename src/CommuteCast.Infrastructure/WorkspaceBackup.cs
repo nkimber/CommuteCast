@@ -177,6 +177,16 @@ public static class WorkspaceBackup
     {
         await using var connection = new SqliteConnection(SqliteSchema.ConnectionString(database, SqliteOpenMode.ReadOnly));
         await connection.OpenAsync(ct);
+        await using (var version = connection.CreateCommand())
+        {
+            version.CommandText = "PRAGMA user_version";
+            if (Convert.ToInt64(await version.ExecuteScalarAsync(ct)) >= 4)
+            {
+                version.CommandText = "SELECT count(*) FROM audition_ownership";
+                if (Convert.ToInt64(await version.ExecuteScalarAsync(ct)) != 0)
+                    throw new IOException("Voice previews must be stopped or reconciled in the original workspace before backup or restore. Their original file identities cannot be copied safely. Files were preserved.");
+            }
+        }
         await using var command = connection.CreateCommand(); command.CommandText = "SELECT payload FROM jobs";
         await using var records = await command.ExecuteReaderAsync(ct);
         while (await records.ReadAsync(ct))

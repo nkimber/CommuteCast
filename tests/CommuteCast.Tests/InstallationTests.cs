@@ -129,7 +129,7 @@ public class InstallationTests
         var a = await PackageAsync(test, "a"); var b = await PackageAsync(test, "b");
         using var lease = WorkspaceLease.Acquire(test.Workspace); var root = Path.Combine(test.Parent, "program");
         var first = await new Installation(root).ActivateAsync(lease, a);
-        await ExecuteSqlAsync(test, "DROP TABLE schema_history; PRAGMA application_id=0; PRAGMA user_version=0;");
+        await ExecuteSqlAsync(test, "DROP TABLE audition_ownership; DROP TABLE schema_history; PRAGMA application_id=0; PRAGMA user_version=0;");
         var install = new Installation(root, new MigrationFailure());
         await Assert.ThrowsAsync<IOException>(() => install.ActivateAsync(lease, b));
         Assert.Equal(0, await SqliteSchema.ValidateDatabaseAsync(Path.Combine(test.Workspace.Root, "queue.db")));
@@ -164,7 +164,7 @@ public class InstallationTests
     [Fact] public async Task RollbackRestoresCompatibleSchemaOneSnapshotAndUndoRestoresSchemaTwo()
     {
         using var test = new TestWorkspace(); var original = await SeedAsync(test, "Earlier frozen schema-one state");
-        await ExecuteSqlAsync(test, "DELETE FROM schema_history WHERE version>1; PRAGMA user_version=1;");
+        await ExecuteSqlAsync(test, "DROP TABLE audition_ownership; DELETE FROM schema_history WHERE version>1; PRAGMA user_version=1;");
         var older = await SchemaOnePackageAsync(test); var current = await PackageAsync(test, "current-schema-two");
         using var lease = WorkspaceLease.Acquire(test.Workspace); var install = new Installation(Path.Combine(test.Parent, "program"));
         var oldRelease = await install.ActivateAsync(lease, older);
@@ -193,10 +193,11 @@ public class InstallationTests
         await File.WriteAllTextAsync(Path.Combine(path, ReleasePackage.ManifestName), JsonSerializer.Serialize(manifest with { PackageId = identity }));
         Assert.Equal(maximumSchema, (await ReleasePackage.ValidateAsync(path)).MaximumSchema); return path;
     }
-    [Fact] public async Task SchemaTwoReleaseCannotActivateOverIncompleteCreationAwareState()
+    [Theory] [InlineData(2)] [InlineData(3)]
+    public async Task OlderReleaseCannotActivateOverPreviewOwnershipAwareState(int maximumSchema)
     {
-        using var test = new TestWorkspace(); await SeedAsync(test, "Schema-three state");
-        var current = await PackageAsync(test, "current-schema-three"); var older = await LegacySchemaPackageAsync(test, 2);
+        using var test = new TestWorkspace(); await SeedAsync(test, "Schema-four state");
+        var current = await PackageAsync(test, "current-schema-four"); var older = await LegacySchemaPackageAsync(test, maximumSchema);
         using var lease = WorkspaceLease.Acquire(test.Workspace); var install = new Installation(Path.Combine(test.Parent, "program"));
         await install.ActivateAsync(lease, current);
         var pointer = await Workspace.HashFileAsync(Path.Combine(install.Root, "installation.json"));

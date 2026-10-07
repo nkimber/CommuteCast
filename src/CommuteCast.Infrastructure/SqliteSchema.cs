@@ -10,9 +10,8 @@ public interface ISchemaMigrationObserver
 }
 public static class SqliteSchema
 {
-    // Version 3 also requires understanding identity-bound incomplete creation.
-    // Older binaries must refuse this state even though the SQL columns match.
-    public const int CurrentVersion = 3;
+    // Version 4 adds source-free preview ownership; older runtimes must refuse it.
+    public const int CurrentVersion = 4;
     public const int ApplicationId = 0x434D4354;
     public const string AppVersion = "0.1.0";
     public static string ConnectionString(string path, SqliteOpenMode mode = SqliteOpenMode.ReadWriteCreate) =>
@@ -53,10 +52,11 @@ public static class SqliteSchema
             throw new IOException("The database identity is incompatible. Local files were preserved; choose a verified CommuteCast backup.");
         var tables = await TablesAsync(connection, ct);
         if (tables.Count == 0 && version == 0 && applicationId == 0 && allowEmpty) return 0;
-        var expected = version == 0 ? new[] { "jobs", "events" } : new[] { "jobs", "events", "schema_history" };
+        var expected = version == 0 ? new[] { "jobs", "events" } : version < 4 ? new[] { "jobs", "events", "schema_history" } : new[] { "jobs", "events", "schema_history", "audition_ownership" };
         if (!tables.SetEquals(expected)) throw new IOException("The database is not a recognized CommuteCast queue. No reset was performed.");
         await ValidateColumnsAsync(connection, "jobs", ["id", "created", "payload"], ct);
         await ValidateColumnsAsync(connection, "events", ["sequence", "job_id", "stage", "timestamp"], ct);
+        if (version >= 4) await ValidateColumnsAsync(connection, "audition_ownership", ["id", "created", "payload"], ct);
         if (version != 0)
         {
             await ValidateColumnsAsync(connection, "schema_history", ["version", "app_version", "applied_utc"], ct);
@@ -89,9 +89,13 @@ public static class SqliteSchema
     {
         var version = await ValidateSchemaAsync(connection, false, ct);
         await CheckIntegrityAsync(connection, ct);
-        await using var records = connection.CreateCommand(); records.CommandText = "SELECT id,created,payload FROM jobs";
-        await using var items = await records.ExecuteReaderAsync(ct);
-        while (await items.ReadAsync(ct)) ValidateRecord(items.GetString(0), items.GetString(1), items.GetString(2));
+        await using (var records = connection.CreateCommand())
+        {
+            records.CommandText = "SELECT id,created,payload FROM jobs";
+            await using var items = await records.ExecuteReaderAsync(ct);
+            while (await items.ReadAsync(ct)) ValidateRecord(items.GetString(0), items.GetString(1), items.GetString(2));
+        }
+        if (version >= 4) await AuditionOwnershipStore.ValidateRowsAsync(connection, ct);
         return version;
     }
     internal static Job ValidateRecord(string id, string created, string payload)
@@ -128,6 +132,8 @@ public static class SqliteSchema
         using var transaction = connection.BeginTransaction();
         await using var command = connection.CreateCommand(); command.Transaction = transaction;
         command.CommandText = "CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, created TEXT NOT NULL, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, stage TEXT NOT NULL, timestamp TEXT NOT NULL); CREATE TABLE IF NOT EXISTS schema_history(version INTEGER PRIMARY KEY,app_version TEXT NOT NULL,applied_utc TEXT NOT NULL); CREATE INDEX IF NOT EXISTS events_by_job ON events(job_id,sequence);";
+        await command.ExecuteNonQueryAsync(ct);
+        command.CommandText = "CREATE TABLE IF NOT EXISTS audition_ownership(id TEXT PRIMARY KEY,created TEXT NOT NULL,payload TEXT NOT NULL)";
         await command.ExecuteNonQueryAsync(ct);
         for (var next = version + 1; next <= CurrentVersion; next++)
         {
