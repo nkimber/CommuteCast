@@ -2,6 +2,8 @@
 
 October 6, 2026. This audits the PRD's T-01–T-30 catalog; its FR/NFR traceability maps to these tests. **No catalog row is treated as fully accepted solely because a narrower automated test passes.** The full goal remains open.
 
+Held speech attempts: 170 focused checks pass; the final 675-case full run has 673 passes/two failures while Windows Modern Standby overlaps execution. Both exact failures pass on an unchanged-source targeted retry. The failed initial run is retained, not relabeled green. New races prove same-handle body retrieval/validation/removal, preservation of an occupied raw output and preservation of an unrelated file at a reused old attempt path. This does not prove durable incomplete-write ownership after abrupt host loss, actual adapter transport/sleep, native UI or listening acceptance.
+
 Latest native follow-up: the user renewed UI authorization. The 095681d package installs and verifies through maintenance CLI in fresh isolated program/private folders, but computer-use launch/window discovery times out through the documented retry and session-reset limit. No native interaction pass is claimed. UI authorization is current; helper availability must recover before native checks resume. See Acceptance.md for exact scope and evidence.
 
 Held-assembly implementation 095681d passes 35 focused and 269 broader filtered Release checks, zero failed/skipped; this is not a new full-suite claim. Its committed solution builds without warnings/errors, the clean-source 431-file ZIP verifies after fresh extraction, and its extracted maintenance backup/restore checks pass. Acceptance.md records exact paths, hashes and scopes. No new real-engine or native UI acceptance was performed.

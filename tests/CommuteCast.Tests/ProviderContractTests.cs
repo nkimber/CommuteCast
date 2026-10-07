@@ -224,12 +224,53 @@ public partial class ProviderContractTests
         using var provider = fixture.Provider(); await Assert.ThrowsAsync<IOException>(() => provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default));
         Assert.Equal("prior valid output", await File.ReadAllTextAsync(fixture.Output)); Assert.Equal(1, fixture.Http.Posts); Assert.Empty(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"));
     }
-    [Fact] public async Task StreamDisconnectRetriesFromFreshAttemptAndKeepsPriorOutputUntilSuccess()
+    [Fact] public async Task StreamDisconnectRetriesFromFreshAttemptAndPreservesOccupiedOutput()
     {
         using var fixture = new Fixture(); await File.WriteAllTextAsync(fixture.Output, "prior output");
         fixture.Http.Speech = (index, _) => Task.FromResult(index == 1 ? fixture.AudioContent(new StreamContent(new InterruptedStream())) : fixture.Audio());
+        using var provider = fixture.Provider(); await Assert.ThrowsAsync<IOException>(() => provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default));
+        Assert.Equal(2, fixture.Http.Posts); Assert.Equal("prior output", await File.ReadAllTextAsync(fixture.Output)); Assert.Empty(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"));
+    }
+    [Fact] public async Task CompetingOutputDuringBodyReadIsPreservedAndAttemptRemainsExclusivelyHeld()
+    {
+        using var fixture = new Fixture(); var observed = false;
+        fixture.Http.Speech = (_, _) => Task.FromResult(fixture.AudioContent(new StreamContent(new ObservedStream(fixture.Wave, () =>
+        {
+            observed = true;
+            var attempt = Assert.Single(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"));
+            Assert.Throws<IOException>(() => File.Delete(attempt));
+            Assert.Throws<IOException>(() => File.WriteAllText(attempt, "Replacement"));
+            File.WriteAllText(fixture.Output, "Competing output");
+        }))));
+        using var provider = fixture.Provider(); var error = await Assert.ThrowsAsync<IOException>(() => provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default));
+        Assert.DoesNotContain("MP3", error.Message);
+        Assert.True(observed); Assert.Equal(1, fixture.Http.Posts);
+        Assert.Equal("Competing output", await File.ReadAllTextAsync(fixture.Output));
+        Assert.Empty(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"));
+    }
+    [Fact] public async Task AttemptPathReusedAfterPublicationIsNeverRemovedBySettlementCleanup()
+    {
+        using var fixture = new Fixture(); string? attempt = null;
+        fixture.Http.Speech = (_, _) => Task.FromResult(fixture.AudioContent(new StreamContent(new ObservedStream(fixture.Wave,
+            () => attempt = Assert.Single(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"))))));
+        fixture.Http.Control = (route, body, _) =>
+        {
+            fixture.Http.Sequence = Math.Max(fixture.Http.Sequence, body.GetProperty("sequence").GetInt64());
+            if (route == "/settle" && attempt is not null) File.WriteAllText(attempt, "Unknown later file");
+            return Task.FromResult(fixture.Http.ControlResponse(body, route == "/reserve" ? "reserved" : "settled"));
+        };
         using var provider = fixture.Provider(); await provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default);
-        Assert.Equal(2, fixture.Http.Posts); Assert.Equal(fixture.Wave, await File.ReadAllBytesAsync(fixture.Output)); Assert.Empty(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"));
+        Assert.NotNull(attempt); Assert.Equal(fixture.Wave, await File.ReadAllBytesAsync(fixture.Output));
+        Assert.Equal("Unknown later file", await File.ReadAllTextAsync(attempt));
+    }
+    private sealed class ObservedStream(byte[] bytes, Action observe) : MemoryStream(bytes)
+    {
+        private bool observed;
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!observed) { observed = true; observe(); }
+            return base.ReadAsync(buffer, cancellationToken);
+        }
     }
     [Fact] public async Task CancelledLateResponseCannotPromoteOrReplacePriorOutput()
     {

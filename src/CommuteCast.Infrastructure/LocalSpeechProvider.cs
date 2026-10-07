@@ -230,6 +230,14 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
         if (File.Exists(output) && File.GetAttributes(output).HasFlag(FileAttributes.ReparsePoint)) throw new IOException("Speech output is a symbolic link. Generation was refused.");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Synthesis);
         var temporary = output + ".attempt-" + Guid.NewGuid().ToString("N") + ".partial";
+        ExportStagingFile? attemptFile = null;
+        async Task RemoveAttemptAsync()
+        {
+            var held = attemptFile;
+            if (held is null) return;
+            try { held.Delete(); }
+            finally { attemptFile = null; await held.DisposeAsync(); }
+        }
         var settlementAttempted = true;
         async Task SettleAttemptAsync() { settlementAttempted = true; await ReconcileAdmissionAsync(CancellationToken.None); }
         try
@@ -261,22 +269,26 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
                     if (!response.IsSuccessStatusCode) throw new IOException($"Local speech returned {(int)response.StatusCode}. Validated chunks are preserved; repair settings or service readiness and retry.");
                     if (response.Content.Headers.ContentType?.MediaType != "audio/wav" || response.Content.Headers.ContentLength > MaximumAudioBytes) throw new IOException("The speech response has an invalid type or size.");
                     await using (var stream = await response.Content.ReadAsStreamAsync(deadline.Token))
-                    await using (var file = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
                     {
-                        var received = await CopyBoundedAsync(stream, file, MaximumAudioBytes, deadline.Token);
+                        attemptFile = ExportStagingFile.Create(Path.GetDirectoryName(temporary)!, Path.GetFileName(temporary));
+                        var received = await CopyBoundedAsync(stream, attemptFile.Stream, MaximumAudioBytes, deadline.Token);
                         if (received < 44 || response.Content.Headers.ContentLength is { } declared && declared != received) throw new IOException("The speech response is truncated or its declared size is inconsistent.");
-                        await file.FlushAsync(deadline.Token);
+                        await attemptFile.Stream.FlushAsync(deadline.Token);
+                        attemptFile.Stream.Flush(true);
                     }
-                    WaveAudio.DataRegion(temporary, false);
+                    WaveAudio.DataRegion(attemptFile.Stream, false);
                     deadline.Token.ThrowIfCancellationRequested();
-                    File.Move(temporary, output, true);
+                    try { attemptFile.Rename(Path.GetFileName(output)); }
+                    catch (IOException error) { throw new IOException("The speech output is occupied or inaccessible. Existing files were preserved; repair private storage and retry.", error); }
+                    var published = attemptFile; attemptFile = null;
+                    await published.DisposeAsync();
                     await SettleAttemptAsync();
                     return;
                 }
                 catch (HttpRequestException) when (attempt < limits.TransientRetries && !deadline.IsCancellationRequested)
                 {
                     await SettleAttemptAsync();
-                    if (File.Exists(temporary)) File.Delete(temporary);
+                    await RemoveAttemptAsync();
                     await Task.Delay(TimeSpan.FromTicks(limits.RetryBackoff.Ticks * (1L << attempt)), deadline.Token);
                 }
             }
@@ -285,7 +297,7 @@ public sealed class LocalSpeechProvider : ISpeechProvider, IDisposable
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException("Speech synthesis exceeded its five-minute request/retry budget. Validated chunks are retained; check the local service and retry."); }
         finally
         {
-            try { if (File.Exists(temporary)) File.Delete(temporary); }
+            try { await RemoveAttemptAsync(); }
             finally
             {
                 // Cancellation can end HTTP while ONNX is still running. Keep the

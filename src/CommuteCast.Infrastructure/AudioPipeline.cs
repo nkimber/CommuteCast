@@ -99,7 +99,12 @@ public static class WaveAudio
     public static (long Offset, long Length) DataRegion(string path, bool canonical = true)
     {
         using var file = File.OpenRead(path);
-        using var reader = new BinaryReader(file, Encoding.ASCII);
+        return DataRegion(file, canonical);
+    }
+    public static (long Offset, long Length) DataRegion(Stream file, bool canonical = true)
+    {
+        file.Position = 0;
+        using var reader = new BinaryReader(file, Encoding.ASCII, leaveOpen: true);
         if (file.Length < 44) throw new IOException("Truncated WAV header.");
         if (new string(reader.ReadChars(4)) != "RIFF") throw new IOException("Expected RIFF audio.");
         if (reader.ReadUInt32() + 8L != file.Length) throw new IOException("WAV declared size does not match the complete file.");
