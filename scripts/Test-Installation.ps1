@@ -1,9 +1,10 @@
 param([string]$Executable, [switch]$KeepInstalled, [string]$LegacyPackage,
     [ValidateSet('Prepared','StateMigrated','BeforeActivation','Activated','MigrationBeforeCommit')][string]$ActivationCrashCheckpoint,
     [switch]$LegacySchemaThree, [switch]$RollbackCrashAfterRestore, [switch]$RollbackCrashAfterCommit,
-    [switch]$UninstallCrashAfterItem)
+    [switch]$UninstallCrashAfterItem, [switch]$PrivateUninstallCrashAfterQueue)
 $ErrorActionPreference = 'Stop'
-if ($UninstallCrashAfterItem -and $KeepInstalled) { throw 'Uninstall interruption requires the uninstall suite.' }
+if ($UninstallCrashAfterItem -and $PrivateUninstallCrashAfterQueue) { throw 'Choose one uninstall boundary per fixture.' }
+if (($UninstallCrashAfterItem -or $PrivateUninstallCrashAfterQueue) -and $KeepInstalled) { throw 'Uninstall interruption requires the uninstall suite.' }
 if ($RollbackCrashAfterRestore -and $RollbackCrashAfterCommit) { throw 'Choose one rollback interruption boundary per fixture.' }
 if ($LegacySchemaThree -and -not $ActivationCrashCheckpoint) { throw 'Legacy schema interruption requires an activation checkpoint.' }
 if ($ActivationCrashCheckpoint -eq 'MigrationBeforeCommit' -and -not $LegacySchemaThree) { throw 'Migration transaction interruption requires LegacySchemaThree.' }
@@ -37,6 +38,33 @@ function Fixture-State([string]$Command, [string]$Label) {
     $response = if ($Label) { & $fixtureHost $Command $privateRoot $Label } else { & $fixtureHost $Command $privateRoot }
     if ($LASTEXITCODE -ne 0) { throw 'Synthetic fixture operation failed.' }
     return (($response -join "`n") | ConvertFrom-Json)
+}
+function Invoke-UninstallBoundary([switch]$RemovePrivate) {
+    $uninstallMarker = Join-Path $fixture 'uninstall-boundary.json'
+    $uninstallStart = [Diagnostics.ProcessStartInfo]::new($fixtureHost)
+    $uninstallStart.UseShellExecute = $false; $uninstallStart.CreateNoWindow = $true; $uninstallStart.WindowStyle = 'Hidden'
+    $uninstallStart.RedirectStandardOutput = $true; $uninstallStart.RedirectStandardError = $true
+    foreach ($argument in @('uninstall-barrier',$privateRoot)) { $uninstallStart.ArgumentList.Add($argument) }
+    if ($RemovePrivate) { $uninstallStart.ArgumentList.Add('remove-private') }
+    $uninstallHost = [Diagnostics.Process]::Start($uninstallStart)
+    $uninstallOutput = $uninstallHost.StandardOutput.ReadToEndAsync(); $uninstallErrors = $uninstallHost.StandardError.ReadToEndAsync()
+    try {
+        $deadline = [datetime]::UtcNow.AddSeconds(180)
+        while (-not (Test-Path -LiteralPath $uninstallMarker -PathType Leaf)) {
+            if ($uninstallHost.HasExited) { throw ('Uninstall host exited early: ' + $uninstallErrors.GetAwaiter().GetResult()) }
+            if ([datetime]::UtcNow -gt $deadline) { throw 'Uninstall boundary was not observed within 180 seconds.' }
+            Start-Sleep -Milliseconds 50
+        }
+        $uninstallObserved = Get-Content -LiteralPath $uninstallMarker -Raw | ConvertFrom-Json
+        if ($uninstallObserved.processId -ne $uninstallHost.Id -or $uninstallHost.HasExited -or $uninstallObserved.point -ne 'ItemRemoved' -or ($RemovePrivate -and $uninstallObserved.item -ne 'Private/queue.db/queue.db' -or -not $RemovePrivate -and -not $uninstallObserved.item.StartsWith('Package/')) -or (Test-Path -LiteralPath $uninstallObserved.removed)) { throw 'Uninstall marker does not identify the live owned host and actual removal.' }
+        $uninstallHost.Kill($false)
+        if (-not $uninstallHost.WaitForExit(10000)) { throw 'Owned uninstall host did not terminate.' }
+        $null = $uninstallOutput.GetAwaiter().GetResult(); $null = $uninstallErrors.GetAwaiter().GetResult()
+    } finally {
+        if (-not $uninstallHost.HasExited) { $uninstallHost.Kill($false); $uninstallHost.WaitForExit(10000) | Out-Null }
+        $uninstallHost.Dispose()
+    }
+    return $uninstallObserved
 }
 function Same($Actual, $Expected, [string]$Label) { if ($Actual -ne $Expected) { throw "$Label did not match." } }
 $hasLauncher = Test-Path -LiteralPath (Join-Path $portable 'app\CommuteCast.Launcher.exe')
@@ -256,29 +284,7 @@ if (-not $KeepInstalled) {
     if (Test-Path -LiteralPath $preview.path) { throw 'Reconciled original preview survived.' }
     if ($UninstallCrashAfterItem) {
         $beforeUninstall = Fixture-State inspect
-        $uninstallMarker = Join-Path $fixture 'uninstall-boundary.json'
-        $uninstallStart = [Diagnostics.ProcessStartInfo]::new($fixtureHost)
-        $uninstallStart.UseShellExecute = $false; $uninstallStart.CreateNoWindow = $true; $uninstallStart.WindowStyle = 'Hidden'
-        $uninstallStart.RedirectStandardOutput = $true; $uninstallStart.RedirectStandardError = $true
-        foreach ($argument in @('uninstall-barrier',$privateRoot)) { $uninstallStart.ArgumentList.Add($argument) }
-        $uninstallHost = [Diagnostics.Process]::Start($uninstallStart)
-        $uninstallOutput = $uninstallHost.StandardOutput.ReadToEndAsync(); $uninstallErrors = $uninstallHost.StandardError.ReadToEndAsync()
-        try {
-            $deadline = [datetime]::UtcNow.AddSeconds(180)
-            while (-not (Test-Path -LiteralPath $uninstallMarker -PathType Leaf)) {
-                if ($uninstallHost.HasExited) { throw ('Uninstall host exited early: ' + $uninstallErrors.GetAwaiter().GetResult()) }
-                if ([datetime]::UtcNow -gt $deadline) { throw 'Uninstall boundary was not observed within 180 seconds.' }
-                Start-Sleep -Milliseconds 50
-            }
-            $uninstallObserved = Get-Content -LiteralPath $uninstallMarker -Raw | ConvertFrom-Json
-            if ($uninstallObserved.processId -ne $uninstallHost.Id -or $uninstallHost.HasExited -or $uninstallObserved.point -ne 'ItemRemoved' -or -not $uninstallObserved.item.StartsWith('Package/') -or (Test-Path -LiteralPath $uninstallObserved.removed)) { throw 'Uninstall marker does not identify the live owned host and actual removal.' }
-            $uninstallHost.Kill($false)
-            if (-not $uninstallHost.WaitForExit(10000)) { throw 'Owned uninstall host did not terminate.' }
-            $null = $uninstallOutput.GetAwaiter().GetResult(); $null = $uninstallErrors.GetAwaiter().GetResult()
-        } finally {
-            if (-not $uninstallHost.HasExited) { $uninstallHost.Kill($false); $uninstallHost.WaitForExit(10000) | Out-Null }
-            $uninstallHost.Dispose()
-        }
+        $uninstallObserved = Invoke-UninstallBoundary
         Same (Invoke-Tool -Arguments @('recover-install','--root',$privateRoot,'--install-root',$installRoot)).recovered $true 'Interrupted uninstall recovered'
         $retained = Invoke-Tool -Arguments @('inspect-install','--root',$privateRoot,'--install-root',$installRoot)
         Same $retained.State.CurrentPackageId $null 'Recovered uninstall has no active package'
@@ -297,7 +303,17 @@ if (-not $KeepInstalled) {
     if ($hasLauncher) { Same (Launcher-Plan).Executable $reinstalled.Executable 'Stable launcher reinstallation' }
     $removeRefused = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'remove') -ExpectedExit 1
     if ($removeRefused -notmatch 'requires.*confirm-remove') { throw 'Private data removal was not explicitly gated.' }
-    $removed = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'remove', '--confirm-remove-local-data')
+    if ($PrivateUninstallCrashAfterQueue) {
+        $privateRemovalObserved = Invoke-UninstallBoundary -RemovePrivate
+        Same (Invoke-Tool -Arguments @('recover-install','--root',$privateRoot,'--install-root',$installRoot)).recovered $true 'Interrupted private removal recovered'
+        $removed = Invoke-Tool -Arguments @('inspect-install','--root',$privateRoot,'--install-root',$installRoot)
+        Same $removed.State.CurrentPackageId $null 'Private removal has no active package'
+        if (Test-Path -LiteralPath (Join-Path $installRoot 'deployment.pending.json')) { throw 'Private removal retained pending intent.' }
+        Same (Invoke-Tool -Arguments @('recover-install','--root',$privateRoot,'--install-root',$installRoot)).recovered $false 'Private removal recovery idempotence'
+        $uninstallCrashEvidence = [ordered]@{passed=$true;parentOnlyLoss=$true;boundary=$privateRemovalObserved;privateRemovalCompleted=$true;idempotent=$true}
+    } else {
+        $removed = Invoke-Tool -Arguments @('uninstall', '--install-root', $installRoot, '--confirm-uninstall', '--local-data', 'remove', '--confirm-remove-local-data')
+    }
     Verify-WindowsIntegration $false
     foreach ($name in @('queue.db', 'jobs', 'draft.json', 'settings.json', 'backups', 'recovery')) { if (Test-Path -LiteralPath (Join-Path $privateRoot $name)) { throw "Managed private scope $name survived requested removal." } }
     Same (Get-Content -LiteralPath $export -Raw).Trim() 'Separate export sentinel' 'Export preservation'
