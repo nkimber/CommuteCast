@@ -76,16 +76,27 @@ internal static class SpeechCancellationAcceptance
             if (!cancellationSettled || completed.Settings.Engine != otherEngine || gate.CurrentCount != 1 || final.Active != 0 || otherFinal.Active != 0 ||
                 final.Instance != initial.Instance || otherFinal.Instance != otherInitial.Instance || File.Exists(Path.Combine(workspace.Root, "speech-admission.json")))
                 throw new IOException("Real cancellation or subsequent engine admission failed its final checks.");
+            var ownership = new AuditionOwnershipStore(workspace);
+            var journals = await ownership.LoadAsync(ct);
+            if (completed.OwnershipId is null || journals.Count != 1 || journals[0].Id != completed.OwnershipId ||
+                journals[0].Artifacts.Count != 1 || journals[0].Artifacts[0].Hash != completed.Hash ||
+                journals[0].Artifacts[0].RelativePath != Path.GetFileName(completed.RelativePath) ||
+                journals[0].Artifacts[0].CreationIdentity is not null || journals[0].Artifacts[0].PromotionIdentity is null)
+                throw new IOException("The subsequent sample has no exact completed durable ownership receipt.");
             if (!await generator.RemoveAsync(completed)) throw new IOException("The completed subsequent sample did not pass owned removal.");
             completed = null;
-            if (Directory.GetFiles(Path.Combine(workspace.Root, "auditions")).Length != 0 || File.Exists(Path.Combine(workspace.Root, "queue.db")) || Directory.GetFiles(Path.Combine(root, "output")).Length != 0)
+            var store = new SqliteJobStore(workspace);
+            if (Directory.GetFiles(Path.Combine(workspace.Root, "auditions")).Length != 0 || (await store.LoadAsync(ct)).Count != 0 ||
+                (await store.ReadDiagnosticEventsAsync(ct)).Count != 0 || (await ownership.LoadAsync(ct)).Count != 0 ||
+                Directory.Exists(Path.Combine(workspace.Root, "jobs")) || Directory.GetFiles(Path.Combine(root, "output")).Length != 0)
                 throw new IOException("Cancellation left playable/private attempt output, history or exports.");
             watch.Stop();
             var report = new { applicationBuild = typeof(Job).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
                 cancelledEngine = settings.Engine, subsequentEngine = otherEngine, sourceCharacters = source.Length, initial, otherInitial, final, otherFinal,
                 observations, healthSamplePairs = samples, activeInferenceObservedBeforeCancellation = true, cancellationReturnedNoPlayableAudio = true,
                 pendingFenceObservedAfterClientCompletion = fenceRetained, firstFollowingError, noObservedCrossEngineOverlap = true,
-                unchangedServiceProcesses = true, subsequentEngineGenerationAndCleanup = true, noQueueOrExport = true, wallSeconds = watch.Elapsed.TotalSeconds,
+                unchangedServiceProcesses = true, subsequentEngineGenerationAndCleanup = true, durableOwnershipVerified = true, ownershipRetired = true,
+                noQueueOrExport = true, wallSeconds = watch.Elapsed.TotalSeconds,
                 scope = "Real active-inference HTTP cancellation, shared audition scheduler and opposite-engine admission. Health samples supplement the server reservation fence; they do not prove unobserved UI/media-lock, process-kill, sleep/wake or resource acceptance." };
             await File.WriteAllTextAsync(Path.Combine(root, "cancellation-report.json"), JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
             Console.WriteLine(JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
