@@ -182,8 +182,8 @@ public static class WorkspaceBackup
         while (await records.ReadAsync(ct))
         {
             var job = JsonSerializer.Deserialize<CommuteCast.Core.Job>(records.GetString(0));
-            if (job?.PrivateArtifacts?.Any(r => r.PromotionIdentity is not null) == true)
-                throw new IOException("An interrupted private audio rename must be reconciled in the original workspace before backup or restore. Open CommuteCast there, inspect any reported changed files, then retry maintenance. Files were preserved.");
+            if (job?.PrivateArtifacts?.Any(r => r.PromotionIdentity is not null || r.CreationIdentity is not null) == true)
+                throw new IOException("An interrupted private audio write or rename must be reconciled in the original workspace before backup or restore. Open CommuteCast there, inspect any reported changed files, then retry maintenance. Files were preserved.");
         }
     }
     private static bool Exists(string path) => File.Exists(path) || Directory.Exists(path);

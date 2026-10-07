@@ -67,8 +67,10 @@ dotnet run --project tools\CommuteCast.Pilot -- piper artifacts/pilot/piper-host
 dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-host-loss-example --verify-queue-host-loss
 # Synthetic completed private-audio rename boundaries: four owned child terminations.
 pwsh -File scripts\Test-PrivatePromotionCrash.ps1
+# Synthetic incomplete private writer/receipt boundaries: four owned child terminations.
+pwsh -File scripts\Test-PrivateWriteCrash.ps1
 # Retained older binary against an isolated current-schema queue.
-# Supply the maintenance executable from a previously extracted schema-1 package.
+# Supply the maintenance executable from a previously extracted older-schema package.
 pwsh -File scripts\Test-SchemaCompatibility.ps1 -OlderMaintenance C:\path\to\older\app\CommuteCast.Maintenance.exe
 ```
 

@@ -169,7 +169,7 @@ public class InstallationTests
         using var lease = WorkspaceLease.Acquire(test.Workspace); var install = new Installation(Path.Combine(test.Parent, "program"));
         var oldRelease = await install.ActivateAsync(lease, older);
         var upgraded = await install.ActivateAsync(lease, current);
-        Assert.Equal(2, await SqliteSchema.ValidateDatabaseAsync(Path.Combine(test.Workspace.Root, "queue.db")));
+        Assert.Equal(SqliteSchema.CurrentVersion, await SqliteSchema.ValidateDatabaseAsync(Path.Combine(test.Workspace.Root, "queue.db")));
         var rolledBack = await install.RollbackAsync(lease);
         Assert.Equal(oldRelease.State.CurrentPackageId, rolledBack.State.CurrentPackageId);
         Assert.Equal(1, await SqliteSchema.ValidateDatabaseAsync(Path.Combine(test.Workspace.Root, "queue.db")));
@@ -178,18 +178,32 @@ public class InstallationTests
         Assert.True(File.Exists(test.Workspace.ChunkPath(original, 0)));
         var undone = await install.RollbackAsync(lease);
         Assert.Equal(upgraded.State.CurrentPackageId, undone.State.CurrentPackageId);
-        Assert.Equal(2, await SqliteSchema.ValidateDatabaseAsync(Path.Combine(test.Workspace.Root, "queue.db")));
+        Assert.Equal(SqliteSchema.CurrentVersion, await SqliteSchema.ValidateDatabaseAsync(Path.Combine(test.Workspace.Root, "queue.db")));
         Assert.Equal(JsonSerializer.Serialize(original), JsonSerializer.Serialize(Assert.Single(await new SqliteJobStore(test.Workspace).LoadAsync())));
     }
     private static async Task<string> SchemaOnePackageAsync(TestWorkspace test)
+        => await LegacySchemaPackageAsync(test, 1);
+    private static async Task<string> LegacySchemaPackageAsync(TestWorkspace test, int maximumSchema)
     {
-        var path = await PackageAsync(test, "older-schema-one");
-        var manifest = (await ReleasePackage.ValidateAsync(path)) with { MaximumSchema = 1 };
+        var path = await PackageAsync(test, "older-schema-" + maximumSchema);
+        var manifest = (await ReleasePackage.ValidateAsync(path)) with { MaximumSchema = maximumSchema };
         // Produce the documented legacy manifest identity with its older capability.
         var identity = Job.Hash(JsonSerializer.Serialize(new { manifest.AppVersion, manifest.DesktopBuild, manifest.MaintenanceBuild,
             manifest.BundledRuntime, manifest.Target, manifest.MinimumSchema, manifest.MaximumSchema, manifest.ProviderContract, manifest.Files }));
         await File.WriteAllTextAsync(Path.Combine(path, ReleasePackage.ManifestName), JsonSerializer.Serialize(manifest with { PackageId = identity }));
-        Assert.Equal(1, (await ReleasePackage.ValidateAsync(path)).MaximumSchema); return path;
+        Assert.Equal(maximumSchema, (await ReleasePackage.ValidateAsync(path)).MaximumSchema); return path;
+    }
+    [Fact] public async Task SchemaTwoReleaseCannotActivateOverIncompleteCreationAwareState()
+    {
+        using var test = new TestWorkspace(); await SeedAsync(test, "Schema-three state");
+        var current = await PackageAsync(test, "current-schema-three"); var older = await LegacySchemaPackageAsync(test, 2);
+        using var lease = WorkspaceLease.Acquire(test.Workspace); var install = new Installation(Path.Combine(test.Parent, "program"));
+        await install.ActivateAsync(lease, current);
+        var pointer = await Workspace.HashFileAsync(Path.Combine(install.Root, "installation.json"));
+        var database = Path.Combine(test.Workspace.Root, "queue.db"); var hash = await Workspace.HashFileAsync(database);
+        await Assert.ThrowsAsync<IOException>(() => install.ActivateAsync(lease, older));
+        Assert.Equal(pointer, await Workspace.HashFileAsync(Path.Combine(install.Root, "installation.json")));
+        Assert.Equal(hash, await Workspace.HashFileAsync(database)); Assert.False(install.HasPendingOperation);
     }
     [Theory] [InlineData(InstallationCheckpoint.Prepared)] [InlineData(InstallationCheckpoint.Activated)]
     public async Task UnrecordedFileDuringUninstallIsPreservedAndNeverSwept(InstallationCheckpoint checkpoint)

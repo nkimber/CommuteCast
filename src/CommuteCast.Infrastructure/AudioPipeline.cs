@@ -10,7 +10,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
     public const string ContractVersion = "pcm24k-s16le-mono-mp3128-gap150-v1";
     private static void ValidateManifest(Job job)
     {
-        if (job.PrivateArtifacts.Any(r => r.PromotionIdentity is not null)) throw new IOException("An interrupted private audio rename must be reconciled before assembly or validation.");
+        if (job.PrivateArtifacts.Any(r => r.PromotionIdentity is not null || r.CreationIdentity is not null)) throw new IOException("An interrupted private audio write or rename must be reconciled before assembly or validation.");
         if (job.AudioContractVersion != ContractVersion || job.ChunkingVersion != "chunk450-v1") throw new IOException("Unsupported audio/chunk contract. Publication is blocked.");
         Chunker.ValidateManifest(job.Chunks, job.Prepared.Script);
         if (job.Receipts.Count != job.Chunks.Count || !job.Receipts.OrderBy(r => r.Index).Select(r => r.Index).SequenceEqual(Enumerable.Range(0, job.Chunks.Count)) ||

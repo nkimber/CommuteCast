@@ -64,7 +64,8 @@ public sealed class Job
 }
 public record ChunkReceipt(int Index, string Hash, string Fingerprint, double Duration);
 public record PrivateArtifactReceipt(string RelativePath, string Hash,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ExportStagingIdentity? PromotionIdentity = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ExportStagingIdentity? PromotionIdentity = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ExportStagingIdentity? CreationIdentity = null);
 public record ExportStagingIdentity(int FormatVersion, ulong VolumeSerialNumber, string FileId, long CreationFileTime);
 public record ProviderInfo(string Engine, string Fingerprint, string[] Voices, string State, int Active,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ImageId = null,

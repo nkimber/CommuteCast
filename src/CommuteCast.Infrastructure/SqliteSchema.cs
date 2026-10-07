@@ -10,9 +10,9 @@ public interface ISchemaMigrationObserver
 }
 public static class SqliteSchema
 {
-    // Version 2 requires understanding identity-bound private promotion intent.
+    // Version 3 also requires understanding identity-bound incomplete creation.
     // Older binaries must refuse this state even though the SQL columns match.
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
     public const int ApplicationId = 0x434D4354;
     public const string AppVersion = "0.1.0";
     public static string ConnectionString(string path, SqliteOpenMode mode = SqliteOpenMode.ReadWriteCreate) =>

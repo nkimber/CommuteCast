@@ -32,8 +32,8 @@ public sealed class CacheMaintenance(Workspace workspace)
         foreach (var job in jobs.Where(j => j.Id != activeId && !j.DeletionRequested))
         {
             ct.ThrowIfCancellationRequested();
-            // Startup/offline maintenance must reconcile identity-bearing rename intent first.
-            if (job.PrivateArtifacts.Any(r => r.PromotionIdentity is not null)) continue;
+            // Reconcile identity-bearing write/rename intent before cache cleanup.
+            if (job.PrivateArtifacts.Any(r => r.PromotionIdentity is not null || r.CreationIdentity is not null)) continue;
             var directory = workspace.JobDirectory(job.Id);
             if (!Directory.Exists(directory)) continue;
             Workspace.RejectReparsePoints(directory);

@@ -12,6 +12,7 @@ $evidence = Join-Path $projectRoot ('artifacts/installation-acceptance/schema-co
 $root = Join-Path $evidence 'private'; New-Item -ItemType Directory -Path $evidence | Out-Null
 $seedOutput = & $fixtureHost seed $root
 if ($LASTEXITCODE -ne 0) { throw 'New schema fixture seed failed.' }
+$expectedSchema = [int](Select-String -LiteralPath (Join-Path $projectRoot 'src/CommuteCast.Infrastructure/SqliteSchema.cs') -Pattern 'public const int CurrentVersion = (\d+);').Matches[0].Groups[1].Value
 function Protected-Inventory {
     $files = @('queue.db','draft.json','settings.json','provider-lock.local.json','recovery-piper.json') | ForEach-Object { Join-Path $root $_ }
     $files += @(Get-ChildItem -LiteralPath (Join-Path $root 'jobs') -File -Recurse | Select-Object -ExpandProperty FullName)
@@ -26,7 +27,7 @@ $child = [Diagnostics.Process]::Start($start); $outputTask = $child.StandardOutp
 try {
     if (-not $child.WaitForExit(30000)) { throw 'Older maintenance refusal exceeded 30 seconds.' }
     $output = $outputTask.GetAwaiter().GetResult(); $errors = $errorTask.GetAwaiter().GetResult()
-    if ($child.ExitCode -eq 0 -or ($output + $errors) -notmatch 'Queue schema 2 needs a newer CommuteCast version') { throw "Older maintenance did not refuse the new schema: $output $errors" }
+    if ($child.ExitCode -eq 0 -or ($output + $errors) -notmatch "Queue schema $expectedSchema needs a newer CommuteCast version") { throw "Older maintenance did not refuse the new schema: $output $errors" }
     $exitCode = $child.ExitCode
 } finally {
     if (-not $child.HasExited) { $child.Kill($true); $child.WaitForExit(10000) | Out-Null }
@@ -39,6 +40,6 @@ if ($LASTEXITCODE -ne 0) { throw 'The current runtime could not reopen its prese
 $sourceCommit = (& git -C $projectRoot rev-parse HEAD).Trim(); $dirty = [bool](& git -C $projectRoot status --porcelain)
 $newBuild = [Diagnostics.FileVersionInfo]::GetVersionInfo($fixtureHost).ProductVersion
 if (-not $dirty -and $newBuild -ne ('0.1.0+' + $sourceCommit)) { throw 'Rebuild the committed fixture before recording clean-source evidence.' }
-$report = [ordered]@{sourceCommit=$sourceCommit;newBuild=$newBuild;workingTreeDirty=$dirty;olderExecutable=$OlderMaintenance;olderBuild=[Diagnostics.FileVersionInfo]::GetVersionInfo($OlderMaintenance).ProductVersion;olderExecutableSha256=(Get-FileHash -LiteralPath $OlderMaintenance).Hash;newSchema=2;olderRefused=$true;exitCode=$exitCode;protectedStateUnchanged=$true;newRuntimeReopened=$true;protectedFiles=$before;scope='Actual retained schema-one maintenance refusal of an isolated schema-two queue. Native older-desktop launch and corporate downgrade deployment remain separate.'}
+$report = [ordered]@{sourceCommit=$sourceCommit;newBuild=$newBuild;workingTreeDirty=$dirty;olderExecutable=$OlderMaintenance;olderBuild=[Diagnostics.FileVersionInfo]::GetVersionInfo($OlderMaintenance).ProductVersion;olderExecutableSha256=(Get-FileHash -LiteralPath $OlderMaintenance).Hash;newSchema=$expectedSchema;olderRefused=$true;exitCode=$exitCode;protectedStateUnchanged=$true;newRuntimeReopened=$true;protectedFiles=$before;scope='Actual retained older maintenance refusal of an isolated current-schema queue. Native older-desktop launch and corporate downgrade deployment remain separate.'}
 $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $evidence 'report.json')
 Write-Output (Join-Path $evidence 'report.json')

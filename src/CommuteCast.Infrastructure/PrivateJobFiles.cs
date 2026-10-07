@@ -28,6 +28,15 @@ public static class PrivateJobFiles
             if (!artifactNames.Add(receipt.RelativePath)) throw new IOException("Private artifact receipts are duplicated. Files were preserved.");
             if (receipt.PromotionIdentity is { } identity && (identity.FormatVersion != 1 || identity.FileId?.Length != 32 ||
                 !identity.FileId.All(Uri.IsHexDigit) || identity.CreationFileTime <= 0)) throw new IOException("A private promotion identity is invalid. Files were preserved.");
+            if (receipt.CreationIdentity is { } creation)
+            {
+                if (receipt.PromotionIdentity is not null || receipt.Hash != "" || creation.FormatVersion != 1 || creation.FileId?.Length != 32 ||
+                    !creation.FileId.All(Uri.IsHexDigit) || creation.CreationFileTime <= 0 || receipt.RelativePath is null ||
+                    receipt.RelativePath.Contains('/') || receipt.RelativePath.Length > 200)
+                    throw new IOException("An incomplete private creation receipt is invalid. Files were preserved.");
+                OwnedFileRemoval.ValidateRelativePath(receipt.RelativePath);
+                continue; // Incomplete bytes never enter the completed-content inventory.
+            }
             Add(receipt.RelativePath, receipt.Hash);
         }
         foreach (var receipt in job.Receipts)
@@ -36,6 +45,8 @@ public static class PrivateJobFiles
             Add($"chunk-{receipt.Index:D5}.wav", receipt.Hash);
         }
         if (!string.IsNullOrEmpty(job.FinalHash)) Add("complete.mp3", job.FinalHash);
+        if (job.PrivateArtifacts.Any(r => r.CreationIdentity is not null && files.ContainsKey(r.RelativePath)))
+            throw new IOException("Incomplete and completed private receipts disagree. Files were preserved.");
         return files;
     }
 
@@ -53,35 +64,48 @@ public static class PrivateJobFiles
         var inventory = Inventory(job);
         if (File.Exists(path) || Directory.Exists(path))
         {
-            if (!inventory.TryGetValue(name, out var hash))
-                throw new IOException("An untracked private output occupies a narration path. It was preserved; inspect private storage before retrying.");
-            var identity = job.PrivateArtifacts.FirstOrDefault(r => r.RelativePath.Equals(name, StringComparison.OrdinalIgnoreCase))?.PromotionIdentity;
-            if (identity is not null)
+            var creation = job.PrivateArtifacts.FirstOrDefault(r => r.RelativePath.Equals(name, StringComparison.OrdinalIgnoreCase))?.CreationIdentity;
+            if (creation is not null)
             {
-                await using var pending = ExportStagingFile.OpenIfPresent(directory, name);
-                if (pending is not null)
+                await using var partial = ExportStagingFile.OpenIfPresent(directory, name);
+                if (partial is not null)
                 {
-                    if (!pending.Matches(identity) || await pending.HashAsync(ct) != hash) throw new IOException("An interrupted private promotion was replaced or changed. Files were preserved.");
-                    pending.Delete();
+                    if (!partial.Matches(creation)) throw new IOException("An interrupted private creation was replaced. Files were preserved; inspect private storage before retrying.");
+                    ct.ThrowIfCancellationRequested(); partial.Delete();
                 }
             }
-            else if (preserveChangedChunk)
+            else
             {
-                // The worker has already rejected this cached chunk. Keep changed bytes, using
-                // one exclusive Windows handle for inspection and the nonoverwriting rename.
-                await using var held = ExportStagingFile.OpenIfPresent(directory, name);
-                if (held is not null)
+                if (!inventory.TryGetValue(name, out var hash))
+                    throw new IOException("An untracked private output occupies a narration path. It was preserved; inspect private storage before retrying.");
+                var identity = job.PrivateArtifacts.FirstOrDefault(r => r.RelativePath.Equals(name, StringComparison.OrdinalIgnoreCase))?.PromotionIdentity;
+                if (identity is not null)
                 {
-                    if (await held.HashAsync(ct) == hash) held.Delete();
-                    else
+                    await using var pending = ExportStagingFile.OpenIfPresent(directory, name);
+                    if (pending is not null)
                     {
-                        ct.ThrowIfCancellationRequested();
-                        held.Rename("unverified-" + Guid.NewGuid().ToString("N") + "-" + name);
-                        job.PrivateStorageNotice = "A changed cached chunk was retained in private storage under an unverified name. Narration was regenerated; inspect the retained file before deleting this item.";
+                        if (!pending.Matches(identity) || await pending.HashAsync(ct) != hash) throw new IOException("An interrupted private promotion was replaced or changed. Files were preserved.");
+                        pending.Delete();
                     }
                 }
+                else if (preserveChangedChunk)
+                {
+                    // The worker has already rejected this cached chunk. Keep changed bytes, using
+                    // one exclusive Windows handle for inspection and the nonoverwriting rename.
+                    await using var held = ExportStagingFile.OpenIfPresent(directory, name);
+                    if (held is not null)
+                    {
+                        if (await held.HashAsync(ct) == hash) held.Delete();
+                        else
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            held.Rename("unverified-" + Guid.NewGuid().ToString("N") + "-" + name);
+                            job.PrivateStorageNotice = "A changed cached chunk was retained in private storage under an unverified name. Narration was regenerated; inspect the retained file before deleting this item.";
+                        }
+                    }
+                }
+                else await OwnedFileRemoval.DeleteByHashAsync(directory, name, hash, ct: ct);
             }
-            else await OwnedFileRemoval.DeleteByHashAsync(directory, name, hash, ct: ct);
         }
         job.PrivateArtifacts.RemoveAll(r => r.RelativePath.Equals(name, StringComparison.OrdinalIgnoreCase));
     }
@@ -95,8 +119,8 @@ public static class PrivateJobFiles
     }
 
     // Keep creation, writing and the completed receipt under the same exclusive
-    // handle. A handled write/checkpoint failure removes only this newly created
-    // file; a process loss before the checkpoint still requires inspection.
+    // handle. Persist creation identity before the writer runs, so a process loss
+    // during writing can retire only this original incomplete file on recovery.
     public static async Task WriteRecordedAsync(Job job, string directory, string name,
         Func<Stream, Task> write, Func<Task> checkpoint, CancellationToken ct)
     {
@@ -105,10 +129,14 @@ public static class PrivateJobFiles
         await using var held = ExportStagingFile.Create(directory, name);
         try
         {
+            job.PrivateArtifacts.Add(new(name, "", CreationIdentity: held.Identity));
+            await checkpoint();
+            ct.ThrowIfCancellationRequested();
             await write(held.Stream);
             await held.Stream.FlushAsync(ct);
             held.Stream.Flush(true);
             var hash = await held.HashAsync(ct);
+            job.PrivateArtifacts.RemoveAll(r => r.RelativePath.Equals(name, StringComparison.OrdinalIgnoreCase));
             job.PrivateArtifacts.Add(new(name, hash));
             await checkpoint();
         }
@@ -147,6 +175,19 @@ public static class PrivateJobFiles
     public static async Task ReconcilePromotionsAsync(Job job, string directory, Func<Task> checkpoint, CancellationToken ct)
     {
         Inventory(job);
+        foreach (var receipt in job.PrivateArtifacts.Where(r => r.CreationIdentity is not null).ToArray())
+        {
+            await using (var partial = ExportStagingFile.OpenIfPresent(directory, receipt.RelativePath))
+            {
+                if (partial is not null)
+                {
+                    if (!partial.Matches(receipt.CreationIdentity!)) throw new IOException("An interrupted private creation was replaced. Files were preserved; inspect private storage before retrying.");
+                    ct.ThrowIfCancellationRequested(); partial.Delete();
+                }
+            } // Close the exact deleted handle before committing the retired intent.
+            job.PrivateArtifacts.Remove(receipt);
+            await checkpoint();
+        }
         foreach (var receipt in job.PrivateArtifacts.Where(r => r.PromotionIdentity is not null).ToArray())
         {
             await using var held = ExportStagingFile.OpenIfPresent(directory, receipt.RelativePath);
@@ -166,6 +207,14 @@ public static class PrivateJobFiles
     public static async Task RemoveAsync(Job job, string directory)
     {
         Workspace.RejectReparsePoints(directory);
+        Inventory(job);
+        foreach (var creation in job.PrivateArtifacts.Where(r => r.CreationIdentity is not null))
+        {
+            await using var partial = ExportStagingFile.OpenIfPresent(directory, creation.RelativePath);
+            if (partial is null) continue;
+            if (!partial.Matches(creation.CreationIdentity!)) throw new IOException("An interrupted private creation was replaced. Files were preserved.");
+            partial.Delete();
+        }
         foreach (var receipt in Inventory(job))
         {
             var identity = job.PrivateArtifacts.FirstOrDefault(r => r.RelativePath.Equals(receipt.Key, StringComparison.OrdinalIgnoreCase))?.PromotionIdentity;

@@ -7,6 +7,24 @@ namespace CommuteCast.Tests;
 
 public class SchemaBackupTests
 {
+    [Fact] public async Task VersionTwoMigrationPreservesPayloadAndVerifiedOriginalSnapshot()
+    {
+        using var test = new TestWorkspace(); var job = MakeJob(); var store = new SqliteJobStore(test.Workspace);
+        await store.SaveAsync(job);
+        await ExecuteAsync(Database(test), "DELETE FROM schema_history WHERE version>2; PRAGMA user_version=2");
+        var original = await PayloadAsync(Database(test));
+        Assert.Equal(2, await SqliteSchema.ValidateDatabaseAsync(Database(test)));
+        Assert.Equal(JsonSerializer.Serialize(job), JsonSerializer.Serialize(Assert.Single(await store.LoadAsync())));
+        Assert.Equal(original, await PayloadAsync(Database(test)));
+        Assert.Equal(SqliteSchema.CurrentVersion, await SqliteSchema.ValidateDatabaseAsync(Database(test)));
+        Assert.Equal(SqliteSchema.CurrentVersion, await ScalarAsync(Database(test), "SELECT count(*) FROM schema_history"));
+        var snapshot = Assert.Single(Directory.GetFiles(Path.Combine(test.Workspace.Root, "schema-backups"), "*.db"));
+        Assert.Equal(2, await SqliteSchema.ValidateDatabaseAsync(snapshot)); Assert.Equal(original, await PayloadAsync(snapshot));
+        using var receipt = JsonDocument.Parse(await File.ReadAllTextAsync(snapshot + ".json"));
+        Assert.Equal(2, receipt.RootElement.GetProperty("fromVersion").GetInt32());
+        Assert.Equal(SqliteSchema.CurrentVersion, receipt.RootElement.GetProperty("toVersion").GetInt32());
+        Assert.Equal(await Workspace.HashFileAsync(snapshot), receipt.RootElement.GetProperty("sha256").GetString());
+    }
     [Fact] public async Task VersionOneMigrationPreservesExactPayloadAudioIdentityAndVerifiedOriginalSnapshot()
     {
         using var test = new TestWorkspace(); var job = MakeJob(); var directory = test.Workspace.JobDirectory(job.Id); Directory.CreateDirectory(directory);
@@ -20,12 +38,12 @@ public class SchemaBackupTests
         Assert.Equal(originalPayload, await PayloadAsync(Database(test)));
         Assert.Equal(JsonSerializer.Serialize(job), JsonSerializer.Serialize(restored));
         Assert.Equal(audioHash, await Workspace.HashFileAsync(audio));
-        Assert.Equal(2, await SqliteSchema.ValidateDatabaseAsync(Database(test)));
-        Assert.Equal(2, await ScalarAsync(Database(test), "SELECT count(*) FROM schema_history"));
+        Assert.Equal(SqliteSchema.CurrentVersion, await SqliteSchema.ValidateDatabaseAsync(Database(test)));
+        Assert.Equal(SqliteSchema.CurrentVersion, await ScalarAsync(Database(test), "SELECT count(*) FROM schema_history"));
         var snapshot = Assert.Single(Directory.GetFiles(Path.Combine(test.Workspace.Root, "schema-backups"), "*.db"));
         Assert.Equal(1, await SqliteSchema.ValidateDatabaseAsync(snapshot)); Assert.Equal(originalPayload, await PayloadAsync(snapshot));
         using var receipt = JsonDocument.Parse(await File.ReadAllTextAsync(snapshot + ".json"));
-        Assert.Equal(1, receipt.RootElement.GetProperty("fromVersion").GetInt32()); Assert.Equal(2, receipt.RootElement.GetProperty("toVersion").GetInt32());
+        Assert.Equal(1, receipt.RootElement.GetProperty("fromVersion").GetInt32()); Assert.Equal(SqliteSchema.CurrentVersion, receipt.RootElement.GetProperty("toVersion").GetInt32());
         Assert.Equal(await Workspace.HashFileAsync(snapshot), receipt.RootElement.GetProperty("sha256").GetString());
         await store.LoadAsync(); Assert.Single(Directory.GetFiles(Path.Combine(test.Workspace.Root, "schema-backups"), "*.db"));
     }
