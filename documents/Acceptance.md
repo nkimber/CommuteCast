@@ -461,3 +461,9 @@ Two new core cases verify heading preference after 2,100 and 249,900 introductor
 Eight added cases cover empty/whitespace/marker-only timestamp fallback, first-heading priority over an opening sentence and later heading, leading blank lines, exclamation/question sentence endings, decimal punctuation and a long heading-free bounded prefix. Timestamp fallback is checked against the observed local minute before/after the call, accommodating a minute boundary. These exercise existing behavior; production sources are unchanged from `09df384`.
 
 All **44 focused IntegrityTests pass, zero failures/skips**, with TRX `tests/CommuteCast.Tests/TestResults/title-corpus-regression.trx`. Full combined CI/package validation remains pending. The corpus supplements existing reserved-name/collision, immutable UTC/DST, late-heading and Unicode-boundary evidence; it does not prove every possible title/timezone or native editor interaction.
+
+## Maximum-input title algorithm timing (2026-10-07)
+
+An isolated Release console referencing actual Core at clean `db166a8`, running .NET 10.0.12, checks exact title output and measures 100 warm calls per 250,000-character fixture after ten warmups. Heading-free input averages 0.636 ms (maximum 1.753 ms); input with its preferred heading at the end averages 0.514 ms (maximum 1.967 ms). Private report and runnable benchmark source are retained under `artifacts/title-performance/f1e3b1d630f1423eb1dd424327544ed5/`.
+
+This measures the core title scan on the current machine, supporting the full-supported-input change without reintroducing the 2,000-character cutoff. It does not measure cold startup, WPF binding/draft-save/keystroke latency, generation contention or the required native responsiveness benchmark. No native interaction is executed or inferred.
