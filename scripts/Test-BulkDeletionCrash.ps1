@@ -6,7 +6,8 @@ $hostPath = Join-Path $projectRoot 'tools\CommuteCast.AcceptanceFixtures\bin\Rel
 $reportRoot = Join-Path $projectRoot ('artifacts\installation-acceptance\bulk-delete-' + [guid]::NewGuid().ToString('N'))
 $cases = @()
 foreach ($scope in @('private','keep-exports','remove-exports')) {
-foreach ($point in @('intent-committed','first-record-removed')) {
+$points = @('intent-committed','first-record-removed'); if ($scope -eq 'remove-exports') { $points += 'export-removal-validated' }
+foreach ($point in $points) {
     $caseRoot = Join-Path $reportRoot ($scope + '-' + $point); $privateRoot = Join-Path $caseRoot 'private'
     New-Item -ItemType Directory -Path $privateRoot | Out-Null
     $marker = Join-Path $caseRoot 'boundary.json'
@@ -25,9 +26,18 @@ foreach ($point in @('intent-committed','first-record-removed')) {
             Start-Sleep -Milliseconds 50
         }
         $observed = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
-        $expected = if ($point -eq 'intent-committed') { 3 } else { 2 }
+        $expected = if ($point -eq 'first-record-removed') { 2 } else { 3 }
         if ($child.HasExited -or $observed.processId -ne $child.Id -or $observed.point -ne $point -or $observed.remainingSelected -ne $expected) { throw 'Bulk marker does not identify the live owned host and durable selected intents.' }
         if ($observed.withExports -ne ($scope -ne 'private') -or $observed.deleteExports -ne ($scope -eq 'remove-exports')) { throw 'Bulk export consent marker differs from selected scope.' }
+        $heldBlocked = $null
+        if ($point -eq 'export-removal-validated') {
+            $expectedRoot = (Join-Path $caseRoot 'separate-exports') + [IO.Path]::DirectorySeparatorChar
+            if (-not [IO.Path]::GetFullPath($observed.heldExport).StartsWith($expectedRoot, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $observed.heldExport -PathType Leaf)) { throw 'Held export differs from this isolated case.' }
+            $probe = $null
+            try { $probe = [IO.File]::Open($observed.heldExport, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); throw 'Validated export was not held exclusively.' }
+            catch [IO.IOException] { $heldBlocked = $true }
+            finally { if ($probe) { $probe.Dispose() } }
+        }
         $child.Kill($false)
         if (-not $child.WaitForExit(10000)) { throw 'Owned bulk host did not terminate.' }
         $null = $output.GetAwaiter().GetResult(); $null = $errors.GetAwaiter().GetResult()
@@ -42,7 +52,7 @@ foreach ($point in @('intent-committed','first-record-removed')) {
     if ($LASTEXITCODE -ne 0) { throw 'Repeated bulk recovery failed.' }
     $second = ($repeated -join "`n") | ConvertFrom-Json
     if (-not $first.passed -or -not $second.passed) { throw 'Bulk recovery assertions failed.' }
-    $cases += [ordered]@{passed=$true;scope=$scope;point=$point;parentOnlyLoss=$true;boundary=$observed;recovery=$first;idempotent=$true}
+    $cases += [ordered]@{passed=$true;scope=$scope;point=$point;parentOnlyLoss=$true;boundary=$observed;heldMutationBlocked=$heldBlocked;recovery=$first;idempotent=$true}
 }
 }
 $report = [ordered]@{passed=$true;fixture=$reportRoot;cases=$cases;createdUtc=[datetime]::UtcNow.ToString('O')}

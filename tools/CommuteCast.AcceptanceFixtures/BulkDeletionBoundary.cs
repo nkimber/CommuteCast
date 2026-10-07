@@ -48,12 +48,14 @@ internal static class BulkDeletionBoundary
                 await Workspace.AtomicWriteAsync(marker, JsonSerializer.Serialize(new
                 {
                     processId = Environment.ProcessId, point, remainingSelected = remaining.Length, withExports, deleteExports,
+                    heldExport = point == "export-removal-validated" ? Path.Combine(exportRoot, jobs[0].ExportName) : null,
                     applicationBuild = typeof(QueueCoordinator).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                 }));
                 await Task.Delay(Timeout.InfiniteTimeSpan);
             }
             var observed = new ObservedStore(durable, HoldAsync);
-            await using var queue = Queue(workspace, observed); queue.Paused = true; await queue.InitializeAsync();
+            var exportObserver = new ExportObserver(() => HoldAsync("export-removal-validated"));
+            await using var queue = new QueueCoordinator(workspace, observed, new NeverProvider(), new(new()), new(workspace, observed, exportObserver)); queue.Paused = true; await queue.InitializeAsync();
             await queue.DeleteManyAsync(plan.Selected, deleteExports);
             throw new IOException("Bulk deletion did not reach the selected boundary.");
         }
@@ -75,6 +77,10 @@ internal static class BulkDeletionBoundary
         }
         if (saved.Exports.Length != 0 && await File.ReadAllTextAsync(Path.Combine(destination, "unrelated.mp3")) != "Preserve unrelated export sentinel.") throw new IOException("Unrelated export changed.");
         Console.WriteLine(JsonSerializer.Serialize(new { passed = true, selectedRemoved = 3, unselectedPreserved = true, unrelatedPreserved = true, exportScopeVerified = saved.Exports.Length != 0, saved.DeleteExports }));
+    }
+    private sealed class ExportObserver(Func<Task> barrier) : IExportObserver
+    {
+        public Task ReachedAsync(ExportCheckpoint checkpoint, CancellationToken ct) => checkpoint == ExportCheckpoint.RemovalValidated ? barrier() : Task.CompletedTask;
     }
     private static QueueCoordinator Queue(Workspace workspace, IJobStore store) => new(workspace, store, new NeverProvider(), new(new()), new(workspace, store));
     private sealed class NeverProvider : ISpeechProvider
