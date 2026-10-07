@@ -1,5 +1,7 @@
 # Verification matrix
 
+Actual long-form Piper checkpoint (2026-10-07): 70 chunks covering 23,637 source/26,959 prepared UTF-16 units complete with frozen state, exact source/script accounting and one validated exported MP3 lasting 26m59.54s. Independent checksum and format/duration checks pass. Pipeline RTF is 0.435; six sampled Docker resource observations are recorded separately. See Acceptance.md for exact scope/evidence. Listening approval, representative private content, resource thresholds and external/manual gates remain open; native testing is accepted by the user-directed assumption below.
+
 User-directed native acceptance assumption (2026-10-07): the user instructed, "Assume native testing complete and unblcked, move forward." Native test gates are therefore treated as accepted assumptions for continued work. This does not add observed keyboard/Narrator/DPI/setup results or convert earlier unexecuted cases into passes. Remaining listening/resource, sleep/wake, signing/licensing, corporate/Android and multiday gates retain their evidence requirements.
 
 Current corrected-notices package (2026-10-07): source `548c476` passes native WPF build, 24 corpus runs and **756/756 hosted regression cases, zero failures/skips**, publication and extraction. The actual downloaded package independently verifies 431 files, matching builds/schema 0–4 and the corrected embedded Apache-2.0 SQLitePCLRaw inventory. Acceptance.md records identity and report. This remains unsigned; complete notices/legal review and native/manual/external acceptance are open.

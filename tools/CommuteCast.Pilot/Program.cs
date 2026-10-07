@@ -17,10 +17,11 @@ if (args.FirstOrDefault() == "--queue-host-child")
 }
 var engine = args.FirstOrDefault() ?? "kokoro";
 if (engine is not ("kokoro" or "piper")) throw new ArgumentException("Use kokoro or piper.");
-if (args.Length > 3 || args.Length == 3 && args[2] is not ("--verify-private-removal" or "--verify-audition" or "--verify-cancellation" or "--verify-stopped-recovery" or "--verify-active-service-loss" or "--verify-queue-host-loss"))
-    throw new ArgumentException("Use an engine, an optional fresh folder under artifacts/pilot, and optional --verify-private-removal, --verify-audition, --verify-cancellation, --verify-stopped-recovery, --verify-active-service-loss or --verify-queue-host-loss.");
+if (args.Length > 3 || args.Length == 3 && args[2] is not ("--verify-private-removal" or "--verify-audition" or "--verify-cancellation" or "--verify-stopped-recovery" or "--verify-active-service-loss" or "--verify-queue-host-loss" or "--verify-long-form"))
+    throw new ArgumentException("Use an engine, an optional fresh folder under artifacts/pilot, and optional --verify-private-removal, --verify-audition, --verify-cancellation, --verify-stopped-recovery, --verify-active-service-loss, --verify-queue-host-loss or --verify-long-form.");
 var verifyPrivateRemoval = args.ElementAtOrDefault(2) == "--verify-private-removal";
 var verifyAudition = args.ElementAtOrDefault(2) == "--verify-audition";
+var verifyLongForm = args.ElementAtOrDefault(2) == "--verify-long-form";
 var pilotParent = Path.GetFullPath(Path.Combine("artifacts", "pilot"));
 var root = Path.GetFullPath(args.ElementAtOrDefault(1) ?? Path.Combine(pilotParent, engine + "-" + Guid.NewGuid().ToString("N")));
 if (!Workspace.IsWithin(pilotParent, root) || root.Equals(pilotParent, StringComparison.OrdinalIgnoreCase) || Directory.Exists(root) || File.Exists(root))
@@ -35,7 +36,7 @@ using var pin = JsonDocument.Parse(await File.ReadAllTextAsync(pinPath)); var im
 var destination = Path.Combine(root, "output"); Directory.CreateDirectory(destination);
 var store = new SqliteJobStore(workspace);
 using var provider = new LocalSpeechProvider(workspace);
-using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
+using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(verifyLongForm ? 60 : 8));
 var readiness = Stopwatch.StartNew();
 var info = await provider.ReadyAsync(engine, timeout.Token);
 readiness.Stop();
@@ -71,6 +72,13 @@ var text = "# A better commute\n\n" + string.Join("\n\n", new[]
     "| Check | Result |\n| --- | --- |\n| Unicode | café 😀 |\n| Literal code | `x_1 = 7;` |",
     "Finally, judge the experience by listening. Automated coverage, checksums, decoding, and duration checks are useful evidence, but they do not prove that every word was pronounced correctly. Listen for pace, volume, technical intelligibility, and joins. This is the final paragraph. The end."
 });
+if (verifyLongForm)
+{
+    var section = text;
+    text = "# Long-form synthetic listening comparison\n\n" + string.Join("\n\n", Enumerable.Range(1, 14)
+        .Select(index => $"## Comparison section {index}\n\n{section}"));
+    await File.WriteAllTextAsync(Path.Combine(root, "approved-source.txt"), text);
+}
 var profile = new PronunciationProfile(Numbers: NumberReading.ScientificWords, Acronyms: AcronymReading.SpellUppercaseWords, Dates: DateReading.IsoYearMonthDay);
 const string dictionary = "CommuteCast=Commute Cast\nSQLite=S Q Lite\n.NET=dot net";
 var job = new Job { Title = "A better commute — " + engine + " pilot", Source = text, Prepared = TextPreparation.Prepare(text, pronunciation: dictionary, profile: profile), Settings = new(engine, engine == "kokoro" ? "af_heart" : "en_US-lessac-medium", 1, false, dictionary, info.Fingerprint, profile, info.ImageId), Destination = destination };
@@ -161,6 +169,21 @@ foreach (var file in privateInventory)
 var report = new { engine, imageId, applicationBuild = typeof(Job).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion, provider = info.Fingerprint, capturedImageId = finished.Settings.ProviderImageId, metadataCaptureVerified = true, metadataCaptureSeconds = capture.Elapsed.TotalSeconds, profile, dictionaryRevision = finished.Prepared.ProfileReview!.DictionaryRevision, pronunciationChanges = finished.Prepared.ProfileReview.Changes.Count, submittedCharacters = text.Length, preparedCharacters = finished.Prepared.Script.Length, sourceAccounted = true, scriptCoverage = true, durableSnapshotVerified = true, chunks = finished.Chunks.Count, finished.CompletedChunks, finished.DurationSeconds, readinessSeconds = readiness.Elapsed.TotalSeconds, wallSeconds = watch.Elapsed.TotalSeconds, realTimeFactor = watch.Elapsed.TotalSeconds / finished.DurationSeconds, timingScope = "generation, validation and local export; model readiness and metadata capture recorded separately", mp3 = exported, sha256 = finished.FinalHash, generation = "passed", localExport = "passed", cloudUpload = "unknown", listeningQuality = "requires user audition", phonePlayback = "not performed" };
 await File.WriteAllTextAsync(Path.Combine(root, "pilot-report.json"), JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
 Console.WriteLine(JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
+if (verifyLongForm)
+{
+    var durationInListeningRange = finished.DurationSeconds is >= 1200 and <= 1800;
+    var longFormReport = new { engine, applicationBuild = report.applicationBuild, imageId,
+        fixture = "Fourteen numbered repetitions of the synthetic technical-profile comparison; not representative private work content",
+        source = "approved-source.txt", sourceCharacters = text.Length, scriptCharacters = finished.Prepared.Script.Length,
+        chunks = finished.Chunks.Count, finished.DurationSeconds, durationInListeningRange,
+        minimumListeningSeconds = 1200, maximumListeningSeconds = 1800,
+        exactSourceAndScriptAccountingVerified = true, retainedChunkReceiptsVerified = true,
+        completedMp3ValidatedAndExported = true, mp3 = exported, sha256 = finished.FinalHash,
+        listeningApproval = "not performed", resourceAcceptance = "not established by pipeline timing" };
+    await File.WriteAllTextAsync(Path.Combine(root, "long-form-report.json"), JsonSerializer.Serialize(longFormReport, new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine(JsonSerializer.Serialize(longFormReport, new JsonSerializerOptions { WriteIndented = true }));
+    if (!durationInListeningRange) throw new IOException("The complete synthetic sample is outside the 20–30-minute listening range. Its validated audio and evidence are retained.");
+}
 if (verifyPrivateRemoval)
 {
     var jobDirectory = workspace.JobDirectory(finished.Id);
