@@ -1,5 +1,7 @@
 # Verification matrix
 
+Hosted source `0c5d513` now passes the complete Windows workflow: **738/738 regression cases, zero failures/skips**, native WPF solution build, portable publication and fresh extraction verification. The downloaded Actions ZIP also verifies locally with 431 files, exact source/build identity and schema 0–4. See the newest Acceptance.md entry for run URL, archive/package hashes and the retained report. The first six-failure hosted run remains recorded; this later full pass does not broaden native/real-engine/listening/signing/corporate/Android acceptance.
+
 Packaged `8379ab6` install/update/rollback/uninstall acceptance now passes the preview-ownership guard: actual confirmed private removal refuses unresolved ownership without changing preview bytes, activation, registration or queued state; original-workspace reconciliation then permits uninstall. Seven launcher/runtime plans and safe cache cleanup also pass. Exact report and limits appear in the newest Acceptance.md entry. Native/real-engine/deployment-host-loss/external acceptance remains separate.
 
 Current local ZIP is clean-source `8379ab6`, including the uninstall ownership guard. Fresh extraction verifies 431 files, matching builds and schema 0–4; extracted maintenance backup/restore checks pass. The newest Acceptance.md entry records hashes and reports. This supersedes the older ZIP gap below, while packaged install/uninstall-guard, native/real-engine and external acceptance remain separate.
