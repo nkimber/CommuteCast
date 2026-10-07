@@ -1,5 +1,7 @@
 # Verification matrix
 
+Current local ZIP is clean-source `8379ab6`, including the uninstall ownership guard. Fresh extraction verifies 431 files, matching builds and schema 0–4; extracted maintenance backup/restore checks pass. The newest Acceptance.md entry records hashes and reports. This supersedes the older ZIP gap below, while packaged install/uninstall-guard, native/real-engine and external acceptance remain separate.
+
 Latest uninstall correction: private-data removal and pending removal recovery refuse unresolved durable preview ownership before deleting its database. Retain-data uninstall preserves preview records/audio. **738/738 complete Release tests pass, zero failures/skips**, and Visual Studio MSBuild builds all eight projects/native WPF. Exact source scope and new invariants are in the newest Acceptance.md entry. The `e6cad21` ZIP predates this fix; packaged installation acceptance must be refreshed separately.
 
 Preview process-loss evidence: ten actual isolated host terminations pass through production AuditionGenerator/LocalSpeechProvider across both synthetic contracts, with original-file ledger reconciliation, idempotence, retry, empty job history, admission retirement and unrelated preservation. Exact report and observed bytes appear in the newest Acceptance.md entry. This supersedes the older synthetic-preview host-loss gap; real speech/native playback and creation before the first ownership checkpoint remain separate. Current direct speech health observations fail; no service-idle assumption or restart is made.
