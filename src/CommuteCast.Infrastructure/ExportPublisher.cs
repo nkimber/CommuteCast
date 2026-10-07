@@ -30,7 +30,8 @@ public sealed class ExportPublisher(Workspace workspace, IJobStore store, IExpor
         var length = Math.Min(title.Length, 70);
         if (length < title.Length && char.IsHighSurrogate(title[length - 1]) && char.IsLowSurrogate(title[length])) length--;
         title = title[..length].TrimEnd(' ', '.');
-        return $"{job.CreatedUtc:yyyyMMdd-HHmmss}-{title}-{job.Id}.mp3";
+        var timestamp = job.CreatedUtc.UtcDateTime.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+        return $"{timestamp}-{title}-{job.Id}.mp3";
     }
     public async Task TestDestinationAsync(string destination, CancellationToken ct = default)
     {

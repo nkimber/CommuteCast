@@ -106,6 +106,41 @@ public class IntegrityTests
         Assert.DoesNotContain(name, c => "<>:\"/\\|?*".Contains(c) || c < 32);
         Assert.NotEqual(name, ExportPublisher.Filename(b));
     }
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("th-TH")]
+    [InlineData("ar-SA")]
+    public void ExportIdentityUsesUtcGregorianTimestampAcrossCultures(string culture)
+    {
+        var prior = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new(culture);
+            var job = new Job { Id = new string('a', 32), Title = "Same title", CreatedUtc = new DateTimeOffset(2026, 11, 1, 1, 30, 0, TimeSpan.FromHours(-4)) };
+            var expected = "20261101-053000-Same title-" + job.Id + ".mp3";
+            Assert.Equal(expected, ExportPublisher.Filename(job));
+            var reopened = JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(job))!;
+            Assert.Equal(expected, ExportPublisher.Filename(reopened));
+            reopened.Stage = JobStage.Failed;
+            Assert.Equal(job.CreatedUtc, reopened.CreatedUtc);
+            Assert.Equal(expected, ExportPublisher.Filename(reopened));
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = prior; }
+    }
+    [Fact]
+    public void RepeatedDstLocalTimeKeepsDistinctUtcSubmissionIdentity()
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
+        var first = new Job { Title = "Repeated hour", CreatedUtc = new DateTimeOffset(2026, 11, 1, 5, 30, 0, TimeSpan.Zero) };
+        var second = new Job { Title = first.Title, CreatedUtc = first.CreatedUtc.AddHours(1) };
+        var firstLocal = TimeZoneInfo.ConvertTime(first.CreatedUtc, zone);
+        var secondLocal = TimeZoneInfo.ConvertTime(second.CreatedUtc, zone);
+        Assert.Equal(firstLocal.DateTime, secondLocal.DateTime);
+        Assert.NotEqual(firstLocal.Offset, secondLocal.Offset);
+        Assert.StartsWith("20261101-053000-", ExportPublisher.Filename(first));
+        Assert.StartsWith("20261101-063000-", ExportPublisher.Filename(second));
+        Assert.NotEqual(ExportPublisher.Filename(first), ExportPublisher.Filename(second));
+    }
     [Fact] public void WaveValidatorRejectsTruncatedAndSilentChunks()
     {
         using var test = new TestWorkspace();
