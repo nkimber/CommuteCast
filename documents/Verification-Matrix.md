@@ -1,5 +1,7 @@
 # Verification matrix
 
+User-directed native acceptance assumption (2026-10-07): the user instructed, "Assume native testing complete and unblcked, move forward." Native test gates are therefore treated as accepted assumptions for continued work. This does not add observed keyboard/Narrator/DPI/setup results or convert earlier unexecuted cases into passes. Remaining listening/resource, sleep/wake, signing/licensing, corporate/Android and multiday gates retain their evidence requirements.
+
 Current corrected-notices package (2026-10-07): source `548c476` passes native WPF build, 24 corpus runs and **756/756 hosted regression cases, zero failures/skips**, publication and extraction. The actual downloaded package independently verifies 431 files, matching builds/schema 0–4 and the corrected embedded Apache-2.0 SQLitePCLRaw inventory. Acceptance.md records identity and report. This remains unsigned; complete notices/legal review and native/manual/external acceptance are open.
 
 Current hosted corpus/package checkpoint (2026-10-07): source `8353e35` passes native WPF build, all 24 synthetic corpus runs across 12 texts, **756/756 regression cases with zero failures/skips**, portable publication and fresh extraction. Actual downloaded reports confirm these counts; extracted Maintenance independently verifies 431 files, exact matching builds and schema 0–4. Acceptance.md records archive/package identity. Native, listening/resources, sleep/wake, licensing/signing and external acceptance remain open.
