@@ -90,6 +90,19 @@ public sealed class SetupDiagnostics(ISetupRuntime runtime)
                 var version = Regex.Match(result.Output.Split('\n')[0], "^" + id + @" version ([A-Za-z0-9._+-]{1,128})(?:\s|$)", RegexOptions.CultureInvariant);
                 Add(id, id == "ffmpeg" ? "Audio encoder" : "Audio validator", version.Success ? SetupStatus.Available : SetupStatus.NeedsAttention,
                     version.Success ? $"Build {version.Groups[1].Value}. Full encode/decode acceptance remains separate." : "The configured executable responded without the expected tool identity.", version.Success ? "" : "Choose the correct approved executable in Settings.");
+                if (id == "ffmpeg" && version.Success)
+                {
+                    const string next = "Choose an approved FFmpeg build with the fd output protocol, then check again.";
+                    var protocols = await Probe("ffmpeg-held-output", "Audio output support", tool, ["-hide_banner", "-protocols"], next);
+                    if (protocols is not null)
+                    {
+                        var lines = protocols.Output.Split('\n').Select(line => line.Trim()).ToArray();
+                        var outputSection = Array.IndexOf(lines, "Output:");
+                        var supported = outputSection >= 0 && lines.Skip(outputSection + 1).Contains("fd", StringComparer.Ordinal);
+                        Add("ffmpeg-held-output", "Audio output support", supported ? SetupStatus.Available : SetupStatus.NeedsAttention,
+                            supported ? "The encoder supports seekable held-file output. Full encode acceptance remains separate." : "The encoder does not advertise the required held-file output support.", supported ? "" : next);
+                    }
+                }
             }
         }
         var wsl = await Probe("wsl", "WSL", "wsl.exe", ["--version"], "Ask IT to verify the configured Linux backend; this check does not install or update Windows features.");

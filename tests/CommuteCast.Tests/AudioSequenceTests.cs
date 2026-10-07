@@ -6,6 +6,55 @@ namespace CommuteCast.Tests;
 
 public class AudioSequenceTests
 {
+    [Fact] public async Task NormalizationPersistsExclusiveCreationThenCanonicalHashBeforeReturning()
+    {
+        using var test = new TestWorkspace(); var job = new Job(); var store = new SqliteJobStore(test.Workspace);
+        var directory = test.Workspace.JobDirectory(job.Id); Directory.CreateDirectory(directory);
+        var input = Path.Combine(directory, "input.wav"); TestWorkspace.WriteWave(input);
+        var output = Path.Combine(directory, "normalized.partial.wav"); var saves = 0;
+        await new AudioPipeline(new()).NormalizeAsync(job, input, output, async () =>
+        {
+            await store.SaveAsync(job); var receipt = Assert.Single(Assert.Single(await store.LoadAsync()).PrivateArtifacts);
+            Assert.Throws<IOException>(() => File.WriteAllText(output, "unknown replacement"));
+            if (++saves == 1) { Assert.NotNull(receipt.CreationIdentity); Assert.Equal("", receipt.Hash); }
+            else { Assert.Null(receipt.CreationIdentity); Assert.Equal(64, receipt.Hash.Length); }
+        }, default);
+        Assert.Equal(2, saves); Assert.Equal(24000, WaveAudio.Inspect(output).Samples);
+        Assert.Equal(await Workspace.HashFileAsync(output), PrivateJobFiles.Inventory(Assert.Single(await store.LoadAsync()))["normalized.partial.wav"]);
+        var original = await File.ReadAllBytesAsync(input);
+        await Assert.ThrowsAsync<IOException>(() => new AudioPipeline(new()).NormalizeAsync(input, output, default));
+        Assert.Equal(original, await File.ReadAllBytesAsync(input)); Assert.Equal(24000, WaveAudio.Inspect(output).Samples);
+    }
+
+    [Fact] public async Task EncoderPersistsCreationUnderExclusiveHandleAndRetainsDurableFinalReceipt()
+    {
+        using var test = new TestWorkspace(); var job = await ToneJobAsync(test); var store = new SqliteJobStore(test.Workspace);
+        var directory = test.Workspace.JobDirectory(job.Id); var observed = false;
+        await new AudioPipeline(new()).AssembleAsync(job, directory, default, async () =>
+        {
+            await store.SaveAsync(job);
+            if (!job.PrivateArtifacts.Any(r => r.RelativePath == "encoded.partial.mp3" && r.CreationIdentity is not null)) return;
+            var saved = Assert.Single(await store.LoadAsync()); Assert.NotNull(saved.PrivateArtifacts.Single(r => r.RelativePath == "encoded.partial.mp3").CreationIdentity);
+            Assert.Throws<IOException>(() => File.WriteAllText(Path.Combine(directory, "encoded.partial.mp3"), "replacement")); observed = true;
+        });
+        Assert.True(observed); var reopened = Assert.Single(await store.LoadAsync());
+        Assert.DoesNotContain(reopened.PrivateArtifacts, r => r.CreationIdentity is not null || r.PromotionIdentity is not null);
+        Assert.Equal(await Workspace.HashFileAsync(test.Workspace.FinalPath(job)), PrivateJobFiles.Inventory(reopened)["complete.mp3"]);
+    }
+
+    [Fact] public async Task FailedNormalizerDeletesItsHeldPartialAndAllowsDurableRetry()
+    {
+        using var test = new TestWorkspace(); var job = new Job(); var store = new SqliteJobStore(test.Workspace);
+        var directory = test.Workspace.JobDirectory(job.Id); Directory.CreateDirectory(directory);
+        var input = Path.Combine(directory, "input.wav"); TestWorkspace.WriteWave(input);
+        var output = Path.Combine(directory, "normalized.partial.wav"); var unknown = Path.Combine(directory, "unknown.txt"); await File.WriteAllTextAsync(unknown, "preserve");
+        await Assert.ThrowsAsync<IOException>(() => new AudioPipeline(new() { Ffmpeg = "missing-commutecast-tool.exe" }).NormalizeAsync(job, input, output, () => store.SaveAsync(job), default));
+        Assert.False(File.Exists(output)); var retry = Assert.Single(await store.LoadAsync());
+        Assert.NotNull(Assert.Single(retry.PrivateArtifacts).CreationIdentity);
+        await new AudioPipeline(new()).NormalizeAsync(retry, input, output, () => store.SaveAsync(retry), default);
+        Assert.Equal(24000, WaveAudio.Inspect(output).Samples); Assert.Equal("preserve", await File.ReadAllTextAsync(unknown));
+    }
+
     [Fact] public async Task OrdinalTonesSurviveOneMp3EncodeInOrderWithMetadataAndFrameCount()
     {
         using var test = new TestWorkspace(); var job = await ToneJobAsync(test); var audio = new AudioPipeline(new());

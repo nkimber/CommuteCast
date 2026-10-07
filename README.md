@@ -14,7 +14,7 @@ dotnet build .\CommuteCast.sln -c Release
 
 ## Run on this machine
 
-Prerequisites: Windows, .NET 10 SDK (or the portable self-contained package), approved Docker Desktop with its local Linux-container context, and FFmpeg / FFprobe on PATH. These tools are already present on the development machine. No administrator privileges are needed by the app.
+Prerequisites: Windows, .NET 10 SDK (or the portable self-contained package), approved Docker Desktop with its local Linux-container context, and FFmpeg / FFprobe on PATH. FFmpeg must advertise `fd` under `Output:` in `ffmpeg -hide_banner -protocols`; the read-only setup check reports this capability. These tools are already present on the development machine. No administrator privileges are needed by the app.
 
 ```powershell
 # One-time speech provisioning. Downloads public packages and model files during build.

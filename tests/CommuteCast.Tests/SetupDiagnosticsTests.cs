@@ -21,7 +21,7 @@ public class SetupDiagnosticsTests
         Assert.True(report.SelectedSpeechAvailable); Assert.Equal(SetupStatus.ReviewRequired, Find(report, "policy").Status);
         Assert.Contains("2026-03-01-git-approved", Find(report, "ffmpeg").Detail);
         Assert.Equal(new[] { "kokoro", "piper" }, runtime.SpeechCalls);
-        Assert.All(runtime.Commands, call => Assert.True(call is "ffmpeg -version" or "ffprobe -version" or "wsl.exe --version" or "docker --version" or "docker context inspect --format {{.Endpoints.docker.Host}}" or "docker version --format {{.Server.Version}}", call));
+        Assert.All(runtime.Commands, call => Assert.True(call is "ffmpeg -version" or "ffmpeg -hide_banner -protocols" or "ffprobe -version" or "wsl.exe --version" or "docker --version" or "docker context inspect --format {{.Endpoints.docker.Host}}" or "docker version --format {{.Server.Version}}", call));
         Assert.DoesNotContain("Private echo", JsonSerializer.Serialize(report));
     }
     [Fact] public async Task MissingCliDoesNotInspectContextDaemonOrSpeech()
@@ -84,6 +84,14 @@ public class SetupDiagnosticsTests
         var report = await new SetupDiagnostics(runtime).CheckAsync(new()); Assert.Equal(SetupStatus.NeedsAttention, Find(report, "platform").Status); Assert.Equal(SetupStatus.NeedsAttention, Find(report, "resources").Status);
     }
     private static SetupCheck Find(SetupReport report, string id) => Assert.Single(report.Checks, c => c.Id == id);
+    [Theory] [InlineData("Input:\n fd\nOutput:\n pipe", false)] [InlineData("Input:\n pipe\nOutput:\n fd\n pipe", true)]
+    public async Task SeekableOutputRequiresFdInOutputProtocolSection(string protocols, bool supported)
+    {
+        var runtime = new Runtime { Execute = (_, args) => args.Contains("-protocols") ? new(0, protocols + "\n Private echo", "") : null };
+        var report = await new SetupDiagnostics(runtime).CheckAsync(new());
+        Assert.Equal(supported ? SetupStatus.Available : SetupStatus.NeedsAttention, Find(report, "ffmpeg-held-output").Status);
+        Assert.DoesNotContain("Private echo", JsonSerializer.Serialize(report));
+    }
     private sealed class Runtime : ISetupRuntime
     {
         public static SetupHost GoodHost => new(true, "X64", new(10, 0, 26100), "10.0.12", 8, 16UL * 1024 * 1024 * 1024, "4.62.0", true);
@@ -97,6 +105,7 @@ public class SetupDiagnosticsTests
         {
             Commands.Add(tool + " " + string.Join(" ", args)); if (Pending is not null) return Pending(ct);
             var result = Execute?.Invoke(tool, args) ?? new(0, tool switch {
+                "ffmpeg" when args.Contains("-protocols") => "Input:\n file\n pipe\n fd\nOutput:\n file\n pipe\n fd",
                 "ffmpeg" or "ffprobe" => tool + " version 2026-03-01-git-approved Private echo",
                 "wsl.exe" => "WSL version: 2.6.0.0\nKernel version: 6.6.0 Private echo",
                 _ => args[0] == "context" ? "npipe:////./pipe/dockerDesktopLinuxEngine" : "Docker version 29.2.1 Private echo" }, "Private echo");

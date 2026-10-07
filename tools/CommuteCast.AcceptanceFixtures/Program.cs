@@ -13,7 +13,8 @@ var validScope = args[0] switch
     "promotion-barrier" => args.Length == 4 && args[2] is "chunk" or "final" && args[3] is "before" or "after",
     "promotion-recover" => args.Length == 2,
     "write-barrier" => args.Length == 3 && args[2] is "before-write" or "during-write" or "before-complete-save" or "after-complete-save",
-    "write-recover" => args.Length == 2, _ => false
+    "write-recover" => args.Length == 2,
+    "audio-write-barrier" or "audio-write-recover" => args.Length == 3 && args[2] is "wav" or "mp3", _ => false
 };
 if (!validScope) throw new ArgumentException("Invalid fixture command scope.");
 var repository = new DirectoryInfo(AppContext.BaseDirectory);
@@ -52,6 +53,10 @@ if (boundary)
     if (File.Exists(marker) || Directory.Exists(marker) || !Directory.Exists(root)) throw new IOException("A fresh fixture boundary marker and existing private root are required.");
 }
 var workspace = new Workspace(root); using var lease = WorkspaceLease.Acquire(workspace);
+if (args[0] is "audio-write-barrier" or "audio-write-recover")
+{
+    await AudioWriteBoundary.RunAsync(args, workspace, marker); return;
+}
 if (args[0] is "write-barrier" or "write-recover")
 {
     await PrivateWriteBoundary.RunAsync(args, workspace, marker); return;

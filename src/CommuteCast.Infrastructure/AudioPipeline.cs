@@ -16,11 +16,18 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
         if (job.Receipts.Count != job.Chunks.Count || !job.Receipts.OrderBy(r => r.Index).Select(r => r.Index).SequenceEqual(Enumerable.Range(0, job.Chunks.Count)) ||
             job.Receipts.Any(r => r.Fingerprint != job.Fingerprint || !double.IsFinite(r.Duration) || r.Duration <= 0)) throw new IOException("Validated receipt sequence or contract is incompatible. Publication is blocked.");
     }
-    public async Task NormalizeAsync(string input, string output, CancellationToken ct)
+    public Task NormalizeAsync(string input, string output, CancellationToken ct) =>
+        NormalizeAsync(new Job(), input, output, () => Task.CompletedTask, ct);
+
+    public async Task NormalizeAsync(Job job, string input, string output, Func<Task> checkpoint, CancellationToken ct)
     {
         WaveAudio.DataRegion(input, false);
-        var result = await ProcessRunner.RunAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-y", "-protocol_whitelist", "file,pipe", "-i", input, "-map", "0:a:0", "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", output], TimeSpan.FromMinutes(2), ct);
-        if (result.ExitCode != 0) throw new IOException("The speech audio could not be decoded to PCM. This chunk will be regenerated on retry.");
+        await PrivateJobFiles.WriteRecordedAsync(job, Path.GetDirectoryName(Path.GetFullPath(output))!, Path.GetFileName(output), async stream =>
+        {
+            var result = await ProcessRunner.RunToFileAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-n", "-protocol_whitelist", "file,pipe,fd", "-i", input, "-map", "0:a:0", "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", "-fd", "1", "fd:"], (FileStream)stream, 192L * 1024 * 1024, TimeSpan.FromMinutes(2), ct);
+            if (result.ExitCode != 0) throw new IOException("The speech audio could not be decoded to PCM. This chunk will be regenerated on retry.");
+            WaveAudio.DataRegion(stream);
+        }, checkpoint, ct);
     }
     public Task<AudioInfo> ValidateChunkAsync(string path, string text, CancellationToken ct) => Task.Run(() =>
     {
@@ -66,12 +73,11 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
                 if (chunk.Index < gaps.Length) await output.WriteAsync(new byte[gaps[chunk.Index] * 2], ct);
             }
         }, checkpoint ?? (() => Task.CompletedTask), ct);
-        var temporary = Path.Combine(directory, "encoded.partial.mp3");
-        await PrivateJobFiles.PrepareOutputAsync(job, directory, "encoded.partial.mp3", ct);
-        var encode = await ProcessRunner.RunAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-y", "-protocol_whitelist", "file,pipe", "-f", "wav", "-i", assembled, "-c:a", "libmp3lame", "-b:a", "128k", "-id3v2_version", "3", "-metadata", "title=" + job.Title, "-metadata", "artist=CommuteCast", "-metadata", "date=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_created_utc=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_job_id=" + job.Id, "-metadata", "comment=CommuteCast job " + job.Id, temporary], TimeSpan.FromMinutes(15), ct);
-        if (encode.ExitCode != 0) throw new IOException("MP3 encoding failed. Validated chunks are retained. Check FFmpeg and free disk space.");
-        await PrivateJobFiles.RecordAsync(job, directory, "encoded.partial.mp3", ct);
-        if (checkpoint is not null) await checkpoint();
+        await PrivateJobFiles.WriteRecordedAsync(job, directory, "encoded.partial.mp3", async output =>
+        {
+            var encode = await ProcessRunner.RunToFileAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-n", "-protocol_whitelist", "file,pipe,fd", "-f", "wav", "-i", assembled, "-c:a", "libmp3lame", "-b:a", "128k", "-id3v2_version", "3", "-metadata", "title=" + job.Title, "-metadata", "artist=CommuteCast", "-metadata", "date=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_created_utc=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_job_id=" + job.Id, "-metadata", "comment=CommuteCast job " + job.Id, "-f", "mp3", "-fd", "1", "fd:"], (FileStream)output, checked(total * 2 + 1024 * 1024), TimeSpan.FromMinutes(15), ct);
+            if (encode.ExitCode != 0) throw new IOException("MP3 encoding failed. Validated chunks are retained. Check FFmpeg and free disk space.");
+        }, checkpoint ?? (() => Task.CompletedTask), ct);
         ct.ThrowIfCancellationRequested();
         await PrivateJobFiles.MoveRecordedAsync(job, directory, "encoded.partial.mp3", "complete.mp3", checkpoint ?? (() => Task.CompletedTask), ct);
     }

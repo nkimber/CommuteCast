@@ -300,10 +300,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                         await provider.SynthesizeAsync(job.Settings, chunk.Text, raw, ct);
                         await PrivateJobFiles.RecordAsync(job, directory, Path.GetFileName(raw), ct);
                         await store.SaveAsync(job, ct);
-                        await PrivateJobFiles.PrepareOutputAsync(job, directory, Path.GetFileName(normalized), ct);
-                        await audio.NormalizeAsync(raw, normalized, ct);
-                        await PrivateJobFiles.RecordAsync(job, directory, Path.GetFileName(normalized), ct);
-                        await store.SaveAsync(job, ct);
+                        await audio.NormalizeAsync(job, raw, normalized, () => store.SaveAsync(job, ct), ct);
                         var checkedAudio = await audio.ValidateChunkAsync(normalized, chunk.Text, ct);
                         var hash = await Workspace.HashFileAsync(normalized, ct);
                         ct.ThrowIfCancellationRequested();
