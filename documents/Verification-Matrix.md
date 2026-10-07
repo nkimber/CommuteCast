@@ -1,4 +1,6 @@
 # Verification matrix
+Latest package lifecycle refresh (2026-10-07): the downloaded `db166a8` package passes actual Maintenance backup/restore and CLI install/update/rollback/undo, both uninstall scopes, preview-removal guard, seven launcher/runtime inspection plans, registration and reviewed cache cleanup. See Acceptance.md for report paths and exact scope. Launcher inspection timings are not native startup/interaction acceptance; current native/real-engine/external gates remain open.
+
 Current hosted checkpoint (2026-10-07): source `db166a8`, including both title corrections and the expanded corpus, passes **756/756 hosted regression cases, zero failures/skips**, native WPF build, portable publication and fresh extraction. The downloaded ZIP independently verifies 431 files, matching application builds and schema 0–4. Acceptance.md records run, package/hash and private report. Earlier package/lifecycle evidence retains its earlier build scope; current native/real-engine/external gates remain open.
 
 Latest Compose correction (2026-10-07): automatic title inspection covers the full supported input limit rather than the first 2,000 characters. Late-heading core cases and all 36 focused IntegrityTests pass; Visual Studio MSBuild builds native WPF. Native setter interaction/latency and updated full regression/package remain unverified.
