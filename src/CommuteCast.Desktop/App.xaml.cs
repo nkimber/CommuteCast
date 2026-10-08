@@ -113,8 +113,8 @@ public partial class App : Application
     private static void SetTheme()
     {
         var palette = dark
-            ? new Dictionary<string, string> { ["Canvas"] = "#202722", ["Surface"] = "#2A332D", ["Ink"] = "#F3F0E8", ["Muted"] = "#B7C2BA", ["Line"] = "#536056", ["Tint"] = "#343E33", ["Sidebar"] = "#18221B", ["Accent"] = "#AA4B27", ["Error"] = "#FFB193" }
-            : new Dictionary<string, string> { ["Canvas"] = "#F7F5EF", ["Surface"] = "#FFFEFA", ["Ink"] = "#26352B", ["Muted"] = "#616B62", ["Line"] = "#DADFD5", ["Tint"] = "#ECEEE1", ["Sidebar"] = "#26382C", ["Accent"] = "#AA4B27", ["Error"] = "#A43520" };
+            ? new Dictionary<string, string> { ["Canvas"] = "#202722", ["Surface"] = "#2A332D", ["Ink"] = "#F3F0E8", ["Muted"] = "#B7C2BA", ["Line"] = "#536056", ["Tint"] = "#343E33", ["Sidebar"] = "#18221B", ["Accent"] = "#AA4B27", ["Progress"] = "#66C98A", ["Error"] = "#FFB193" }
+            : new Dictionary<string, string> { ["Canvas"] = "#F7F5EF", ["Surface"] = "#FFFEFA", ["Ink"] = "#26352B", ["Muted"] = "#616B62", ["Line"] = "#DADFD5", ["Tint"] = "#ECEEE1", ["Sidebar"] = "#26382C", ["Accent"] = "#AA4B27", ["Progress"] = "#237A45", ["Error"] = "#A43520" };
         foreach (var (key, value) in palette) Current.Resources[key] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(value));
         Current.Resources["SidebarInk"] = new SolidColorBrush(Color.FromRgb(248, 244, 234));
         Current.Resources["SidebarMuted"] = new SolidColorBrush(Color.FromRgb(173, 183, 174));
@@ -123,6 +123,7 @@ public partial class App : Application
             foreach (var key in new[] { "Canvas", "Surface", "Tint", "Sidebar" }) Current.Resources[key] = SystemColors.WindowBrush;
             foreach (var key in new[] { "Ink", "Muted", "Error", "Line" }) Current.Resources[key] = SystemColors.WindowTextBrush;
             Current.Resources["Accent"] = SystemColors.HighlightBrush;
+            Current.Resources["Progress"] = SystemColors.HighlightBrush;
             Current.Resources["SidebarInk"] = SystemColors.WindowTextBrush;
             Current.Resources["SidebarMuted"] = SystemColors.WindowTextBrush;
         }
