@@ -5,6 +5,16 @@ namespace CommuteCast.Tests;
 public class JobRecoveryTests
 {
     [Fact]
+    public void PendingReservationExplainsRetainedProgressAndSameJobRepair()
+    {
+        var job = new Job { Stage = JobStage.Failed, Error = "Speech cancellation is still settling. The saved reservation blocks both engines." };
+        var instructions = JobRecovery.Instructions(job);
+        Assert.Contains("does not mean completed segments were lost", instructions);
+        Assert.Contains("Repair speech & resume", instructions);
+        Assert.Contains("keeping validated segments", instructions);
+        Assert.Contains("Do not submit another copy", instructions);
+    }
+    [Fact]
     public void ExhaustionExplainsTheLimitWithoutInventingACauseAndUsesSavedEngine()
     {
         var job = new Job { Stage = JobStage.Failed, FailedStage = JobStage.WaitingForService,

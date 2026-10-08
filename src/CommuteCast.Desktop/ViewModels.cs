@@ -56,6 +56,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false)
         Error.Length > 0 ? "Error\n" + Error : "", HasRecoveryInstructions ? "How to fix\n" + RecoveryInstructions : "" }.Where(s => s.Length > 0));
     public double Progress => Job.CompletedChunks;
     public double ChunkTotal => Math.Max(1, Job.Chunks.Count);
+    public string ProgressSummary => $"{Job.CompletedChunks} of {Job.Chunks.Count} segments completed and validated";
     public string Details => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.FailedStage is { } stage ? $"\nStopped during: {stage}" : "") + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
     public string Error => string.Join(Environment.NewLine, new[] { Job.Error,
         string.IsNullOrWhiteSpace(Job.ExportNotice) || Job.Error.Contains(Job.ExportNotice, StringComparison.Ordinal) ? "" : Job.ExportNotice,

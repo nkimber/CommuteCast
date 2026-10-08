@@ -11,13 +11,42 @@ public partial class ProviderContractTests
     private static void WriteAdmission(Fixture fixture, long sequence = 1) => File.WriteAllText(AdmissionPath(fixture), JsonSerializer.Serialize(new
     { Version = 1, fixture.Engine, Image = FakeRuntime.Image, fixture.Fingerprint, Instance = fixture.Http.Instance, Sequence = sequence }));
 
+    [Fact] public async Task SlowOwnershipVerificationDoesNotConsumeInferenceSettlementAllowance()
+    {
+        using var fixture = new Fixture(); WriteAdmission(fixture);
+        fixture.Runtime.BeforeDocker = async (args, ct) =>
+        { if (args[0] == "inspect") await Task.Delay(2200, ct); };
+        // Give file I/O and fixture initialization room under concurrent builds;
+        // the inspection still exceeds the separate settlement allowance.
+        using var provider = fixture.Provider(Fixture.ShortLimits with { Readiness = TimeSpan.FromSeconds(30), Quiescence = TimeSpan.FromSeconds(2) });
+        await provider.ReadyAsync(fixture.Engine, default, true);
+        Assert.Equal(1, fixture.Http.Settles);
+        Assert.False(File.Exists(AdmissionPath(fixture)));
+        Assert.Equal(0, fixture.Runtime.Starts); Assert.Equal(0, fixture.Http.Posts);
+    }
+    [Fact] public async Task OwnershipVerificationTimeoutDoesNotClaimInferenceIsStillActive()
+    {
+        using var fixture = new Fixture(); WriteAdmission(fixture);
+        var saved = await File.ReadAllTextAsync(AdmissionPath(fixture));
+        fixture.Runtime.BeforeDocker = async (_, ct) => await Task.Delay(Timeout.Infinite, ct);
+        using var provider = fixture.Provider(Fixture.ShortLimits with { Readiness = TimeSpan.FromMilliseconds(200) });
+        var error = await Assert.ThrowsAsync<TimeoutException>(() => provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default));
+        Assert.Contains("does not establish that inference is active", error.Message);
+        Assert.Equal(saved, await File.ReadAllTextAsync(AdmissionPath(fixture)));
+        Assert.Equal(0, fixture.Http.Settles); Assert.Equal(0, fixture.Http.Posts); Assert.Equal(0, fixture.Runtime.Starts);
+    }
+
     [Fact] public async Task AdmissionGateWaitUsesTheRequestDeadlineAndDoesNotReleaseAnotherOwner()
     {
         using var fixture = new Fixture(); var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.Http.Speech = (_, _) => { entered.SetResult(); return release.Task; };
         fixture.Http.Control = (route, body, _) => Task.FromResult(fixture.Http.ControlResponse(body, route == "/reserve" ? "reserved" : "active"));
-        using var provider = fixture.Provider(Fixture.ShortLimits with { Synthesis = TimeSpan.FromMilliseconds(150), Quiescence = TimeSpan.FromMilliseconds(500) });
+        // The first request must reach the server before cancellation. A 150ms
+        // budget can expire in journal file I/O on this Windows machine. Keep
+        // settlement longer than the second caller's budget to prove its wait
+        // times out without releasing the first caller's admission gate.
+        using var provider = fixture.Provider(Fixture.ShortLimits with { Synthesis = TimeSpan.FromSeconds(2), Quiescence = TimeSpan.FromSeconds(4) });
         using var stop = new CancellationTokenSource();
         var first = provider.SynthesizeAsync(fixture.Settings, "first", fixture.Output, stop.Token);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); stop.Cancel();

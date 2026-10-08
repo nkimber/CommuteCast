@@ -6,6 +6,8 @@ public static class JobRecovery
     {
         if (job.Stage != JobStage.Failed && !(job.Stage == JobStage.Deleting && job.Error.Length > 0)) return "";
         var error = job.Error;
+        if (error.Contains("saved reservation blocks", StringComparison.OrdinalIgnoreCase) || error.Contains("saved speech reservation", StringComparison.OrdinalIgnoreCase))
+            return "An earlier speech request has a saved reservation. The app must verify that request has stopped before allowing another; this error can also mean Docker verification was too slow. It does not mean completed segments were lost.\n\nWait for inference to finish, then choose Repair speech & resume on this existing narration. It checks and settles the reservation, verifies the captured model and retries while keeping validated segments. Choose Resume queue if paused. If the check fails again, copy its latest result for diagnosis. Do not submit another copy or delete the reservation manually.";
         if (error.Contains("recovery is exhausted", StringComparison.OrdinalIgnoreCase))
             return $"An earlier failed readiness attempt used the automatic recovery allowance for {job.Settings.Engine}. It stays used across restarts and provisioning. This message does not identify the original service failure.\n\n" +
                 $"1. Choose Repair speech & resume here to reset the {job.Settings.Engine} recovery allowance, start its verified container if stopped, check the captured model and resume this existing job. If repair succeeds, only choose Resume queue if paused. Alternatively, Check saved speech service performs the readiness check without resuming; if that check succeeds, go to step 4.\n" +

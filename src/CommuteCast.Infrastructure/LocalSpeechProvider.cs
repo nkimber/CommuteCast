@@ -388,8 +388,11 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
     {
         var pending = await PendingSpeechAdmission.LoadAsync(workspace, ct);
         if (pending is null) return;
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Quiescence);
+        // Docker ownership checks can take longer than the inference-settlement
+        // allowance. Give verification its bounded readiness budget first.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Readiness);
         var (admission, hash) = pending.Value;
+        var verifying = true;
         try
         {
             string image;
@@ -401,6 +404,8 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
                 // gets a new instance token and rejects the old request.
                 await RemoveAdmissionAsync(hash); return;
             }
+            verifying = false;
+            deadline.CancelAfter(limits.Quiescence);
             while (true)
             {
                 var info = await HealthAsync(admission.Engine, deadline.Token); RequireAdmission(info);
@@ -422,7 +427,9 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
             await RemoveAdmissionAsync(hash);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        { throw new TimeoutException("Speech cancellation is still settling. The saved reservation blocks both engines; wait for local inference to finish, then check readiness or retry. No service was restarted."); }
+        { throw new TimeoutException(verifying
+            ? "The saved speech reservation could not be checked because Docker ownership verification timed out. This does not establish that inference is active. Check the saved speech service and retry the existing narration. Saved chunks and the reservation are retained; no service was restarted."
+            : "Speech cancellation is still settling. The saved reservation blocks both engines; wait for local inference to finish, then check readiness or retry. No service was restarted."); }
     }
     private async Task RemoveAdmissionAsync(string hash)
     {

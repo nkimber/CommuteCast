@@ -418,13 +418,15 @@ public partial class ProviderContractTests
                 Mounts = Array.Empty<object>(), State = new { Running = true, OOMKilled = false, Paused = false, Restarting = false }
             })!;
         }
-        public Task<ProcessResult> DockerAsync(IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken ct)
+        public Func<IReadOnlyList<string>, CancellationToken, Task>? BeforeDocker { get; set; }
+        public async Task<ProcessResult> DockerAsync(IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken ct)
         {
+            if (BeforeDocker is not null) await BeforeDocker(arguments, ct);
             ct.ThrowIfCancellationRequested(); Calls.Add(arguments.ToArray());
-            if (arguments[0] == "context") return Task.FromResult(new ProcessResult(0, Context, ""));
-            if (arguments[0] == "version") return Task.FromResult(DaemonFailures-- > 0 ? new ProcessResult(1, "", "daemon unavailable") : new ProcessResult(0, "29.2.1", ""));
-            if (arguments[0] == "start") { Starts++; Container["State"]!["Running"] = true; OnStart?.Invoke(); return Task.FromResult(new ProcessResult(0, arguments[1], "")); }
-            return Task.FromResult(Missing ? new ProcessResult(1, "", "missing") : new ProcessResult(0, MetadataOverride ?? "[" + Container.ToJsonString() + "]", ""));
+            if (arguments[0] == "context") return new ProcessResult(0, Context, "");
+            if (arguments[0] == "version") return DaemonFailures-- > 0 ? new ProcessResult(1, "", "daemon unavailable") : new ProcessResult(0, "29.2.1", "");
+            if (arguments[0] == "start") { Starts++; Container["State"]!["Running"] = true; OnStart?.Invoke(); return new ProcessResult(0, arguments[1], ""); }
+            return Missing ? new ProcessResult(1, "", "missing") : new ProcessResult(0, MetadataOverride ?? "[" + Container.ToJsonString() + "]", "");
         }
         public void LaunchInstalledDesktop() => Launches++;
     }
