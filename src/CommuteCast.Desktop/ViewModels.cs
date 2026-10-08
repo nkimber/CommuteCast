@@ -50,6 +50,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
     public string Guidance => Presentation.Guidance;
     public bool IsWorking => Presentation.IsWorking;
     public bool NeedsAttention => Presentation.NeedsAttention;
+    public bool CanResume => (Job.Stage is JobStage.Failed or JobStage.Cancelled) && !Job.ExportCommitted && !Job.DeletionRequested;
     public string RecoveryInstructions => JobRecovery.Instructions(Job);
     public bool HasRecoveryInstructions => RecoveryInstructions.Length > 0;
     public bool NeedsSpeechCheck => Job.Stage == JobStage.Failed && (Job.FailedStage is JobStage.WaitingForService or JobStage.Synthesizing || Job.FailureCategory is FailureCategory.ServiceConnection or FailureCategory.ServiceContract or FailureCategory.Prerequisite);
@@ -85,6 +86,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
     {
         Raise(nameof(Status)); Raise(nameof(ActivityNotice)); Raise(nameof(TimingSummary));
         Raise(nameof(IsWorking)); Raise(nameof(NeedsAttention)); Raise(nameof(FailureSummary));
+        Raise(nameof(CanResume));
     }
     public string Details => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.FailedStage is { } stage ? $"\nStopped during: {stage}" : "") + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
     public string Error => string.Join(Environment.NewLine, new[] { Job.Error,
@@ -236,6 +238,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public ICommand OpenFolderCommand { get; }
     public ICommand InspectCommand { get; }
     public ICommand RetryCommand { get; }
+    public ICommand ResumeJobCommand { get; }
     public ICommand ReplaceDestinationCommand { get; }
     public ICommand CancelCommand { get; }
     public ICommand ReuseCommand { get; }
@@ -293,7 +296,15 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         StopCommand = Command(_ => StopPlaybackAsync(true));
         OpenFolderCommand = Command(_ => { var job = RequireSelected(); if (!Directory.Exists(job.Destination)) throw new IOException("The recorded output folder is missing."); Process.Start(new ProcessStartInfo(job.Destination) { UseShellExecute = true }); return Task.CompletedTask; });
         InspectCommand = Command(_ => { var job = RequireSelected(); ShowPreparation(job.Prepared, job.Source); return Task.CompletedTask; });
-        RetryCommand = Command(async _ => { var job = RequireSelected(); await provider.ResetRecoveryBudgetAsync(job.Settings.Engine, shutdown.Token); await queue.RetryAsync(job.Id); });
+        RetryCommand = Command(_ => ResumeAsync(RequireSelected()));
+        ResumeJobCommand = Command(async parameter =>
+        {
+            var row = parameter as JobView ?? throw new ArgumentException("Choose a saved narration to resume.");
+            var job = queue.Snapshot().SingleOrDefault(j => j.Id == row.Id) ?? throw new ArgumentException("This narration no longer exists. Refresh the library.");
+            if (!new JobView(job, Workspace).CanResume) throw new ArgumentException("This narration is already queued, running, exported or pending removal.");
+            SelectedJob = Jobs.FirstOrDefault(j => j.Id == job.Id);
+            await ResumeAsync(job);
+        });
         ReplaceDestinationCommand = Command(async _ => { var job = RequireSelected(); var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); await queue.RetryAsync(job.Id, path); StatusMessage = queue.Snapshot().Single(j => j.Id == job.Id).ExportNotice is { Length: > 0 } notice ? notice : "Narration queued in the selected output folder."; } });
         CancelCommand = Command(async _ => { var id = RequireSelected().Id; await queue.CancelAsync(id); StatusMessage = "Cancellation settled. Exported files remain exported; validated chunks are retained for retry."; });
         ReuseCommand = Command(_ => { var job = RequireSelected(); DraftTitle = job.Title; Source = job.Source; Engine = job.Settings.Engine; Voice = job.Settings.Voice; Speed = job.Settings.Speed; ExcludeCode = job.Settings.ExcludeCode; Pronunciation = job.Settings.Pronunciation; settings.PronunciationProfile = job.Settings.Profile ?? new(); RaiseProfile(); Navigate("compose"); return Task.CompletedTask; });
@@ -311,6 +322,15 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private void Navigate(string value) { page = value; Raise(nameof(IsCompose)); Raise(nameof(IsLibrary)); Raise(nameof(IsSettings)); Raise(nameof(PageHeading)); }
     private void SetSelectedSpeechResult(string id, string result) { checkedJobId = id; selectedSpeechResult = result; Raise(nameof(SelectedSpeechResult)); Raise(nameof(SelectedDetailsForCopy)); }
     private Job RequireSelected() => SelectedJob?.Job ?? throw new ArgumentException("Select a narration first.");
+    private async Task ResumeAsync(Job job)
+    {
+        await provider.ResetRecoveryBudgetAsync(job.Settings.Engine, shutdown.Token);
+        await queue.RetryAsync(job.Id);
+        RefreshJobs(queue.Snapshot());
+        StatusMessage = queue.Paused
+            ? "This narration is queued to resume. Choose Resume queue to continue. Completed segments are retained."
+            : "This narration is queued to resume from its saved progress. Completed segments are retained.";
+    }
     private void RefreshJobs(IReadOnlyList<Job> snapshots)
     {
         // A running synthesis stage has passed this job's captured readiness
