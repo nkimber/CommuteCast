@@ -52,10 +52,35 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
     public bool NeedsAttention => Presentation.NeedsAttention;
     public bool CanResume => (Job.Stage is JobStage.Failed or JobStage.Cancelled) && !Job.ExportCommitted && !Job.DeletionRequested;
     public bool CanOpenFolder => !Job.DeletionRequested && (Job.ExportCommitted || Job.FinalHash.Length > 0);
+    public string AudioSummary { get; } = DescribeAudio(job, workspace);
+    private static string DescribeAudio(Job job, Workspace workspace)
+    {
+        if (!job.ExportCommitted && job.FinalHash.Length == 0) return "";
+        var duration = double.IsFinite(job.DurationSeconds) && job.DurationSeconds > 0
+            ? "Audio length " + Clock((long)(job.DurationSeconds * 1000)) : "Audio length unavailable";
+        var size = "File size unavailable";
+        try
+        {
+            var file = job.ExportCommitted
+                ? job.ExportName.Length > 0 && Path.GetFileName(job.ExportName) == job.ExportName ? Path.Combine(job.Destination, job.ExportName) : null
+                : workspace.FinalPath(job);
+            if (file is not null && new FileInfo(file) is { Exists: true } info)
+            {
+                var bytes = info.Length;
+                size = bytes >= 1_000_000_000 ? $"{bytes / 1_000_000_000.0:0.##} GB"
+                    : bytes >= 1_000_000 ? $"{bytes / 1_000_000.0:0.##} MB"
+                    : bytes >= 1_000 ? $"{bytes / 1_000.0:0.##} KB" : $"{bytes:N0} bytes";
+                size = "MP3 size " + size;
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        { /* A missing or inaccessible MP3 must not prevent the library from displaying. */ }
+        return duration + " · " + size;
+    }
     public string RecoveryInstructions => JobRecovery.Instructions(Job);
     public bool HasRecoveryInstructions => RecoveryInstructions.Length > 0;
     public bool NeedsSpeechCheck => Job.Stage == JobStage.Failed && (Job.FailedStage is JobStage.WaitingForService or JobStage.Synthesizing || Job.FailureCategory is FailureCategory.ServiceConnection or FailureCategory.ServiceContract or FailureCategory.Prerequisite);
-    public string CopyableDetails => string.Join("\n\n", new[] { Title, $"Job ID: {Id}\nSubmitted: {Submitted}", Status, ActivityNotice, TimingSummary, Guidance, Details, Delivery,
+    public string CopyableDetails => string.Join("\n\n", new[] { Title, $"Job ID: {Id}\nSubmitted: {Submitted}", Status, AudioSummary, ActivityNotice, TimingSummary, Guidance, Details, Delivery,
         Error.Length > 0 ? "Error\n" + Error : "", HasRecoveryInstructions ? "How to fix\n" + RecoveryInstructions : "" }.Where(s => s.Length > 0));
     public double Progress => Job.CompletedChunks;
     public double ChunkTotal => Math.Max(1, Job.Chunks.Count);
