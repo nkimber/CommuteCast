@@ -52,6 +52,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
     public bool NeedsAttention => Presentation.NeedsAttention;
     public bool CanResume => (Job.Stage is JobStage.Failed or JobStage.Cancelled) && !Job.ExportCommitted && !Job.DeletionRequested;
     public bool CanOpenFolder => !Job.DeletionRequested && (Job.ExportCommitted || Job.FinalHash.Length > 0);
+    public bool ShowProcessingDetails => Job.Stage != JobStage.Exported || !Job.ExportCommitted;
     public string AudioSummary { get; } = DescribeAudio(job, workspace);
     private static string DescribeAudio(Job job, Workspace workspace)
     {
@@ -114,6 +115,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
         Raise(nameof(IsWorking)); Raise(nameof(NeedsAttention)); Raise(nameof(FailureSummary));
         Raise(nameof(CanResume));
         Raise(nameof(CanOpenFolder));
+        Raise(nameof(ShowProcessingDetails));
     }
     public string Details => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.FailedStage is { } stage ? $"\nStopped during: {stage}" : "") + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
     public string Error => string.Join(Environment.NewLine, new[] { Job.Error,
