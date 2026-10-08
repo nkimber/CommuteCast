@@ -25,11 +25,13 @@ public partial class MainWindow : Window
         this.model = model;
         InitializeComponent();
         DataContext = model;
+        ContentRendered += (_, _) => Serilog.Log.Information("Editor content rendered; visible {Visible}, state {WindowState}", IsVisible, WindowState);
         model.DraftQueued += () => NarrationList.Focus();
     }
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
-        try { await model.InitializeAsync(); }
+        Serilog.Log.Information("Editor Loaded event started");
+        try { await model.InitializeAsync(); Serilog.Log.Information("Editor initialization completed"); }
         catch (Exception error) { AppLogging.Failure("MainWindow.xaml", error); if (!closing) MessageBox.Show(this, QueueCoordinator.FriendlyError(error), "CommuteCast"); }
     }
     private void SourceSelectionChanged(object sender, RoutedEventArgs e)

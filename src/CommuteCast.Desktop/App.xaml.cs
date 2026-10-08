@@ -19,9 +19,15 @@ public partial class App : Application
     private Installation? installation;
     private string? launchAfterExit;
     private static bool dark;
+    private StartupWindow? startupWindow;
+    private readonly CancellationTokenSource startupCancellation = new();
     protected override async void OnStartup(StartupEventArgs e)
     {
         AppLogging.Start("desktop");
+        var assembly = typeof(App).Assembly;
+        Serilog.Log.Information("Desktop build {BuildVersion}, configuration {Configuration}",
+            System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(assembly)?.InformationalVersion,
+            System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyConfigurationAttribute>(assembly)?.Configuration);
         DispatcherUnhandledException += (_, args) => AppLogging.Failure("DispatcherUnhandledException", args.Exception, Serilog.Events.LogEventLevel.Fatal);
         AppDomain.CurrentDomain.UnhandledException += (_, args) => { if (args.ExceptionObject is Exception error) AppLogging.Failure("UnhandledException", error, Serilog.Events.LogEventLevel.Fatal); };
         TaskScheduler.UnobservedTaskException += (_, args) => AppLogging.Failure("UnobservedTaskException", args.Exception);
@@ -31,47 +37,70 @@ public partial class App : Application
         SetTheme();
         try
         {
-            setupCacheUse = await SetupCache.AcquireHostUseAsync(AppContext.BaseDirectory);
-            var startup = DesktopStartup.Parse(e.Args, string.Equals(Path.GetFileName(Environment.ProcessPath), "CommuteCast.Setup.exe", StringComparison.OrdinalIgnoreCase));
+            startupWindow = new StartupWindow(() => startupCancellation.Cancel()); MainWindow = startupWindow; startupWindow.Show();
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+            Serilog.Log.Information("Startup status window shown; debugger attached {DebuggerAttached}", System.Diagnostics.Debugger.IsAttached);
+            setupCacheUse = await StartupAsync(StartupPhase.SetupCache, "Checking the application package", () => SetupCache.AcquireHostUseAsync(AppContext.BaseDirectory, startupCancellation.Token));
+            var startup = await StartupAsync(StartupPhase.LaunchArguments, "Reading launch settings", () => Task.FromResult(DesktopStartup.Parse(e.Args, string.Equals(Path.GetFileName(Environment.ProcessPath), "CommuteCast.Setup.exe", StringComparison.OrdinalIgnoreCase))));
             Serilog.Log.Information("Startup mode {Mode}", startup.Mode);
             if (setupCacheUse is not null) startup = startup.BindCachedSetup(setupCacheUse.InstallationRoot, setupCacheUse.PrivateRoot);
             if (startup.Mode == DesktopMode.Setup)
             {
                 var package = Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))!.FullName;
-                var setup = new SetupWindow(package, startup.InstallRoot, startup.PrivateRoot, setupCacheUse is not null); MainWindow = setup; setup.Show(); return;
+                var setup = new SetupWindow(package, startup.InstallRoot, startup.PrivateRoot, setupCacheUse is not null); MainWindow = setup; setup.Show(); startupWindow.Finish(); startupWindow = null; return;
             }
             var maintenance = startup.Mode == DesktopMode.Maintenance;
-            var installationRoot = Installation.FindRoot(AppContext.BaseDirectory);
-            installation = installationRoot is null ? null : new Installation(installationRoot);
-            var owner = installation is null ? null : await installation.ReadOwnerAsync();
-            var workspace = new Workspace(owner?.WorkspaceRoot);
-            workspaceLease = WorkspaceLease.Acquire(workspace);
-            if (installation?.HasPendingOperation == true) throw new IOException("Deployment is unfinished. Close CommuteCast and run recover-install from an extracted portable package before relaunching.");
+            var owner = await StartupAsync(StartupPhase.InstallationBinding, "Checking the installed release", async () =>
+            {
+                var installationRoot = Installation.FindRoot(AppContext.BaseDirectory);
+                installation = installationRoot is null ? null : new Installation(installationRoot);
+                return installation is null ? null : await installation.ReadOwnerAsync(startupCancellation.Token);
+            });
+            workspaceLease = await StartupAsync(StartupPhase.WorkspaceLease, "Opening local narration storage", () => Task.FromResult(WorkspaceLease.Acquire(new Workspace(owner?.WorkspaceRoot))));
             if (maintenance)
             {
-                await VerifyInstallationAsync(true);
+                await StartupAsync(StartupPhase.InstallationVerification, "Verifying the installed application", () => VerifyInstallationAsync(true));
                 var window = new MaintenanceWindow(workspaceLease); MainWindow = window; window.Show();
             }
             else await ShowEditorAsync();
+            startupWindow.Finish(); startupWindow = null;
         }
-        catch (Exception error) { AppLogging.Failure("DesktopStartupOrLaunch", error); MessageBox.Show(QueueCoordinator.FriendlyError(error) + "\nFor local queue or settings repair, close the application and launch CommuteCast.Desktop.exe --maintenance from the current release. Deployment recovery remains a separate maintenance-tool operation.", "CommuteCast startup"); Shutdown(1); }
+        catch (OperationCanceledException) when (startupCancellation.IsCancellationRequested) { Serilog.Log.Information("Startup cancelled after local work settled"); Shutdown(); }
+        catch (Exception error) { AppLogging.Failure("DesktopStartupOrLaunch", error); MessageBox.Show(QueueCoordinator.FriendlyError(error) + "\nStartup step timings are in " + AppLogging.DefaultDirectory + "\nFor local queue or settings repair, close the application and launch CommuteCast.Desktop.exe --maintenance from the current release. Deployment recovery remains a separate maintenance-tool operation.", "CommuteCast startup"); Shutdown(1); }
+        finally { startupWindow?.Finish(); startupWindow = null; }
     }
+    private async Task<T> StartupAsync<T>(StartupPhase phase, string message, Func<Task<T>> action)
+    {
+        startupCancellation.Token.ThrowIfCancellationRequested();
+        startupWindow?.Report(message);
+        using var trace = new StartupStepTrace(phase);
+        try { var result = await Task.Run(action); trace.Complete(); return result; }
+        catch (Exception error) { AppLogging.Failure("Startup" + phase, error); throw; }
+    }
+    private Task StartupAsync(StartupPhase phase, string message, Func<Task> action) => StartupAsync(phase, message, async () => { await action(); return true; });
     private async Task VerifyInstallationAsync(bool maintenance)
     {
         if (installation is null) return;
+        if (installation.HasPendingOperation) throw new IOException("Deployment is unfinished. Close CommuteCast and run recover-install from an extracted portable package before relaunching.");
         var active = maintenance ? await installation.InspectForMaintenanceAsync(workspaceLease!) : await installation.InspectAsync(workspaceLease!);
         if (active.Executable is null || !Path.GetFullPath(active.Executable).Equals(Environment.ProcessPath, StringComparison.OrdinalIgnoreCase))
             throw new IOException("This release is archived or uninstalled. Launch the current installed release instead.");
     }
     private async Task ShowEditorAsync()
     {
-        await WorkspaceBackup.RecoverInterruptedAsync(workspaceLease!);
-        await VerifyInstallationAsync(false);
+        await StartupAsync(StartupPhase.RestoreRecovery, "Checking interrupted local recovery", () => WorkspaceBackup.RecoverInterruptedAsync(workspaceLease!, startupCancellation.Token));
+        await StartupAsync(StartupPhase.InstallationVerification, "Verifying the installed application", () => VerifyInstallationAsync(false));
         var workspace = workspaceLease!.Workspace;
         var database = Path.Combine(workspace.Root, "queue.db");
-        if (installation is null && File.Exists(database)) await SqliteSchema.ValidateDatabaseAsync(database);
-        var settings = await workspace.LoadSettingsAsync();
-        var window = new MainWindow(new MainViewModel(settings, workspace)); MainWindow = window; window.Show();
+        await StartupAsync(StartupPhase.QueueValidation, "Validating the saved narration library", async () =>
+        { if (installation is null && File.Exists(database)) await SqliteSchema.ValidateDatabaseAsync(database, startupCancellation.Token); });
+        var settings = await StartupAsync(StartupPhase.SettingsLoad, "Loading application settings", () => workspace.LoadSettingsAsync());
+        startupCancellation.Token.ThrowIfCancellationRequested();
+        startupWindow?.Report("Opening your listening library");
+        MainWindow window;
+        using (var trace = new StartupStepTrace(StartupPhase.EditorConstruction)) { window = new MainWindow(new MainViewModel(settings, workspace)); trace.Complete(); }
+        MainWindow = window;
+        using (var trace = new StartupStepTrace(StartupPhase.EditorShow)) { window.Show(); trace.Complete(); }
     }
     internal void EnterMaintenance(MainWindow previous)
     {
@@ -100,6 +129,7 @@ public partial class App : Application
     }
     protected override void OnExit(ExitEventArgs e)
     {
+        Serilog.Log.Information("Desktop exit requested with code {ExitCode}", e.ApplicationExitCode);
         workspaceLease?.Dispose();
         setupCacheUse?.Dispose();
         if (ownsMutex) instance?.ReleaseMutex();

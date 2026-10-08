@@ -7,6 +7,20 @@ namespace CommuteCast.Tests;
 
 public class AppLoggingTests
 {
+    [Fact] public void NativeAndSqliteCodesAreLoggedWithoutMessages()
+    {
+        using var test = new TestWorkspace(); var directory = Path.Combine(test.Parent, "logs");
+        using (var logger = AppLogging.CreateLogger(directory, "test"))
+        {
+            AppLogging.WriteFailure(logger, "Database", new Microsoft.Data.Sqlite.SqliteException("PRIVATE DATABASE PATH", 5, 5));
+            AppLogging.WriteFailure(logger, "Native", new System.ComponentModel.Win32Exception(5, "PRIVATE EXECUTABLE PATH"));
+        }
+        var lines = File.ReadAllLines(Directory.GetFiles(directory, "*.jsonl").Single());
+        Assert.All(lines, line => Assert.DoesNotContain("PRIVATE", line));
+        using var database = JsonDocument.Parse(lines[0]); using var native = JsonDocument.Parse(lines[1]);
+        Assert.Equal(5, database.RootElement.GetProperty("Properties").GetProperty("Failure").GetProperty("SqliteErrorCode").GetInt32());
+        Assert.Equal(5, native.RootElement.GetProperty("Properties").GetProperty("Failure").GetProperty("NativeErrorCode").GetInt32());
+    }
     [Fact]
     public void JsonLogsCorrelateEventsAndRetainSafeExceptionDetails()
     {

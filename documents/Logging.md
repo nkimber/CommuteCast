@@ -28,6 +28,10 @@ $env:COMMUTECAST_LOG_LEVEL = 'Debug'
 Remove-Item Env:COMMUTECAST_LOG_LEVEL
 ```
 
+For an invisible or stalled desktop launch, look for **Desktop build**, **Startup status window shown**, and **Startup step** events in the same session. Each fixed step records start, completion/interruption and elapsed milliseconds; a separate thread logs **still running** every ten seconds even if the UI dispatcher is blocked. The last unmatched step identifies the operation to investigate. Editor Loaded, content-rendered, initialization-completed and exit-code events distinguish startup checks, an unpainted window and later speech readiness. Build version/configuration and debugger attachment identify the binaries and launch context. SQLite primary/extended codes and Windows native error codes supplement safe exception frames without logging private messages.
+
+The startup window shows the current local check, an activity bar and elapsed time. File/recovery/database work runs off the UI thread. **Cancel startup** requests cancellation, then waits for the current operation to settle before releasing storage ownership; it does not force-abandon a restore. Visual Studio **Stop Debugging** can terminate the process without completion/exit events, so an unmatched start alone does not prove a deadlock. If a debugger dialog appears, retain its exact text alongside the timestamp. A watchdog heartbeat identifies a long operation, not its underlying cause.
+
 Each component keeps at most 14 files, rotating daily or after 5 MiB (a final event can exceed that threshold). Writes are unbuffered, avoiding an extra asynchronous queue that could lose recent errors on a crash. Shutdown flushes/disposes the sink. Disk/permission failures must not prevent application startup; bootstrap failures appear in .NET Trace. These are best-effort diagnostics, not a transactional audit journal or a guarantee against power loss. Files are separate from narration backup/restore, cache cleanup and deletion; retained operational job IDs remain until rotation removes their files. Runtime evidence is ignored by Git.
 
 ## Speech container diagnostics

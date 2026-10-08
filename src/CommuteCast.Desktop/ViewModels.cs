@@ -349,14 +349,14 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public Task InitializeAsync() => operations.RunAsync(InitializeCoreAsync);
     private async Task InitializeCoreAsync()
     {
-        try { var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; }
+        try { using var trace = new StartupStepTrace(StartupPhase.DraftLoad); var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; trace.Complete(); }
         catch (IOException error) { AppLogging.Failure("DraftLoad", error); draftLoadFailed = true; ReportError(error.Message); }
         loading = false;
         string? previewNotice = null;
-        try { await Task.Run(() => auditions.RecoverAsync(shutdown.Token)); }
+        try { using var trace = new StartupStepTrace(StartupPhase.AuditionRecovery); await Task.Run(() => auditions.RecoverAsync(shutdown.Token)); trace.Complete(); }
         catch (IOException error) { AppLogging.Failure("AuditionRecovery", error); previewNotice = "An interrupted voice preview needs inspection. Its files were preserved in private storage."; }
-        await Task.Run(() => queue.InitializeAsync(shutdown.Token)); queueLoaded = true; Raise(nameof(LibrarySummary));
-        try { await CheckReadinessAsync(); } catch (Exception error) { AppLogging.Failure("InitialSpeechReadiness", error); StatusMessage = QueueCoordinator.FriendlyError(error); }
+        using (var trace = new StartupStepTrace(StartupPhase.QueueRecovery)) { await Task.Run(() => queue.InitializeAsync(shutdown.Token)); queueLoaded = true; Raise(nameof(LibrarySummary)); trace.Complete(); }
+        try { using var trace = new StartupStepTrace(StartupPhase.SpeechReadiness); await CheckReadinessAsync(); trace.Complete(); } catch (Exception error) { AppLogging.Failure("InitialSpeechReadiness", error); StatusMessage = QueueCoordinator.FriendlyError(error); }
         if (previewNotice is not null) ReportError(previewNotice);
     }
     private void ScheduleDraftSave()

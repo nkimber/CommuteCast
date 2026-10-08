@@ -58,6 +58,9 @@ public static class AppLogging
     {
         Type = error.GetType().FullName, error.HResult,
         StatusCode = error is HttpRequestException request ? (int?)request.StatusCode : null,
+        SqliteErrorCode = error is Microsoft.Data.Sqlite.SqliteException sqlite ? (int?)sqlite.SqliteErrorCode : null,
+        SqliteExtendedErrorCode = error is Microsoft.Data.Sqlite.SqliteException sqliteExtended ? (int?)sqliteExtended.SqliteExtendedErrorCode : null,
+        NativeErrorCode = error is System.ComponentModel.Win32Exception native ? (int?)native.NativeErrorCode : null,
         Frames = new StackTrace(error, true).GetFrames()?.Take(40).Select(f => new
         {
             Method = f.GetMethod()?.DeclaringType?.FullName + "." + f.GetMethod()?.Name,
