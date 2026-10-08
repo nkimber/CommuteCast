@@ -34,7 +34,7 @@ public sealed class AsyncCommand(Func<object?, Task> execute, Action<Exception> 
         if (running) return;
         running = true; CanExecuteChanged?.Invoke(this, EventArgs.Empty);
         try { await execute(parameter); }
-        catch (Exception error) { failure(error); }
+        catch (Exception error) { AppLogging.Failure("DesktopCommand", error); failure(error); }
         finally { running = false; CanExecuteChanged?.Invoke(this, EventArgs.Empty); }
     }
 }
@@ -293,13 +293,13 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private async Task InitializeCoreAsync()
     {
         try { var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; }
-        catch (IOException error) { draftLoadFailed = true; ReportError(error.Message); }
+        catch (IOException error) { AppLogging.Failure("DraftLoad", error); draftLoadFailed = true; ReportError(error.Message); }
         loading = false;
         string? previewNotice = null;
         try { await Task.Run(() => auditions.RecoverAsync(shutdown.Token)); }
-        catch (IOException) { previewNotice = "An interrupted voice preview needs inspection. Its files were preserved in private storage."; }
+        catch (IOException error) { AppLogging.Failure("AuditionRecovery", error); previewNotice = "An interrupted voice preview needs inspection. Its files were preserved in private storage."; }
         await Task.Run(() => queue.InitializeAsync(shutdown.Token)); queueLoaded = true; Raise(nameof(LibrarySummary));
-        try { await CheckReadinessAsync(); } catch (Exception error) { StatusMessage = QueueCoordinator.FriendlyError(error); }
+        try { await CheckReadinessAsync(); } catch (Exception error) { AppLogging.Failure("InitialSpeechReadiness", error); StatusMessage = QueueCoordinator.FriendlyError(error); }
         if (previewNotice is not null) ReportError(previewNotice);
     }
     private void ScheduleDraftSave()
@@ -324,7 +324,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
             finally { draftGate.Release(); }
         }
         catch (OperationCanceledException) { }
-        catch (IOException) { ReportError("Draft autosave failed. Keep this window open and check disk space."); }
+        catch (IOException error) { AppLogging.Failure("DraftAutosave", error); ReportError("Draft autosave failed. Keep this window open and check disk space."); }
     }
     private Task SaveSettingsAsync()
     {

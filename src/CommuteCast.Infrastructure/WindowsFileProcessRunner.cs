@@ -15,6 +15,8 @@ public static partial class ProcessRunner
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Held audio output requires Windows.");
         if (!output.CanSeek || !output.CanWrite || maximumBytes <= 0 || timeout <= TimeSpan.Zero) throw new ArgumentException("A writable regular file and positive output/time limits are required.");
+        var timer = Stopwatch.StartNew();
+        var tool = Path.GetFileName(executable);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(timeout);
         deadline.Token.ThrowIfCancellationRequested(); await output.FlushAsync(deadline.Token);
         var path = ResolveFileExecutable(executable);
@@ -61,10 +63,12 @@ public static partial class ProcessRunner
             }
             await exit; await errors.WaitAsync(deadline.Token);
             if (output.Length > maximumBytes) throw new IOException("The audio tool exceeded its output size limit.");
+            Serilog.Log.Write(child.ExitCode == 0 ? Serilog.Events.LogEventLevel.Debug : Serilog.Events.LogEventLevel.Warning, "Audio tool {Tool} exited with {ExitCode} in {ElapsedMs} ms", tool, child.ExitCode, timer.ElapsedMilliseconds);
             return new(child.ExitCode, "", await errors);
         }
-        catch
+        catch (Exception failure)
         {
+            AppLogging.Failure("HeldAudioProcess", failure);
             if (job != IntPtr.Zero) TerminateJobObject(job, 1);
             if (information.Process != IntPtr.Zero) TerminateProcess(information.Process, 1); // also covers failure before assignment/resume
             if (information.Process != IntPtr.Zero && WaitForSingleObject(information.Process, 3000) != 0)

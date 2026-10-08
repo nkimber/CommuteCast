@@ -8,6 +8,7 @@ This is the development licensing inventory, not a substitute for corporate redi
 | Microsoft.Data.Sqlite 10.0.5 / Microsoft.Data.Sqlite.Core 10.0.5 | MIT declared by the exact NuGet package metadata; [EF Core](https://github.com/dotnet/efcore) | Durable queue adapter |
 | SQLitePCLRaw 3.0.5 (`bundle_e_sqlite3`, `config.e_sqlite3`, `core`, `provider.e_sqlite3`) | Apache-2.0 declared by all four exact NuGet package metadata records; [SQLitePCL.raw](https://github.com/ericsink/SQLitePCL.raw/tree/ed046114d5a30534e13294d94d78eb73de896ad4) | SQLite native interop and configuration |
 | SQLite | [Public domain](https://www.sqlite.org/copyright.html) | Local database |
+| Serilog 4.3.0 / Serilog.Sinks.File 7.0.0 | Apache-2.0; [Serilog](https://github.com/serilog/serilog), [file sink](https://github.com/serilog/serilog-sinks-file) | Structured local rotating operational logs |
 | Kokoro ONNX | MIT; [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) | Kokoro inference adapter |
 | Kokoro 82M v1.0 | Apache-2.0; [model card](https://huggingface.co/hexgrad/Kokoro-82M) | Kokoro model/voices; ONNX conversion from pinned upstream release |
 | Piper 1.3.0 | GPL-3.0; [Piper](https://github.com/OHF-Voice/piper1-gpl) | Separate local speech service. Distribution obligations require review. |

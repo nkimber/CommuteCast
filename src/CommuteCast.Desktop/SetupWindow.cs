@@ -75,7 +75,7 @@ public sealed class SetupWindow : Window
     {
         if (busy) return; busy = true; panel.IsEnabled = false; progress.Visibility = Visibility.Visible;
         try { await action(); }
-        catch (Exception error) { status.Text = QueueCoordinator.FriendlyError(error); }
+        catch (Exception error) { AppLogging.Failure("SetupWindow", error); status.Text = QueueCoordinator.FriendlyError(error); }
         finally { busy = false; panel.IsEnabled = true; progress.Visibility = Visibility.Collapsed; UpdateButtons(); }
     }
     private async Task ReviewAsync()

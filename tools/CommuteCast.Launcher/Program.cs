@@ -8,6 +8,7 @@ internal static class Program
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int MessageBoxW(IntPtr owner, string text, string caption, uint type);
     [STAThread] private static int Main(string[] args)
     {
+        AppLogging.Start("launcher");
         Mutex? mutex = null; var held = false; var inspect = args.Contains("--inspect", StringComparer.Ordinal);
         try
         {
@@ -45,10 +46,11 @@ internal static class Program
         }
         catch (Exception error)
         {
+            AppLogging.Failure("InstalledLaunch", error);
             var message = QueueCoordinator.FriendlyError(error);
             if (inspect) Console.Error.WriteLine(message); else MessageBoxW(IntPtr.Zero, message + "\nUse a complete verified portable setup package for installation recovery.", "CommuteCast", 0x10);
             return 1;
         }
-        finally { if (held) mutex?.ReleaseMutex(); mutex?.Dispose(); }
+        finally { if (held) mutex?.ReleaseMutex(); mutex?.Dispose(); AppLogging.Stop(); }
     }
 }

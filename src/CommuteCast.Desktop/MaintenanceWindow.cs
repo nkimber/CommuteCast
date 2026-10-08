@@ -67,7 +67,7 @@ public sealed class MaintenanceWindow : Window
         if (busy) return;
         busy = true; actions.IsEnabled = false; progress.Visibility = Visibility.Visible;
         try { await action(); }
-        catch (Exception error) { status.Text = QueueCoordinator.FriendlyError(error); }
+        catch (Exception error) { AppLogging.Failure("MaintenanceWindow", error); status.Text = QueueCoordinator.FriendlyError(error); }
         finally { busy = false; actions.IsEnabled = true; progress.Visibility = Visibility.Collapsed; restore.IsEnabled = reviewed is not null; }
     }
     private void ClearReview() { reviewed = null; summary.Text = "No backup selected."; restore.IsEnabled = false; }

@@ -30,7 +30,7 @@ public partial class MainWindow : Window
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
         try { await model.InitializeAsync(); }
-        catch (Exception error) { if (!closing) MessageBox.Show(this, QueueCoordinator.FriendlyError(error), "CommuteCast"); }
+        catch (Exception error) { AppLogging.Failure("MainWindow.xaml", error); if (!closing) MessageBox.Show(this, QueueCoordinator.FriendlyError(error), "CommuteCast"); }
     }
     private void SourceSelectionChanged(object sender, RoutedEventArgs e)
     {
@@ -40,7 +40,7 @@ public partial class MainWindow : Window
     {
         if (closing) return;
         try { model.ValidateForMaintenance(); }
-        catch (Exception error) { MessageBox.Show(this, QueueCoordinator.FriendlyError(error), "Check settings before maintenance"); return; }
+        catch (Exception error) { AppLogging.Failure("MainWindow.xaml", error); MessageBox.Show(this, QueueCoordinator.FriendlyError(error), "Check settings before maintenance"); return; }
         if (MessageBox.Show(this, "Stop current generation and playback, save the draft and open backup & restore? Validated chunks remain available for resume. Returning to the editor reloads saved local state.", "Open local maintenance", MessageBoxButton.OKCancel, MessageBoxImage.Question, MessageBoxResult.Cancel) != MessageBoxResult.OK) return;
         closing = true; IsEnabled = false;
         try
@@ -50,6 +50,7 @@ public partial class MainWindow : Window
         }
         catch (Exception error)
         {
+            AppLogging.Failure("MainWindow.xaml", error);
             MessageBox.Show(this, "Maintenance did not open because current operations or local saves could not settle. Close the application and resolve storage before relaunching with --maintenance. " + QueueCoordinator.FriendlyError(error), "CommuteCast maintenance");
             closing = false; // Keep the stopped editor disabled; do not run against partly disposed state.
         }
@@ -65,6 +66,7 @@ public partial class MainWindow : Window
         try { await model.DisposeAsync(); closed = true; Close(); }
         catch (Exception error)
         {
+            AppLogging.Failure("MainWindow.xaml", error);
             var methods = new System.Diagnostics.StackTrace(error, false).GetFrames().Select(f => f.GetMethod()).Where(m => m is not null).Select(m => m!.DeclaringType?.FullName + "." + m.Name);
             await Workspace.AtomicWriteAsync(System.IO.Path.Combine(model.Workspace.Root, "last-shutdown-error.json"), System.Text.Json.JsonSerializer.Serialize(new { type = error.GetType().Name, methods }));
             MessageBox.Show(this, "Shutdown could not finish: " + QueueCoordinator.FriendlyError(error) + "\nThe durable queue is retained.", "CommuteCast"); closed = true; Close();

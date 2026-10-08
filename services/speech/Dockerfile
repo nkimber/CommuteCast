@@ -5,7 +5,7 @@ COPY requirements.txt .
 COPY requirements.lock.txt .
 RUN pip install --no-cache-dir -r requirements.lock.txt
 COPY --from=commutecast_models . /models/
-COPY app.py .
+COPY app.py diagnostics.py .
 COPY model-checksums.txt /models/model-checksums.txt
 RUN cd /models && sha256sum -c model-checksums.txt
 RUN useradd -m speech && chown -R speech:speech /app /models

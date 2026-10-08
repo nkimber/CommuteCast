@@ -27,6 +27,8 @@ GitHub's **Windows build and regression** workflow builds the native solution, r
 
 ## Run on this machine
 
+Operational debugging logs are written automatically under `%LOCALAPPDATA%\CommuteCast\logs`. See [Logging and debugging](documents/Logging.md) for reading errors by narration ID, enabling Debug detail and checking speech container logs.
+
 Prerequisites: Windows, .NET 10 SDK (or the portable self-contained package), approved Docker Desktop with its local Linux-container context, and FFmpeg / FFprobe on PATH. FFmpeg must advertise `fd` under `Output:` in `ffmpeg -hide_banner -protocols`; the read-only setup check reports this capability. These tools are already present on the development machine. No administrator privileges are needed by the app.
 
 ```powershell

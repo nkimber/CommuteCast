@@ -157,8 +157,17 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
     }
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        var endpoint = request.RequestUri?.AbsolutePath;
+        var port = request.RequestUri?.Port;
         var pending = http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        try { return await pending.WaitAsync(ct); }
+        try
+        {
+            var response = await pending.WaitAsync(ct);
+            Serilog.Log.Write(response.IsSuccessStatusCode ? Serilog.Events.LogEventLevel.Debug : Serilog.Events.LogEventLevel.Warning,
+                "Speech HTTP {Method} {Endpoint} on port {Port} returned {StatusCode} in {ElapsedMs} ms", request.Method.Method, endpoint, port, (int)response.StatusCode, timer.ElapsedMilliseconds);
+            return response;
+        }
         catch (OperationCanceledException)
         {
             _ = pending.ContinueWith(t => { if (t.Status == TaskStatus.RanToCompletion) t.Result.Dispose(); }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
@@ -285,6 +294,7 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
                     }
                     RequireAdmission(info);
                     await RequireUnchangedPinAsync(image, deadline.Token);
+                    Serilog.Log.Information("Speech attempt {Attempt} using {Engine}, instance {ProviderInstance}, sequence {AdmissionSequence}", attempt + 1, settings.Engine, info.InstanceId, info.AdmissionSequence!.Value + 1);
                     var admission = new PendingSpeechAdmission(1, settings.Engine, image, settings.ProviderFingerprint, info.InstanceId!, info.AdmissionSequence!.Value + 1);
                     settlementAttempted = false;
                     await admission.SaveAsync(workspace, deadline.Token);
@@ -322,8 +332,9 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
                     await published.DisposeAsync();
                     return;
                 }
-                catch (HttpRequestException) when (attempt < limits.TransientRetries && !deadline.IsCancellationRequested)
+                catch (HttpRequestException error) when (attempt < limits.TransientRetries && !deadline.IsCancellationRequested)
                 {
+                    AppLogging.Failure("SpeechTransientRetry", error, Serilog.Events.LogEventLevel.Warning);
                     await SettleAttemptAsync();
                     await RemoveAttemptAsync();
                     await Task.Delay(TimeSpan.FromTicks(limits.RetryBackoff.Ticks * (1L << attempt)), deadline.Token);
@@ -342,7 +353,7 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
                 // cannot finish, the durable fence blocks both engines on retry.
                 if (!settlementAttempted && File.Exists(PendingSpeechAdmission.PathFor(workspace)))
                     try { await ReconcileAdmissionAsync(CancellationToken.None); }
-                    catch (Exception error) when (error is IOException or HttpRequestException or OperationCanceledException or TimeoutException) { }
+                    catch (Exception error) when (error is IOException or HttpRequestException or OperationCanceledException or TimeoutException) { AppLogging.Failure("SpeechAdmissionSettlement", error, Serilog.Events.LogEventLevel.Warning); }
             }
         }
     }

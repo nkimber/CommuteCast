@@ -1,5 +1,7 @@
 using CommuteCast.Core;
 using System.Text.Json;
+using Serilog;
+using Serilog.Context;
 
 namespace CommuteCast.Infrastructure;
 
@@ -55,6 +57,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     public async Task InitializeAsync(CancellationToken ct = default)
     {
         var loaded = await store.LoadAsync(ct);
+        Log.Information("Queue recovery loaded {JobCount} jobs", loaded.Count);
         var retained = new List<Job>();
         foreach (var job in loaded)
         {
@@ -71,7 +74,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                 continue;
             }
             try { await publisher.ReconcileAsync(job, ct); }
-            catch (IOException) { job.Error = "Export reconciliation failed. The local job is preserved; inspect the destination and retry."; job.Stage = JobStage.Failed; }
+            catch (IOException error) { AppLogging.Failure("ExportReconciliation", error); job.Error = "Export reconciliation failed. The local job is preserved; inspect the destination and retry."; job.Stage = JobStage.Failed; }
             if (job.CancellationRequested && !job.ExportCommitted)
             {
                 job.Stage = JobStage.Cancelled; job.Error = ""; job.FailureCategory = FailureCategory.Cancelled; job.FailedStage = null;
@@ -86,6 +89,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         }
         lock (sync) jobs.AddRange(retained.OrderBy(j => j.QueuePosition == 0 ? j.CreatedUtc.UtcTicks : j.QueuePosition).ThenBy(j => j.CreatedUtc));
         Notify();
+        Log.Information("Queue recovery completed with {JobCount} retained jobs; paused {Paused}", retained.Count, Paused);
         worker = Task.Run(WorkLoopAsync);
     }
     public async Task AddAsync(Job job, CancellationToken ct = default)
@@ -98,6 +102,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             lock (sync) job.QueuePosition = Math.Max(DateTimeOffset.UtcNow.UtcTicks, jobs.Select(j => j.QueuePosition).DefaultIfEmpty().Max() + 1);
             await store.SaveAsync(job, ct);
             lock (sync) jobs.Add(job);
+            Log.Information("Job {JobId} queued using {Engine}", job.Id, job.Settings.Engine);
         }
         finally { dispatchGate.Release(); }
         Notify();
@@ -124,6 +129,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         try { await store.SaveAsync(job, CancellationToken.None); }
         catch (Exception error)
         {
+            AppLogging.Failure("QueueCheckpoint", error);
             Paused = true;
             PersistenceError = "Queue paused because its checkpoint could not be saved. Repair disk space or permissions, then retry the narration and resume. Existing durable records are retained. " + FriendlyError(error);
         }
@@ -181,10 +187,14 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                 continue;
             }
             var cancellation = activeCancellation!;
+            using var jobContext = LogContext.PushProperty("JobId", job.Id);
             job.Attempts++;
-            try { await RunAsync(job, cancellation.Token); }
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            Log.Information("Job attempt {Attempt} started using {Engine}", job.Attempts, job.Settings.Engine);
+            try { await RunAsync(job, cancellation.Token); Log.Information("Job completed at {Stage} in {ElapsedMs} ms", job.Stage, started.ElapsedMilliseconds); }
             catch (OperationCanceledException)
             {
+                Log.Information("Job interrupted; user cancellation {UserCancellation}, shutdown {Shutdown}", job.CancellationRequested, lifetime.IsCancellationRequested);
                 if (!job.ExportCommitted) job.Stage = job.CancellationRequested || !lifetime.IsCancellationRequested ? JobStage.Cancelled : JobStage.Queued;
                 job.Error = "";
                 job.FailureCategory = job.ExportCommitted || (lifetime.IsCancellationRequested && !job.CancellationRequested) ? FailureCategory.None : FailureCategory.Cancelled;
@@ -193,6 +203,8 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             }
             catch (Exception error)
             {
+                Log.Error("Job failed at {Stage} with category {FailureCategory} after {ElapsedMs} ms", job.Stage, Categorize(error, job.Stage), started.ElapsedMilliseconds);
+                AppLogging.Failure("RunJob", error);
                 job.FailedStage = job.Stage;
                 job.FailureCategory = Categorize(error, job.Stage);
                 job.Stage = job.ExportCommitted ? JobStage.Exported : JobStage.Failed;
@@ -212,7 +224,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             }
             try { await CleanCacheAsync(lifetime.Token); MaintenanceError = ""; }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
-            catch (Exception error) { MaintenanceError = FriendlyError(error); }
+            catch (Exception error) { AppLogging.Failure("CacheMaintenance", error); MaintenanceError = FriendlyError(error); }
         }
     }
     public static string FriendlyError(Exception error) => error switch
@@ -240,6 +252,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     {
         job.Stage = stage;
         await store.SaveAsync(job, ct);
+        Log.Information("Job {JobId} stage {Stage}; completed {CompletedChunks} of {ChunkCount} chunks", job.Id, stage, job.CompletedChunks, job.Chunks.Count);
         Notify();
     }
     private async Task RunAsync(Job job, CancellationToken ct)
@@ -271,7 +284,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                     valid.Add(receipt);
                 }
             }
-            catch (IOException) { }
+            catch (IOException error) { AppLogging.Failure("CachedChunkValidation", error, Serilog.Events.LogEventLevel.Warning); }
         }
         lock (sync) job.Receipts = valid;
         job.CompletedChunks = valid.Count;
@@ -365,6 +378,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             try { await store.SaveAsync(job!); }
             catch (Exception error)
             {
+                AppLogging.Failure("CancellationCheckpoint", error);
                 saveFailure = error; Paused = true;
                 PersistenceError = "Queue paused because cancellation could not be recorded. Repair storage and retry the operation. The request may not survive a crash until saved. " + FriendlyError(error);
             }
@@ -417,6 +431,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         await store.SaveAsync(queued);
         lock (sync) jobs[jobs.FindIndex(j => j.Id == id)] = queued;
         PersistenceError = "";
+        Log.Information("Job {JobId} retry queued", id);
         Notify();
     }
     public async Task DeleteAsync(string id, bool deleteExport)
@@ -488,6 +503,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                 }
                 catch (Exception error)
                 {
+                    AppLogging.Failure("JobDeletion", error);
                     job.Stage = JobStage.Deleting; job.Error = FriendlyError(error); job.FailureCategory = Categorize(error, JobStage.Deleting);
                     try { await store.SaveAsync(job); }
                     catch (Exception checkpointError) { PauseForDeletionCheckpoint(checkpointError); }
@@ -501,6 +517,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     }
     private void PauseForDeletionCheckpoint(Exception error)
     {
+        AppLogging.Failure("DeletionCheckpoint", error);
         Paused = true;
         PersistenceError = "Queue paused because deletion requests or results could not be confirmed. Repair storage and retry deletion. Recorded requests can finish on relaunch. " + FriendlyError(error);
         deletionCheckpointError = PersistenceError;
@@ -511,6 +528,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         var directory = workspace.JobDirectory(job.Id);
         await PrivateJobFiles.RemoveAsync(job, directory);
         await store.RemoveAsync(job.Id);
+        Log.Information("Job {JobId} deleted; remove export {RemoveExport}", job.Id, job.DeleteExportRequested);
     }
     public async ValueTask DisposeAsync()
     {

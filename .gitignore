@@ -14,3 +14,7 @@ TestResults/
 *.bin
 *.user
 provider-lock.local.json
+
+# Local operational logging evidence
+*.jsonl
+*.log

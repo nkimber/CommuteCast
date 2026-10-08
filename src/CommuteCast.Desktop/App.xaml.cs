@@ -1,4 +1,4 @@
-﻿using System.Configuration;
+using System.Configuration;
 using System.Data;
 using System.Windows;
 using System.IO;
@@ -21,6 +21,10 @@ public partial class App : Application
     private static bool dark;
     protected override async void OnStartup(StartupEventArgs e)
     {
+        AppLogging.Start("desktop");
+        DispatcherUnhandledException += (_, args) => AppLogging.Failure("DispatcherUnhandledException", args.Exception, Serilog.Events.LogEventLevel.Fatal);
+        AppDomain.CurrentDomain.UnhandledException += (_, args) => { if (args.ExceptionObject is Exception error) AppLogging.Failure("UnhandledException", error, Serilog.Events.LogEventLevel.Fatal); };
+        TaskScheduler.UnobservedTaskException += (_, args) => AppLogging.Failure("UnobservedTaskException", args.Exception);
         base.OnStartup(e);
         instance = new Mutex(true, "Local\\CommuteCast-" + Environment.UserName, out ownsMutex);
         if (!ownsMutex) { MessageBox.Show("CommuteCast or its setup is already open for this Windows user. Close it before launching another mode.", "CommuteCast"); Shutdown(); return; }
@@ -29,6 +33,7 @@ public partial class App : Application
         {
             setupCacheUse = await SetupCache.AcquireHostUseAsync(AppContext.BaseDirectory);
             var startup = DesktopStartup.Parse(e.Args, string.Equals(Path.GetFileName(Environment.ProcessPath), "CommuteCast.Setup.exe", StringComparison.OrdinalIgnoreCase));
+            Serilog.Log.Information("Startup mode {Mode}", startup.Mode);
             if (setupCacheUse is not null) startup = startup.BindCachedSetup(setupCacheUse.InstallationRoot, setupCacheUse.PrivateRoot);
             if (startup.Mode == DesktopMode.Setup)
             {
@@ -49,7 +54,7 @@ public partial class App : Application
             }
             else await ShowEditorAsync();
         }
-        catch (Exception error) { MessageBox.Show(QueueCoordinator.FriendlyError(error) + "\nFor local queue or settings repair, close the application and launch CommuteCast.Desktop.exe --maintenance from the current release. Deployment recovery remains a separate maintenance-tool operation.", "CommuteCast startup"); Shutdown(1); }
+        catch (Exception error) { AppLogging.Failure("DesktopStartupOrLaunch", error); MessageBox.Show(QueueCoordinator.FriendlyError(error) + "\nFor local queue or settings repair, close the application and launch CommuteCast.Desktop.exe --maintenance from the current release. Deployment recovery remains a separate maintenance-tool operation.", "CommuteCast startup"); Shutdown(1); }
     }
     private async Task VerifyInstallationAsync(bool maintenance)
     {
@@ -102,6 +107,7 @@ public partial class App : Application
         base.OnExit(e);
         if (launchAfterExit is not null)
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(launchAfterExit) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(launchAfterExit)!, WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden }); }
-            catch (Exception error) { MessageBox.Show(QueueCoordinator.FriendlyError(error), "CommuteCast launch"); }
+            catch (Exception error) { AppLogging.Failure("DesktopStartupOrLaunch", error); MessageBox.Show(QueueCoordinator.FriendlyError(error), "CommuteCast launch"); }
+        AppLogging.Stop();
     }
 }

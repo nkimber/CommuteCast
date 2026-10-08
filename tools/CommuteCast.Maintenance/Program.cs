@@ -2,7 +2,10 @@ using CommuteCast.Infrastructure;
 using System.Text.Json;
 
 // Deliberately synchronous host: the compatibility mutex is released on its owning thread.
-return Run(args);
+var readOnly = args.Length == 0 || args[0] is "--help" or "check-setup" or "inspect-install" or "verify-package" or "validate-backup" or "review-setup-cache";
+if (!readOnly) AppLogging.Start("maintenance");
+try { return Run(args); }
+finally { if (!readOnly) AppLogging.Stop(); }
 
 static int Run(string[] arguments)
 {
@@ -79,7 +82,7 @@ static int Run(string[] arguments)
                 catch
                 {
                     try { WorkspaceBackup.RecoverInterruptedAsync(lease).GetAwaiter().GetResult(); }
-                    catch (Exception error) { Console.Error.WriteLine("Automatic restore recovery needs inspection: " + QueueCoordinator.FriendlyError(error)); }
+                    catch (Exception error) { AppLogging.Failure("MaintenanceCommand", error); Console.Error.WriteLine("Automatic restore recovery needs inspection: " + QueueCoordinator.FriendlyError(error)); }
                     throw;
                 }
                 break;
@@ -87,7 +90,7 @@ static int Run(string[] arguments)
         }
         return 0;
     }
-    catch (Exception error) { Console.Error.WriteLine(QueueCoordinator.FriendlyError(error)); return 1; }
+    catch (Exception error) { AppLogging.Failure("MaintenanceCommand", error); Console.Error.WriteLine(QueueCoordinator.FriendlyError(error)); return 1; }
     finally { if (ownsLegacy) legacy!.ReleaseMutex(); legacy?.Dispose(); cachedUse?.Dispose(); }
 }
 static void Print(object value) => Console.WriteLine(JsonSerializer.Serialize(value, new JsonSerializerOptions { WriteIndented = true }));
@@ -162,7 +165,7 @@ static int RunInstallation(string[] arguments, string? cachedInstallRoot = null)
         {
             if (command is "install" or "rollback" or "uninstall" && File.Exists(ownerFile))
                 try { installation.RecoverAsync(lease).GetAwaiter().GetResult(); }
-                catch (Exception error) { Console.Error.WriteLine("Deployment recovery needs inspection: " + QueueCoordinator.FriendlyError(error)); }
+                catch (Exception error) { AppLogging.Failure("MaintenanceCommand", error); Console.Error.WriteLine("Deployment recovery needs inspection: " + QueueCoordinator.FriendlyError(error)); }
             throw;
         }
         Print(new { operation = command, result.State, result.Executable, result.AlreadyCurrent, setup, localData = command == "uninstall" ? localData : "preserved or restored from recorded snapshot", exportedFiles = "unchanged", engineArtifacts = "unchanged", publisherTrust = "corporate signing approval remains external" });

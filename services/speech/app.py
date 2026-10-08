@@ -7,6 +7,8 @@ import os
 import threading
 import wave
 import uuid
+import time
+from diagnostics import emit, failure
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -49,6 +51,7 @@ def load():
         folder = Path("/models") / ENGINE
         h = hashlib.sha256()
         h.update(Path(__file__).read_bytes())
+        h.update(Path("/app/diagnostics.py").read_bytes())
         h.update(Path("/app/requirements.txt").read_bytes())
         h.update(Path("/app/requirements.lock.txt").read_bytes())
         for file in sorted(folder.iterdir()):
@@ -78,7 +81,9 @@ def load():
                      "intraOpSpinning": actual.get_session_config_entry("session.intra_op.allow_spinning"),
                      "interOpSpinning": actual.get_session_config_entry("session.inter_op.allow_spinning")}
         state = "ready"
-    except Exception:
+        emit("model_ready", engine=ENGINE, instance=instance)
+    except Exception as error:
+        failure("model_load_failed", error, engine=ENGINE, instance=instance)
         state = "failed"
 
 
@@ -168,6 +173,8 @@ def speech(request: SpeechRequest):
         if not reserved or request.sequence != sequence or request.sequence <= retired:
             raise HTTPException(409, "Inference reservation is retired or missing")
         active = 1
+    started = time.monotonic()
+    emit("synthesis_started", engine=ENGINE, instance=instance, sequence=request.sequence)
     try:
         output = io.BytesIO()
         if ENGINE == "kokoro":
@@ -179,8 +186,11 @@ def speech(request: SpeechRequest):
             from piper import SynthesisConfig
             with wave.open(output, "wb") as wav:
                 model.synthesize_wav(request.text, wav, syn_config=SynthesisConfig(length_scale=1 / request.speed))
+        emit("synthesis_completed", engine=ENGINE, instance=instance, sequence=request.sequence,
+             elapsed_ms=round((time.monotonic() - started) * 1000), audio_bytes=output.getbuffer().nbytes)
         return Response(output.getvalue(), media_type="audio/wav")
-    except Exception:
+    except Exception as error:
+        failure("synthesis_failed", error, engine=ENGINE, instance=instance, sequence=request.sequence)
         raise HTTPException(500, "Local synthesis failed; source is not logged") from None
     finally:
         with gate:
