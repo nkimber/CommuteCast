@@ -5,7 +5,7 @@ public sealed record JobProgress(string Status, string Guidance, bool IsWorking,
 {
     public static JobProgress Describe(Job job, bool paused = false)
     {
-        if (job.CancellationRequested && !job.ExportCommitted && job.Stage != JobStage.Cancelled)
+        if (job.CancellationRequested && !job.ExportCommitted && job.Stage is not (JobStage.Cancelled or JobStage.Failed or JobStage.Deleting))
             return new("Cancelling · waiting for active work to stop", "Your saved narration remains in the library.", true, false);
         return job.Stage switch
         {
@@ -19,7 +19,7 @@ public sealed record JobProgress(string Status, string Guidance, bool IsWorking,
             JobStage.Generated => new("Generated · ready to export", "Audio is saved on this laptop and awaits export.", false, false),
             JobStage.Exporting => new("Exporting the finished MP3", "Writing the validated MP3 to the selected output folder.", true, false),
             JobStage.Exported => new("Exported locally · upload unknown", "The MP3 was exported. Check OneDrive upload before listening on your phone.", false, false),
-            JobStage.Failed => new("Needs attention · generation or delivery stopped", "Open this narration in Your library, resolve the error, then use Retry / resume on the existing item.", false, true),
+            JobStage.Failed => new("Stopped · action required", $"{job.CompletedChunks} of {job.Chunks.Count} validated segments are retained. Open the details, resolve the error, then use Retry / resume on this existing item.", false, true),
             JobStage.Cancelled => new("Cancelled · saved for resume", "Use Retry / resume in Your library to continue this existing narration.", false, false),
             JobStage.Deleting => job.Error.Length > 0
                 ? new("Removal needs attention", "Inspect the removal error in Your library. The saved removal request is retained.", false, true)

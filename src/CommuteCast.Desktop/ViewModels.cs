@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace CommuteCast.Desktop;
 
@@ -38,25 +39,53 @@ public sealed class AsyncCommand(Func<object?, Task> execute, Action<Exception> 
         finally { running = false; CanExecuteChanged?.Invoke(this, EventArgs.Empty); }
     }
 }
-public sealed class JobView(Job job, Workspace workspace, bool paused = false)
+public sealed class JobView(Job job, Workspace workspace, bool paused = false) : Observable
 {
     public Job Job { get; } = job;
     public string Id => Job.Id;
     public string Title => Job.Title;
     public string Submitted => Job.CreatedUtc.ToLocalTime().ToString("MMM d, yyyy · h:mm tt zzz");
     private JobProgress Presentation => JobProgress.Describe(Job, paused);
-    public string Status => Presentation.Status;
+    public string Status => IsWorking && Job.Activity.Read().Waiting && !Job.CancellationRequested ? "Waiting · processing will continue automatically" : Presentation.Status;
     public string Guidance => Presentation.Guidance;
     public bool IsWorking => Presentation.IsWorking;
     public bool NeedsAttention => Presentation.NeedsAttention;
     public string RecoveryInstructions => JobRecovery.Instructions(Job);
     public bool HasRecoveryInstructions => RecoveryInstructions.Length > 0;
     public bool NeedsSpeechCheck => Job.Stage == JobStage.Failed && (Job.FailedStage is JobStage.WaitingForService or JobStage.Synthesizing || Job.FailureCategory is FailureCategory.ServiceConnection or FailureCategory.ServiceContract or FailureCategory.Prerequisite);
-    public string CopyableDetails => string.Join("\n\n", new[] { Title, $"Job ID: {Id}\nSubmitted: {Submitted}", Status, Guidance, Details, Delivery,
+    public string CopyableDetails => string.Join("\n\n", new[] { Title, $"Job ID: {Id}\nSubmitted: {Submitted}", Status, ActivityNotice, TimingSummary, Guidance, Details, Delivery,
         Error.Length > 0 ? "Error\n" + Error : "", HasRecoveryInstructions ? "How to fix\n" + RecoveryInstructions : "" }.Where(s => s.Length > 0));
     public double Progress => Job.CompletedChunks;
     public double ChunkTotal => Math.Max(1, Job.Chunks.Count);
     public string ProgressSummary => $"{Job.CompletedChunks} of {Job.Chunks.Count} segments completed and validated";
+    public string ActivityNotice => IsWorking && Job.Activity.Read().Notice is { Length: > 0 } notice ? notice : Job.Stage switch
+    {
+        JobStage.Failed => "Stopped. Completed segments are retained for retry.",
+        JobStage.Cancelled => "Cancelled. Saved segments remain available.",
+        JobStage.Queued => paused ? "Queue paused · choose Resume queue" : "Waiting for its turn in the queue",
+        _ => Guidance
+    };
+    public string FailureSummary => NeedsAttention ? "Processing stopped. Open details for the cause and recovery steps." : "";
+    public string TimingSummary
+    {
+        get
+        {
+            var live = Job.Activity.Read();
+            var timing = live.Running || live.Timing.ProcessingMilliseconds > 0 ? live.Timing : Job.RunTiming;
+            if (timing is null) return "Processing time starts when this narration begins.";
+            return $"Processing time {Clock(timing.ProcessingMilliseconds)}" + (timing.SegmentNumber is { } segment ? $" · Segment {segment}: {Clock(timing.SegmentMilliseconds)}" : "");
+        }
+    }
+    private static string Clock(long milliseconds)
+    {
+        var elapsed = TimeSpan.FromMilliseconds(Math.Clamp(milliseconds, 0, TimeSpan.MaxValue.Ticks / TimeSpan.TicksPerMillisecond / 2));
+        return $"{(long)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+    }
+    public void RefreshActivity()
+    {
+        Raise(nameof(Status)); Raise(nameof(ActivityNotice)); Raise(nameof(TimingSummary));
+        Raise(nameof(IsWorking)); Raise(nameof(NeedsAttention)); Raise(nameof(FailureSummary));
+    }
     public string Details => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.FailedStage is { } stage ? $"\nStopped during: {stage}" : "") + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
     public string Error => string.Join(Environment.NewLine, new[] { Job.Error,
         string.IsNullOrWhiteSpace(Job.ExportNotice) || Job.Error.Contains(Job.ExportNotice, StringComparison.Ordinal) ? "" : Job.ExportNotice,
@@ -72,6 +101,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private readonly AppSettings settings;
     private readonly LocalSpeechProvider provider;
     private readonly ISetupRuntime setupRuntime;
+    private readonly DispatcherTimer progressTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
     private readonly ExportPublisher publisher;
     private readonly QueueCoordinator queue;
     private readonly SqliteJobStore store;
@@ -225,6 +255,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         queue = new(Workspace, store, provider, new(settings), publisher) { Paused = settings.QueuePaused, CacheQuotaMiB = settings.CacheQuotaMiB, ScratchRetentionDays = settings.ScratchRetentionDays, PrivateStorageLimitMiB = settings.PrivateStorageLimitMiB };
         auditions = new(Workspace, provider, queue.InferenceGate, (engine, ct) => provider.ReadyAsync(engine, ct, true));
         queue.Changed += _ => Application.Current.Dispatcher.InvokeAsync(() => RefreshJobs(queue.Snapshot()));
+        progressTimer.Tick += (_, _) => { foreach (var job in Jobs) job.RefreshActivity(); };
+        progressTimer.Start();
         player.MediaFailed += (_, _) => ReportError("Playback failed. Check that the local audio exists and is decodable.");
         Voices.Add(settings.Voice);
         NavigateCommand = Command(p => { Navigate(p?.ToString() ?? "compose"); return Task.CompletedTask; }, false);
@@ -281,6 +313,10 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private Job RequireSelected() => SelectedJob?.Job ?? throw new ArgumentException("Select a narration first.");
     private void RefreshJobs(IReadOnlyList<Job> snapshots)
     {
+        // A running synthesis stage has passed this job's captured readiness
+        // check. Retire only that engine's older readiness warning.
+        if (snapshots.Any(j => j.Stage == JobStage.Synthesizing && j.Activity.Read().Running && j.Settings.Engine == speechErrorEngine))
+        { speechError = ""; speechErrorEngine = ""; }
         var id = SelectedJob?.Id;
         Jobs.Clear();
         foreach (var job in snapshots.Where(j => j.Stage == JobStage.Queued).Concat(snapshots.Where(j => j.Stage != JobStage.Queued).OrderByDescending(j => j.CreatedUtc))) Jobs.Add(new(job, Workspace, queue.Paused));
@@ -526,6 +562,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public ValueTask DisposeAsync() => new(disposal ??= DisposeCoreAsync());
     private async Task DisposeCoreAsync()
     {
+        progressTimer.Stop();
         var settled = operations.StopAsync();
         draftSave?.Cancel(); shutdown.Cancel(); player.Close();
         await settled.WaitAsync(TimeSpan.FromSeconds(20));

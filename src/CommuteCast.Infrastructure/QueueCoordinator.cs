@@ -126,7 +126,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     }
     private async Task PersistOutcomeAsync(Job job)
     {
-        try { await store.SaveAsync(job, CancellationToken.None); }
+        try { job.RunTiming = job.Activity.Read().Timing; await store.SaveAsync(job, CancellationToken.None); }
         catch (Exception error)
         {
             AppLogging.Failure("QueueCheckpoint", error);
@@ -189,11 +189,13 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             var cancellation = activeCancellation!;
             using var jobContext = LogContext.PushProperty("JobId", job.Id);
             job.Attempts++;
+            job.Activity.Start(job.RunTiming);
             var started = System.Diagnostics.Stopwatch.StartNew();
             Log.Information("Job attempt {Attempt} started using {Engine}", job.Attempts, job.Settings.Engine);
-            try { await RunAsync(job, cancellation.Token); Log.Information("Job completed at {Stage} in {ElapsedMs} ms", job.Stage, started.ElapsedMilliseconds); }
+            try { await RunAsync(job, cancellation.Token); job.Activity.Stop(); await PersistOutcomeAsync(job); Log.Information("Job completed at {Stage} in {ElapsedMs} ms", job.Stage, started.ElapsedMilliseconds); }
             catch (OperationCanceledException)
             {
+                job.Activity.Stop();
                 Log.Information("Job interrupted; user cancellation {UserCancellation}, shutdown {Shutdown}", job.CancellationRequested, lifetime.IsCancellationRequested);
                 if (!job.ExportCommitted) job.Stage = job.CancellationRequested || !lifetime.IsCancellationRequested ? JobStage.Cancelled : JobStage.Queued;
                 job.Error = "";
@@ -203,6 +205,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             }
             catch (Exception error)
             {
+                job.Activity.Stop();
                 Log.Error("Job failed at {Stage} with category {FailureCategory} after {ElapsedMs} ms", job.Stage, Categorize(error, job.Stage), started.ElapsedMilliseconds);
                 AppLogging.Failure("RunJob", error);
                 job.FailedStage = job.Stage;
@@ -213,6 +216,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             }
             finally
             {
+                job.Activity.Stop();
                 lock (sync)
                 {
                     activeId = null;
@@ -251,9 +255,15 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
     private async Task StageAsync(Job job, JobStage stage, CancellationToken ct)
     {
         job.Stage = stage;
-        await store.SaveAsync(job, ct);
+        job.Activity.Update(JobProgress.Describe(job).Guidance);
+        await CheckpointAsync(job, ct);
         Log.Information("Job {JobId} stage {Stage}; completed {CompletedChunks} of {ChunkCount} chunks", job.Id, stage, job.CompletedChunks, job.Chunks.Count);
         Notify();
+    }
+    private Task CheckpointAsync(Job job, CancellationToken ct)
+    {
+        job.RunTiming = job.Activity.Read().Timing;
+        return store.SaveAsync(job, ct);
     }
     private async Task RunAsync(Job job, CancellationToken ct)
     {
@@ -261,7 +271,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
         var directory = workspace.JobDirectory(job.Id);
         Workspace.RejectReparsePoints(directory);
         Directory.CreateDirectory(directory);
-        await PrivateJobFiles.ReconcilePromotionsAsync(job, directory, () => store.SaveAsync(job, ct), ct);
+        await PrivateJobFiles.ReconcilePromotionsAsync(job, directory, () => CheckpointAsync(job, ct), ct);
         job.Error = "";
         job.FailureCategory = FailureCategory.None; job.FailedStage = null;
         lock (sync) if (job.Chunks.Count == 0) job.Chunks = Chunker.Split(job.Prepared.Script, 450);
@@ -295,30 +305,34 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             job.FinalHash = "";
             if (valid.Count != job.Chunks.Count)
             {
+                job.Activity.Update("Waiting for other local audio work to finish", true);
                 await InferenceGate.WaitAsync(ct);
                 try
                 {
                     await StageAsync(job, JobStage.WaitingForService, ct);
-                    var info = await provider.ReadyAsync(job.Settings.Engine, ct);
+                    var info = provider is IJobSpeechStatusProvider statusProvider
+                        ? await statusProvider.ReadyForJobAsync(job, ct) : await provider.ReadyAsync(job.Settings.Engine, ct);
                     if (info.Fingerprint != job.Settings.ProviderFingerprint || job.Settings.ProviderImageId is not null && info.ImageId != job.Settings.ProviderImageId)
                         throw new IOException("The speech model or image changed since submission. Restore it or submit a new job to avoid mixed audio.");
                     foreach (var chunk in job.Chunks)
                     {
                         ct.ThrowIfCancellationRequested();
                         if (valid.Any(r => r.Index == chunk.Index)) continue;
+                        job.Activity.Segment(chunk.Index + 1);
                         await StageAsync(job, JobStage.Synthesizing, ct);
                         var raw = Path.Combine(directory, "inference.partial.wav");
                         var normalized = Path.Combine(directory, "normalized.partial.wav");
                         await PrivateJobFiles.PrepareOutputAsync(job, directory, Path.GetFileName(raw), ct);
                         if (provider is IDurableSpeechProvider durable)
-                            await durable.SynthesizeAsync(job, job.Settings, chunk.Text, raw, () => store.SaveAsync(job, ct), ct);
+                            await durable.SynthesizeAsync(job, job.Settings, chunk.Text, raw, () => CheckpointAsync(job, ct), ct);
                         else
                         {
                             await provider.SynthesizeAsync(job.Settings, chunk.Text, raw, ct);
                             await PrivateJobFiles.RecordAsync(job, directory, Path.GetFileName(raw), ct);
-                            await store.SaveAsync(job, ct);
+                            await CheckpointAsync(job, ct);
                         }
-                        await audio.NormalizeAsync(job, raw, normalized, () => store.SaveAsync(job, ct), ct);
+                        job.Activity.Update("Preparing and checking this segment's audio");
+                        await audio.NormalizeAsync(job, raw, normalized, () => CheckpointAsync(job, ct), ct);
                         var checkedAudio = await audio.ValidateChunkAsync(normalized, chunk.Text, ct);
                         var hash = await Workspace.HashFileAsync(normalized, ct);
                         ct.ThrowIfCancellationRequested();
@@ -330,9 +344,10 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                                 if (!job.Receipts.Any(r => r.Index == chunk.Index)) job.Receipts.Add(new(chunk.Index, hash, job.Fingerprint, checkedAudio.Duration));
                                 job.CompletedChunks = job.Receipts.Count;
                             }
-                            await store.SaveAsync(job, ct);
+                            await CheckpointAsync(job, ct);
                         }, ct, preserveChangedChunk: true);
                         Notify();
+                        job.Activity.EndSegment();
                         await OwnedFileRemoval.DeleteByHashAsync(directory, Path.GetFileName(raw), job.PrivateArtifacts.Single(r => r.RelativePath == Path.GetFileName(raw)).Hash, ct: ct);
                     }
                 }
@@ -340,7 +355,7 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             }
             if (job.Receipts.Count != job.Chunks.Count || job.Receipts.Select(r => r.Index).Distinct().Count() != job.Chunks.Count) throw new IOException("The chunk sequence is incomplete. Publication is blocked.");
             await StageAsync(job, JobStage.Assembling, ct);
-            await audio.AssembleAsync(job, directory, ct, () => store.SaveAsync(job, ct));
+            await audio.AssembleAsync(job, directory, ct, () => CheckpointAsync(job, ct));
         }
         await StageAsync(job, JobStage.Validating, ct);
         var checkedFinal = await audio.ValidateFinalAsync(job, final, ct);

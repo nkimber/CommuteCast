@@ -11,6 +11,30 @@ public partial class ProviderContractTests
     private static void WriteAdmission(Fixture fixture, long sequence = 1) => File.WriteAllText(AdmissionPath(fixture), JsonSerializer.Serialize(new
     { Version = 1, fixture.Engine, Image = FakeRuntime.Image, fixture.Fingerprint, Instance = fixture.Http.Instance, Sequence = sequence }));
 
+    [Fact] public async Task NormalReadinessWaitsBeyondCleanupBudgetAndReportsActiveWaiting()
+    {
+        using var fixture = new Fixture(); WriteAdmission(fixture);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Http.Control = (route, body, _) =>
+        {
+            entered.TrySetResult(); return Task.FromResult(fixture.Http.ControlResponse(body, finish.Task.IsCompleted ? "settled" : "active"));
+        };
+        var job = new CommuteCast.Core.Job { Settings = fixture.Settings }; job.Activity.Start(null);
+        using var provider = fixture.Provider(Fixture.ShortLimits with { Readiness = TimeSpan.FromSeconds(10), Quiescence = TimeSpan.FromMilliseconds(100) });
+        var pending = provider.ReadyForJobAsync(job, default);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); await Task.Delay(200);
+            Assert.False(pending.IsCompleted); Assert.True(job.Activity.Read().Waiting);
+            Assert.Contains("previous speech request", job.Activity.Read().Notice);
+            Assert.True(File.Exists(AdmissionPath(fixture))); Assert.Equal(0, fixture.Http.Posts);
+        }
+        finally { finish.TrySetResult(); }
+        await pending; Assert.False(File.Exists(AdmissionPath(fixture)));
+        Assert.Equal(0, fixture.Runtime.Starts);
+    }
+
     [Fact] public async Task SlowOwnershipVerificationDoesNotConsumeInferenceSettlementAllowance()
     {
         using var fixture = new Fixture(); WriteAdmission(fixture);

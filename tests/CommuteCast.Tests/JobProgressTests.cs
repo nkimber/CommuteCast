@@ -64,6 +64,18 @@ public class JobProgressTests
         Assert.False(JobProgress.Describe(job).IsWorking);
     }
 
+    [Theory]
+    [InlineData(JobStage.Failed)]
+    [InlineData(JobStage.Deleting)]
+    public void FailureWinsOverAnOutstandingCancellationRequest(JobStage stage)
+    {
+        var job = new Job { Stage = stage, Error = "Access denied", CancellationRequested = true };
+        var progress = JobProgress.Describe(job);
+        Assert.True(progress.NeedsAttention);
+        Assert.False(progress.IsWorking);
+        Assert.DoesNotContain("Cancelling", progress.Status);
+    }
+
     [Fact]
     public void CommittedExportWinsOverLateCancellation()
     {

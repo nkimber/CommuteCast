@@ -5,6 +5,26 @@ namespace CommuteCast.Tests;
 
 public class QueueRaceTests
 {
+    [Fact] public async Task PermanentFailureStopsClocksAndRetryReusesValidatedSegments()
+    {
+        using var test = new TestWorkspace(); var store = new SqliteJobStore(test.Workspace);
+        var provider = new GatedProvider(false) { Enabled = false, FailSecond = true }; var job = MakeJob(test);
+        await using var queue = new QueueCoordinator(test.Workspace, store, provider, new(new()), new(test.Workspace, store));
+        await queue.InitializeAsync(); await queue.AddAsync(job);
+        await WaitUntilAsync(() => queue.Snapshot().Single().Stage == JobStage.Failed);
+        var failed = queue.Snapshot().Single(); Assert.Equal(1, failed.CompletedChunks);
+        Assert.False(failed.Activity.Read().Running); Assert.Equal(2, failed.RunTiming!.SegmentNumber);
+        var frozen = failed.Activity.Read().Timing; var chunk = test.Workspace.ChunkPath(failed, 0);
+        var hash = await Workspace.HashFileAsync(chunk); await Task.Delay(50);
+        Assert.Equal(frozen, failed.Activity.Read().Timing);
+        Assert.Empty(Directory.GetFiles(test.Destination, "*.mp3"));
+        provider.FailSecond = false; var calls = provider.Syntheses;
+        await queue.RetryAsync(job.Id); await WaitUntilAsync(() => queue.Snapshot().Single() is { Stage: JobStage.Exported } completed && !completed.Activity.Read().Running);
+        var done = queue.Snapshot().Single();
+        Assert.Equal(job.Id, done.Id); Assert.Equal(done.Chunks.Count - 1, provider.Syntheses - calls);
+        Assert.Equal(hash, await Workspace.HashFileAsync(chunk));
+        Assert.False(done.Activity.Read().Running); Assert.True(done.RunTiming!.ProcessingMilliseconds >= frozen.ProcessingMilliseconds);
+    }
     [Theory] [InlineData(JobStage.Queued)] [InlineData(JobStage.Synthesizing)] [InlineData(JobStage.Exporting)]
     public async Task InterruptedDurableCancellationDoesNotResumeOnRelaunch(JobStage stage)
     {
@@ -154,7 +174,7 @@ public class QueueRaceTests
     }
     private sealed class GatedProvider(bool secondChunk) : ISpeechProvider
     {
-        public Gate Gate { get; } = new(); public bool Enabled { get; set; } = true; public int Syntheses { get; private set; }
+        public Gate Gate { get; } = new(); public bool Enabled { get; set; } = true; public bool FailSecond { get; set; } public int Syntheses { get; private set; }
         public async Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct)
         {
             if (Enabled && !secondChunk) await Gate.WaitAsync(ct);
@@ -163,6 +183,7 @@ public class QueueRaceTests
         public async Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
         {
             if (Enabled && secondChunk && Syntheses == 1) await Gate.WaitAsync(ct);
+            if (FailSecond && Syntheses == 1) throw new IOException("Synthetic permanent speech failure");
             ct.ThrowIfCancellationRequested(); Syntheses++; TestWorkspace.WriteWave(output, 2);
         }
     }

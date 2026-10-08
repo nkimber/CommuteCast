@@ -39,6 +39,8 @@ public sealed class Job
     public List<PrivateArtifactReceipt> PrivateArtifacts { get; set; } = [];
     public string PrivateStorageNotice { get; set; } = "";
     public int CompletedChunks { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public JobRunTiming? RunTiming { get; set; }
+    [JsonIgnore] public JobActivity Activity { get; } = new();
     public string Error { get; set; } = "";
     public FailureCategory FailureCategory { get; set; }
     public JobStage? FailedStage { get; set; }
@@ -104,6 +106,10 @@ public interface ISpeechProvider
 public interface IDurableSpeechProvider : ISpeechProvider
 {
     Task SynthesizeAsync(Job job, NarrationSettings settings, string text, string output, Func<Task> checkpoint, CancellationToken ct);
+}
+public interface IJobSpeechStatusProvider : ISpeechProvider
+{
+    Task<ProviderInfo> ReadyForJobAsync(Job job, CancellationToken ct);
 }
 public sealed record AuditionWriteJournal(string Id, DateTimeOffset CreatedUtc, List<PrivateArtifactReceipt> Artifacts);
 public interface IDurableAuditionSpeechProvider : ISpeechProvider

@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace CommuteCast.Infrastructure;
 
-public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditionSpeechProvider, IDisposable
+public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditionSpeechProvider, IJobSpeechStatusProvider, IDisposable
 {
     private readonly Workspace workspace;
     private readonly ILocalSpeechRuntime runtime;
@@ -73,19 +73,23 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
         try { await new RecoveryBudget(workspace).ResetAsync(engine); }
         finally { recoveryGate.Release(); }
     }
-    public async Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct, bool explicitRetry)
+    public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct, bool explicitRetry) => ReadyCoreAsync(engine, ct, explicitRetry, null);
+    public Task<ProviderInfo> ReadyForJobAsync(Job job, CancellationToken ct) => ReadyCoreAsync(job.Settings.Engine, ct, false, job.Activity);
+    private async Task<ProviderInfo> ReadyCoreAsync(string engine, CancellationToken ct, bool explicitRetry, JobActivity? activity)
     {
         DockerContainerPolicy.Name(engine);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Readiness);
         var entered = false; var admissionEntered = false; var settlingAdmission = false;
         try
         {
+            activity?.Update("Waiting for local speech to become available", true);
             await admissionGate.WaitAsync(deadline.Token); admissionEntered = true;
-            settlingAdmission = true; await ReconcileAdmissionAsync(deadline.Token); settlingAdmission = false;
+            settlingAdmission = true; await ReconcileAdmissionAsync(deadline.Token, activity, true); settlingAdmission = false;
             await recoveryGate.WaitAsync(deadline.Token); entered = true;
             var budget = new RecoveryBudget(workspace);
             if (explicitRetry) await budget.ResetAsync(engine);
             await budget.BeginAsync(engine, deadline.Token);
+            activity?.Update("Checking the local speech service");
             var image = await VerifyContainerAsync(engine, true, deadline.Token);
             while (true)
             {
@@ -95,13 +99,16 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
                     var info = await HealthAsync(engine, deadline.Token);
                     if (info.State == "ready" && info.Active == 0) { await RequireUnchangedPinAsync(image, deadline.Token); await budget.ResetAsync(engine); return info with { ImageId = image }; }
                     if (info.State == "failed") throw new IOException("The model could not load. Check available memory and reprovision the speech service.");
+                    activity?.Update(info.Active > 0 ? "Waiting for the previous speech request to finish" : "Waiting for the speech model to load", true);
                 }
                 catch (HttpRequestException) { }
                 catch (OperationCanceledException) when (!deadline.IsCancellationRequested) { }
                 await Task.Delay(limits.Poll, deadline.Token);
             }
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException("Speech readiness exceeded its bounded allowance. Repair Docker Desktop, then check readiness or retry. Saved audio is retained."); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException(settlingAdmission
+            ? "Processing stopped after the readiness wait limit. The prior speech reservation is not confirmed settled and may still be running locally. Validated segments are retained. Wait for the prior request to finish, then use Repair speech & resume on the existing narration."
+            : "Speech readiness exceeded its bounded allowance. Check the local speech service, then retry the existing narration. Saved audio is retained."); }
         catch (TimeoutException error) when (!settlingAdmission) { throw new TimeoutException(error.Message + " Repair Docker Desktop, then check speech readiness or retry. Validated local audio is preserved.", error); }
         finally { if (entered) recoveryGate.Release(); if (admissionEntered) admissionGate.Release(); }
     }
@@ -241,6 +248,7 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
         var entered = false;
         try
         {
+            job?.Activity.Update("Waiting for the previous speech step", true);
             await admissionGate.WaitAsync(deadline.Token); entered = true;
             await SynthesizeCoreAsync(job, settings, text, output, checkpoint, deadline.Token, retainIdentity);
         }
@@ -274,21 +282,23 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
             }
         }
         var settlementAttempted = true;
-        async Task SettleAttemptAsync() { settlementAttempted = true; await ReconcileAdmissionAsync(CancellationToken.None); }
+        async Task SettleAttemptAsync() { settlementAttempted = true; await ReconcileAdmissionAsync(CancellationToken.None, job?.Activity); }
         try
         {
-            await ReconcileAdmissionAsync(deadline.Token);
+            await ReconcileAdmissionAsync(deadline.Token, job?.Activity, true);
             for (var attempt = 0; ; attempt++)
             {
                 try
                 {
                     deadline.Token.ThrowIfCancellationRequested();
+                    job?.Activity.Update("Checking this segment's speech settings");
                     var image = await VerifyContainerAsync(settings.Engine, false, deadline.Token);
                     if (settings.ProviderImageId is not null && settings.ProviderImageId != image) throw new IOException("The speech image differs from this job's frozen configuration. Restore the original service or submit a new job.");
                     var info = await HealthAsync(settings.Engine, deadline.Token);
                     if (info.Fingerprint != settings.ProviderFingerprint || info.State != "ready" || !info.Voices.Contains(settings.Voice)) throw new IOException("The model or voice differs from this job's frozen configuration. Restore the original service or submit a new job.");
                     while (info.Active != 0)
                     {
+                        job?.Activity.Update("Waiting for the previous speech request to finish", true);
                         await Task.Delay(limits.Poll, deadline.Token); info = await HealthAsync(settings.Engine, deadline.Token);
                         if (info.State != "ready" || info.Fingerprint != settings.ProviderFingerprint || !info.Voices.Contains(settings.Voice)) throw new IOException("Speech identity, voice, or readiness changed while waiting. Restore the configured service, then retry.");
                     }
@@ -300,12 +310,14 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
                     await admission.SaveAsync(workspace, deadline.Token);
                     if (await AdmissionControlAsync(admission, "reserve", deadline.Token) != "reserved") throw new IOException("Speech reservation was not admitted. No source text was sent.");
                     using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(settings.Engine, "speech")) { Content = JsonContent.Create(new { text, voice = settings.Voice, speed = settings.Speed, fingerprint = settings.ProviderFingerprint, instance = admission.Instance, sequence = admission.Sequence }) };
+                    job?.Activity.Update("Generating this segment's audio");
                     using var response = await SendAsync(request, deadline.Token);
                     if ((int)response.StatusCode is 429 or 500 or 502 or 503 or 504) throw new HttpRequestException("The local speech service returned a transient failure.", null, response.StatusCode);
                     if (!response.IsSuccessStatusCode) throw new IOException($"Local speech returned {(int)response.StatusCode}. Validated chunks are preserved; repair settings or service readiness and retry.");
                     if (response.Content.Headers.ContentType?.MediaType != "audio/wav" || response.Content.Headers.ContentLength > MaximumAudioBytes) throw new IOException("The speech response has an invalid type or size.");
                     await using (var stream = await response.Content.ReadAsStreamAsync(deadline.Token))
                     {
+                        job?.Activity.Update("Receiving this segment's audio");
                         attemptFile = ExportStagingFile.Create(Path.GetDirectoryName(temporary)!, Path.GetFileName(temporary));
                         if (job is not null)
                         {
@@ -337,6 +349,7 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
                     AppLogging.Failure("SpeechTransientRetry", error, Serilog.Events.LogEventLevel.Warning);
                     await SettleAttemptAsync();
                     await RemoveAttemptAsync();
+                    job?.Activity.Update($"Speech connection interrupted · retrying ({attempt + 1} of {limits.TransientRetries})", true);
                     await Task.Delay(TimeSpan.FromTicks(limits.RetryBackoff.Ticks * (1L << attempt)), deadline.Token);
                 }
             }
@@ -384,10 +397,11 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
         catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
         { throw new IOException("Speech reservation response is incomplete or incompatible.", error); }
     }
-    private async Task ReconcileAdmissionAsync(CancellationToken ct)
+    private async Task ReconcileAdmissionAsync(CancellationToken ct, JobActivity? activity = null, bool waitForInference = false)
     {
         var pending = await PendingSpeechAdmission.LoadAsync(workspace, ct);
         if (pending is null) return;
+        activity?.Update("Checking the previous speech request", true);
         // Docker ownership checks can take longer than the inference-settlement
         // allowance. Give verification its bounded readiness budget first.
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Readiness);
@@ -405,7 +419,7 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
                 await RemoveAdmissionAsync(hash); return;
             }
             verifying = false;
-            deadline.CancelAfter(limits.Quiescence);
+            deadline.CancelAfter(waitForInference ? limits.Readiness : limits.Quiescence);
             while (true)
             {
                 var info = await HealthAsync(admission.Engine, deadline.Token); RequireAdmission(info);
@@ -421,6 +435,7 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
                 var state = await AdmissionControlAsync(admission, "settle", deadline.Token);
                 if (state == "settled") break;
                 if (state != "active") throw new IOException("The speech reservation did not settle. Generation remains blocked.");
+                activity?.Update("Waiting for the previous speech request to finish · saved segments are safe", true);
                 await Task.Delay(limits.Poll, deadline.Token);
             }
             await RequireUnchangedPinAsync(image, deadline.Token);
@@ -429,7 +444,9 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         { throw new TimeoutException(verifying
             ? "The saved speech reservation could not be checked because Docker ownership verification timed out. This does not establish that inference is active. Check the saved speech service and retry the existing narration. Saved chunks and the reservation are retained; no service was restarted."
-            : "Speech cancellation is still settling. The saved reservation blocks both engines; wait for local inference to finish, then check readiness or retry. No service was restarted."); }
+            : waitForInference
+                ? "Processing stopped after the readiness wait limit. The prior speech reservation is not confirmed settled and may still be running locally. Validated segments are retained. Wait for the prior request to finish, then use Repair speech & resume on the existing narration. No service was restarted."
+                : "Speech cancellation is still settling. The saved reservation blocks both engines; wait for local inference to finish, then check readiness or retry. No service was restarted."); }
     }
     private async Task RemoveAdmissionAsync(string hash)
     {
