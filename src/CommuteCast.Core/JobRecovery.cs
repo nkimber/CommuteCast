@@ -8,7 +8,7 @@ public static class JobRecovery
         var error = job.Error;
         if (error.Contains("recovery is exhausted", StringComparison.OrdinalIgnoreCase))
             return $"An earlier failed readiness attempt used the automatic recovery allowance for {job.Settings.Engine}. It stays used across restarts and provisioning. This message does not identify the original service failure.\n\n" +
-                $"1. Choose Check saved speech service here. This explicitly resets the {job.Settings.Engine} recovery allowance and checks its installed service. If it succeeds, go to step 4.\n" +
+                $"1. Choose Repair speech & resume here to reset the {job.Settings.Engine} recovery allowance, start its verified container if stopped, check the captured model and resume this existing job. If repair succeeds, only choose Resume queue if paused. Alternatively, Check saved speech service performs the readiness check without resuming; if that check succeeds, go to step 4.\n" +
                 "2. If readiness fails, open setup checks, then choose Check setup in Settings to identify the failed prerequisite or service check.\n" +
                 "3. If Docker is unavailable, open Docker Desktop and wait for its engine to finish starting. Check setup also reports an incorrect local Linux context or missing service. Resolve the reported check, then return here and check the saved speech service again.\n" +
                 "4. When readiness succeeds, choose Retry / resume on this saved narration. If the queue is paused, choose Resume queue. Your saved source and validated chunks are retained; you do not need to submit another copy.";

@@ -24,6 +24,43 @@ public class SetupDiagnosticsTests
         Assert.All(runtime.Commands, call => Assert.True(call is "ffmpeg -version" or "ffmpeg -hide_banner -protocols" or "ffprobe -version" or "wsl.exe --version" or "docker --version" or "docker context inspect --format {{.Endpoints.docker.Host}}" or "docker version --format {{.Server.Version}}", call));
         Assert.DoesNotContain("Private echo", JsonSerializer.Serialize(report));
     }
+    [Fact] public async Task HealthyMultiStepInspectionCanTakeLongerThanFiveSeconds()
+    {
+        var runtime = new Runtime { SpeechPending = async (engine, ct) =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(6), ct);
+            return new(engine, engine + ":contract-v1:" + new string('a', 64), ["af_heart"], "ready", 0);
+        } };
+        var report = await new SetupDiagnostics(runtime).CheckAsync(new());
+        Assert.All(report.Checks.Where(c => c.Id.StartsWith("speech-", StringComparison.Ordinal)), c => Assert.Equal(SetupStatus.Available, c.Status));
+        Assert.Contains("snapshot", report.Display);
+    }
+    [Fact] public async Task IndependentSpeechInspectionsStartTogetherAndCallerCancellationStillBoundsThem()
+    {
+        var bothEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<ProviderInfo>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var runtime = new Runtime { SpeechPending = (_, _) => { if (++calls == 2) bothEntered.SetResult(); return release.Task; } };
+        using var cancel = new CancellationTokenSource();
+        var pending = new SetupDiagnostics(runtime).CheckAsync(new(), cancel.Token);
+        try
+        {
+            await bothEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            cancel.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(2)));
+        }
+        finally { release.SetResult(new("kokoro", "fingerprint", ["af_heart"], "ready", 0)); }
+    }
+    [Fact] public async Task InspectionTimeoutDoesNotDiagnoseAnOutageOrEchoPrivateErrors()
+    {
+        var runtime = new Runtime { SpeechFailure = new TimeoutException("Private echo") };
+        var report = await new SetupDiagnostics(runtime).CheckAsync(new());
+        var check = Find(report, "speech-selected");
+        Assert.Equal(SetupStatus.TimedOut, check.Status);
+        Assert.Contains("does not establish a speech outage", check.Detail);
+        Assert.Contains("Start / repair speech services", check.NextStep);
+        Assert.DoesNotContain("Private echo", report.Display);
+    }
     [Fact] public async Task MissingCliDoesNotInspectContextDaemonOrSpeech()
     {
         var runtime = new Runtime { Execute = (tool, _) => tool == "docker" ? throw new Win32Exception(2) : null };
@@ -100,6 +137,7 @@ public class SetupDiagnosticsTests
         public Func<string, IReadOnlyList<string>, ProcessResult?>? Execute { get; init; }
         public Func<CancellationToken, Task<ProcessResult>>? Pending { get; init; }
         public Exception? SpeechFailure { get; init; } public string State { get; init; } = "ready"; public int Active { get; init; } public string Voice { get; init; } = "af_heart";
+        public Func<string, CancellationToken, Task<ProviderInfo>>? SpeechPending { get; init; }
         public SetupHost InspectHost() => Host;
         public Task<ProcessResult> RunAsync(string tool, IReadOnlyList<string> args, TimeSpan timeout, CancellationToken ct)
         {
@@ -112,6 +150,6 @@ public class SetupDiagnosticsTests
             return Task.FromResult(result);
         }
         public Task<ProviderInfo> ProbeSpeechAsync(string engine, CancellationToken ct)
-        { SpeechCalls.Add(engine); if (SpeechFailure is not null) throw SpeechFailure; return Task.FromResult(new ProviderInfo(engine, engine + ":contract-v1:" + new string('a', 64), [Voice], State, Active)); }
+        { SpeechCalls.Add(engine); if (SpeechFailure is not null) throw SpeechFailure; if (SpeechPending is not null) return SpeechPending(engine, ct); return Task.FromResult(new ProviderInfo(engine, engine + ":contract-v1:" + new string('a', 64), [Voice], State, Active)); }
     }
 }

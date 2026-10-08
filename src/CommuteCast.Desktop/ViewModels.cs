@@ -70,6 +70,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public Workspace Workspace { get; }
     private readonly AppSettings settings;
     private readonly LocalSpeechProvider provider;
+    private readonly ISetupRuntime setupRuntime;
     private readonly ExportPublisher publisher;
     private readonly QueueCoordinator queue;
     private readonly SqliteJobStore store;
@@ -92,6 +93,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private string operationError = "", speechError = "", speechErrorEngine = "";
     private string checkedJobId = "", selectedSpeechResult = "";
     private string setupDetails = "Setup has not been checked. This inspection does not start or change speech services.";
+    private string speechRepairDetails = "Start / repair checks both installed engines, starts verified stopped CommuteCast containers and refreshes setup. It keeps saved narrations for explicit resume.";
     private string storageSummary = "Usage has not been measured.";
     private bool loading = true, queueLoaded, draftLoadFailed, draftDirty;
     private JobView? selectedJob;
@@ -155,6 +157,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public int PrivateStorageLimitMiB { get => settings.PrivateStorageLimitMiB; set { settings.PrivateStorageLimitMiB = value; Raise(); } }
     public string ProviderDetails { get => providerDetails; private set => Set(ref providerDetails, value); }
     public string SetupDetails { get => setupDetails; private set => Set(ref setupDetails, value); }
+    public string SpeechRepairDetails { get => speechRepairDetails; private set => Set(ref speechRepairDetails, value); }
     public string ServiceStatus { get => serviceStatus; private set => Set(ref serviceStatus, value); }
     public string StatusMessage { get => statusMessage; private set => Set(ref statusMessage, value); }
     public JobView? LatestJob => Jobs.MaxBy(j => j.Job.CreatedUtc);
@@ -181,6 +184,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public ICommand ViewAttentionCommand { get; }
     public ICommand CopyDetailsCommand { get; }
     public ICommand SelectedReadinessCommand { get; }
+    public ICommand RepairSelectedCommand { get; }
+    public ICommand RepairSpeechCommand { get; }
     public ICommand QueueCommand { get; }
     public ICommand ReviewCommand { get; }
     public ICommand ChooseFolderCommand { get; }
@@ -209,12 +214,13 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public ICommand MeasureStorageCommand { get; }
     public ICommand CleanCacheCommand { get; }
 
-    public MainViewModel(AppSettings saved, Workspace? workspace = null)
+    public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null)
     {
         settings = saved; Workspace = workspace ?? new();
         drafts = new(Workspace);
         store = new SqliteJobStore(Workspace);
-        provider = new(Workspace); publisher = new(Workspace, store);
+        provider = speechProvider ?? new(Workspace); publisher = new(Workspace, store);
+        setupRuntime = setupInspection ?? new SetupRuntime(Workspace.Root);
         queue = new(Workspace, store, provider, new(settings), publisher) { Paused = settings.QueuePaused, CacheQuotaMiB = settings.CacheQuotaMiB, ScratchRetentionDays = settings.ScratchRetentionDays, PrivateStorageLimitMiB = settings.PrivateStorageLimitMiB };
         auditions = new(Workspace, provider, queue.InferenceGate, (engine, ct) => provider.ReadyAsync(engine, ct, true));
         queue.Changed += _ => Application.Current.Dispatcher.InvokeAsync(() => RefreshJobs(queue.Snapshot()));
@@ -224,36 +230,24 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         ViewLatestCommand = Command(_ => { SelectedJob = LatestJob; Navigate("library"); return Task.CompletedTask; }, false);
         ViewAttentionCommand = Command(_ => { SelectedJob = AttentionJob ?? LatestJob; Navigate("library"); return Task.CompletedTask; }, false);
         CopyDetailsCommand = Command(_ => { RequireSelected(); Clipboard.SetText(SelectedDetailsForCopy); StatusMessage = "Narration details copied, including the error and repair steps. Source text and spoken script are not included."; return Task.CompletedTask; }, false);
-        SelectedReadinessCommand = Command(async _ =>
+        SelectedReadinessCommand = Command(_ => CheckSavedSpeechAsync(RequireSelected()));
+        RepairSelectedCommand = Command(async _ =>
         {
             var job = RequireSelected();
-            SetSelectedSpeechResult(job.Id, $"Checking {job.Settings.Engine} for this saved narration…");
-            try
-            {
-                var info = await CheckReadinessAsync(true, job.Settings.Engine);
-                if (info.Fingerprint != job.Settings.ProviderFingerprint || (job.Settings.ProviderImageId is not null && info.ImageId != job.Settings.ProviderImageId))
-                    throw new IOException("The speech model or image changed since submission. Restore the original compatible service for this saved narration, or use Use as a new draft to narrate with the new model. Existing chunks cannot be mixed with another model.");
-                StatusMessage = $"{job.Settings.Engine} is ready for this saved narration. Choose Retry / resume to continue it; choose Resume queue if paused.";
-                SetSelectedSpeechResult(job.Id, StatusMessage);
-            }
-            catch (Exception error)
-            {
-                SetSelectedSpeechResult(job.Id, $"{job.Settings.Engine}: {QueueCoordinator.FriendlyError(error)}");
-                throw;
-            }
+            await CheckSavedSpeechAsync(job);
+            try { await queue.RetryAsync(job.Id); }
+            catch (Exception error) { SetSelectedSpeechResult(job.Id, "Speech is ready, but resume failed: " + QueueCoordinator.FriendlyError(error)); throw; }
+            RefreshJobs(queue.Snapshot()); Navigate("library");
+            StatusMessage = queue.Paused ? "Speech is ready and this saved narration is queued. Choose Resume queue to continue dispatch." : "Speech is ready. This saved narration is queued to resume; no duplicate was created.";
+            SetSelectedSpeechResult(job.Id, StatusMessage);
         });
+        RepairSpeechCommand = Command(_ => RepairSpeechAsync());
         QueueCommand = Command(_ => SubmitAsync());
         ReviewCommand = Command(async _ => { var text = Source; var omit = ExcludeCode; var dictionary = Pronunciation; var profile = CaptureProfile(); var prepared = await Task.Run(() => TextPreparation.Prepare(text, omit, dictionary, profile, shutdown.Token), shutdown.Token); ShowPreparation(prepared, text); });
         ChooseFolderCommand = Command(async _ => { var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); settings.Destination = path; Raise(nameof(DestinationDisplay)); await SaveSettingsAsync(); StatusMessage = "Output folder saved. Only completed MP3s will be exported here."; } });
         TestFolderCommand = Command(async _ => { await publisher.TestDestinationAsync(settings.Destination); StatusMessage = "Local write access passed. OneDrive cloud upload is still unknown."; });
         ReadinessCommand = Command(_ => CheckReadinessAsync(true));
-        SetupCommand = Command(async _ =>
-        {
-            SetupDetails = "Checking setup without starting or changing services…";
-            var report = await new SetupDiagnostics(new SetupRuntime(Workspace.Root)).CheckAsync(settings, shutdown.Token);
-            SetupDetails = report.Display;
-            StatusMessage = "Setup inspection finished. Corporate approval and real narration acceptance remain separate.";
-        });
+        SetupCommand = Command(async _ => { await RefreshSetupAsync(); StatusMessage = "Setup inspection finished. Corporate approval and real narration acceptance remain separate."; });
         AuditionCommand = Command(p => AuditionAsync(p?.ToString() == "selection"));
         SaveSettingsCommand = Command(async _ => { CaptureProfile(); TextPreparation.ValidateDictionary(Pronunciation); await SaveSettingsAsync(); StatusMessage = "Settings saved for future submissions."; });
         ResetPronunciationCommand = Command(_ => { settings.PronunciationProfile = new(); RaiseProfile(); StatusMessage = "English profile selected for new narrations. Save settings to retain it."; return Task.CompletedTask; });
@@ -375,9 +369,50 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
             ServiceStatus = engine + " · ready on this laptop";
             ProviderDetails = $"Contract v1 · {info.Engine}\nModel: {info.Fingerprint}\nEncoder: {encoderVersion}";
         }
-        else if (savedEngine is not null) ServiceStatus = engine + " · ready for selected narration";
+        else if (savedEngine is not null) ServiceStatus = engine + " · ready on this laptop";
         if (speechErrorEngine == engine) { speechError = ""; speechErrorEngine = ""; RaiseAttention(); }
         return info;
+    }
+    private async Task RefreshSetupAsync()
+    {
+        SetupDetails = "Checking setup without starting or changing services…";
+        var report = await new SetupDiagnostics(setupRuntime).CheckAsync(settings, shutdown.Token);
+        SetupDetails = report.Display;
+    }
+    private async Task CheckSavedSpeechAsync(Job job)
+    {
+        SetSelectedSpeechResult(job.Id, $"Checking / starting {job.Settings.Engine} for this saved narration…");
+        try
+        {
+            var info = await CheckReadinessAsync(true, job.Settings.Engine);
+            if (info.Fingerprint != job.Settings.ProviderFingerprint || (job.Settings.ProviderImageId is not null && info.ImageId != job.Settings.ProviderImageId))
+                throw new IOException("The speech model or image changed since submission. Restore the original compatible service for this saved narration, or use Use as a new draft to narrate with the new model. Existing chunks cannot be mixed with another model.");
+            StatusMessage = $"{job.Settings.Engine} is ready for this saved narration. Choose Retry / resume to continue it; choose Resume queue if paused.";
+            SetSelectedSpeechResult(job.Id, StatusMessage);
+        }
+        catch (Exception error) { SetSelectedSpeechResult(job.Id, $"{job.Settings.Engine}: {QueueCoordinator.FriendlyError(error)}"); throw; }
+    }
+    private async Task RepairSpeechAsync()
+    {
+        var results = new List<string>(); var failures = new List<string>();
+        foreach (var engine in Engines)
+        {
+            SpeechRepairDetails = string.Join("\n\n", results.Append($"Checking / starting {engine}… Readiness allows up to two minutes per engine."));
+            try
+            {
+                await CheckReadinessAsync(true, engine);
+                results.Add($"{engine}: ready. Installed service identity and health verified.");
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                var failure = $"{engine}: {QueueCoordinator.FriendlyError(error)}";
+                results.Add(failure); failures.Add(failure);
+            }
+        }
+        SpeechRepairDetails = string.Join("\n\n", results) + "\n\nSaved failed narrations remain in Your library. Use Repair speech & resume on the existing item to continue it.";
+        await RefreshSetupAsync();
+        if (failures.Count > 0) throw new IOException("Some speech services still need attention. " + string.Join("\n", failures));
+        StatusMessage = "Both speech services are ready. Setup has been refreshed. Resume the existing saved narration in Your library.";
     }
     private async Task SubmitAsync()
     {

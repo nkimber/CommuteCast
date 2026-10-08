@@ -14,7 +14,8 @@ public record SetupHost(bool Windows, string Architecture, Version WindowsVersio
 public record SetupReport(DateTimeOffset CheckedUtc, SetupHost Host, IReadOnlyList<SetupCheck> Checks)
 {
     public bool SelectedSpeechAvailable => Checks.Any(c => c.Id == "speech-selected" && c.Status == SetupStatus.Available);
-    public string Display => string.Join("\n\n", Checks.Select(c => $"{c.Label}: {c.Status}\n{c.Detail}" + (c.NextStep.Length == 0 ? "" : "\n" + c.NextStep)));
+    public string Display => $"Setup checked {CheckedUtc.ToLocalTime():MMM d, yyyy · h:mm:ss tt zzz}. This report is a snapshot; Check setup refreshes it.\n\n" +
+        string.Join("\n\n", Checks.Select(c => $"{c.Label}: {c.Status}\n{c.Detail}" + (c.NextStep.Length == 0 ? "" : "\n" + c.NextStep)));
 }
 public interface ISetupRuntime
 {
@@ -52,6 +53,9 @@ public sealed class SetupRuntime(string privateRoot) : ISetupRuntime
 /// <summary>Read-only bounded observations. No raw subprocess output, paths or policy approval enter the report.</summary>
 public sealed class SetupDiagnostics(ISetupRuntime runtime)
 {
+    // Ownership verification includes several Docker commands plus HTTP health.
+    // Both independent service probes share the existing overall 30-second bound.
+    public static readonly TimeSpan SpeechInspectionTimeout = TimeSpan.FromSeconds(15);
     public static string? SafeVersion(string? text)
     {
         var match = Regex.Match((text ?? "").Replace("\0", ""), @"(?<![\w.])\d{1,5}\.\d{1,5}(?:\.\d{1,5}){0,2}(?![\w.])", RegexOptions.CultureInvariant);
@@ -127,22 +131,31 @@ public sealed class SetupDiagnostics(ISetupRuntime runtime)
             if (daemon is not null) { daemonReady = true; Add("daemon", "Local Docker engine", SetupStatus.Available, $"Version {SafeVersion(daemon.Output) ?? "unparsed; engine responded"}."); }
         }
         else Add("daemon", "Local Docker engine", SetupStatus.Unavailable, "Not inspected because the local CLI/context prerequisite did not pass.");
-        foreach (var engine in new[] { "kokoro", "piper" })
+        async Task<SetupCheck> InspectSpeech(string engine)
         {
             var id = settings.Engine == engine ? "speech-selected" : "speech-" + engine;
-            if (!daemonReady) { Add(id, engine + " speech", SetupStatus.Unavailable, "Not inspected because the local engine is unavailable."); continue; }
+            SetupCheck Result(SetupStatus status, string detail, string next = "") => new(id, engine + " speech", status, detail, next);
+            if (!daemonReady) return Result(SetupStatus.Unavailable, "Not inspected because the local engine is unavailable.", "Use Start / repair speech services, then Check setup again.");
             try
             {
-                using var serviceDeadline = CancellationTokenSource.CreateLinkedTokenSource(token); serviceDeadline.CancelAfter(TimeSpan.FromSeconds(5));
+                using var serviceDeadline = CancellationTokenSource.CreateLinkedTokenSource(token); serviceDeadline.CancelAfter(SpeechInspectionTimeout);
                 var info = await runtime.ProbeSpeechAsync(engine, serviceDeadline.Token).WaitAsync(serviceDeadline.Token);
                 var selected = engine == settings.Engine;
                 var ready = info.State == "ready" && info.Active == 0 && (!selected || info.Voices.Contains(settings.Voice));
-                Add(id, engine + " speech", ready ? SetupStatus.Available : SetupStatus.NeedsAttention, $"Verified owned service: {info.State}; active requests {info.Active}; {info.Voices.Length} available voices." + (selected && !info.Voices.Contains(settings.Voice) ? " Selected voice is unavailable." : ""), ready ? "Voice quality and throughput still require listening and workload acceptance." : "Allow loading/active work to finish, or choose an installed supported voice. Repair failed service setup before readiness/retry.");
+                return Result(ready ? SetupStatus.Available : SetupStatus.NeedsAttention, $"Verified owned service: {info.State}; active requests {info.Active}; {info.Voices.Length} available voices." + (selected && !info.Voices.Contains(settings.Voice) ? " Selected voice is unavailable." : ""), ready ? "Voice quality and throughput still require listening and workload acceptance." : "Allow loading/active work to finish, or choose an installed supported voice. Use Start / repair speech services to verify readiness.");
             }
-            catch (OperationCanceledException) { ct.ThrowIfCancellationRequested(); Add(id, engine + " speech", SetupStatus.TimedOut, "The bounded service inspection did not finish.", "Inspect Docker Desktop and repair the approved service setup."); }
+            catch (OperationCanceledException)
+            {
+                ct.ThrowIfCancellationRequested();
+                return Result(SetupStatus.TimedOut, token.IsCancellationRequested
+                    ? "The overall 30-second setup allowance expired before service verification finished. This does not establish a speech outage."
+                    : "The read-only ownership and health inspection did not finish within 15 seconds. This does not establish a speech outage.",
+                    "Use Start / repair speech services for the longer readiness check, then refresh Check setup.");
+            }
             catch (Exception error) when (error is IOException or System.Net.Http.HttpRequestException or TimeoutException or Win32Exception)
-            { var failure = SpeechFailure(error); Add(id, engine + " speech", failure.Status, failure.Detail + " No speech was requested and no service was started.", "Use the approved provisioning/repair process, then check speech readiness. Raw errors are withheld."); }
+            { var failure = SpeechFailure(error); return Result(failure.Status, failure.Detail + " No speech was requested and no service was started.", "Use Start / repair speech services to start verified stopped services. Missing or unverified containers require the approved provisioning/repair process. Raw errors are withheld."); }
         }
+        checks.AddRange(await Task.WhenAll(new[] { "kokoro", "piper" }.Select(InspectSpeech)));
         ct.ThrowIfCancellationRequested(); return new(DateTimeOffset.UtcNow, host, checks);
     }
     private static (SetupStatus Status, string Detail) SpeechFailure(Exception error) => error switch
@@ -153,7 +166,7 @@ public sealed class SetupDiagnostics(ISetupRuntime runtime)
         IOException when error.Message.Contains("ran out of memory", StringComparison.Ordinal) => (SetupStatus.NeedsAttention, "The speech container exhausted its memory allocation."),
         IOException when error.Message.Contains("paused or restarting", StringComparison.Ordinal) => (SetupStatus.NeedsAttention, "The owned speech container is paused or restarting."),
         System.Net.Http.HttpRequestException => (SetupStatus.Unavailable, "The verified loopback speech API is unavailable or unhealthy."),
-        TimeoutException => (SetupStatus.TimedOut, "The read-only speech inspection timed out."),
+        TimeoutException => (SetupStatus.TimedOut, "The read-only speech inspection timed out. This does not establish a speech outage."),
         _ => (SetupStatus.NeedsAttention, "The owned image/configuration/provider pin or health identity could not be verified.")
     };
 }
