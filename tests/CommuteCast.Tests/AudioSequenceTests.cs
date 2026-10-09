@@ -6,6 +6,48 @@ namespace CommuteCast.Tests;
 
 public class AudioSequenceTests
 {
+    [Theory]
+    [InlineData("letters")]
+    [InlineData("digits")]
+    [InlineData("symbols")]
+    public async Task LongUnbrokenTokensReceiveCharacterAllowanceAndRemainBounded(string kind)
+    {
+        var text = new string(kind == "letters" ? 'x' : kind == "digits" ? '7' : '#', 250);
+        using var test = new TestWorkspace(); var path = Path.Combine(test.Workspace.Root, "long-token.wav");
+        TestWorkspace.WriteWave(path, 60);
+        var audio = new AudioPipeline(new()); await audio.ValidateChunkAsync(path, text, default);
+        TestWorkspace.WriteWave(path, 122);
+        var error = await Assert.ThrowsAsync<IOException>(() => audio.ValidateChunkAsync(path, text, default));
+        Assert.Contains("250 non-whitespace characters (longest token 250)", error.Message);
+        Assert.Contains("expected 0.080–121.500 seconds", error.Message);
+    }
+
+    [Fact]
+    public async Task CharacterAllowanceAddsToWordBudgetAndHasAnAbsoluteCeiling()
+    {
+        using var test = new TestWorkspace(); var path = Path.Combine(test.Workspace.Root, "combined.wav");
+        var audio = new AudioPipeline(new());
+        var text = string.Join(" ", Enumerable.Repeat("short", 8)) + " " + new string('x', 100);
+        TestWorkspace.WriteWave(path, 66.5); await audio.ValidateChunkAsync(path, text, default);
+        TestWorkspace.WriteWave(path, 67);
+        var error = await Assert.ThrowsAsync<IOException>(() => audio.ValidateChunkAsync(path, text, default));
+        Assert.Contains("expected 0.080–66.500 seconds", error.Message);
+        TestWorkspace.WriteWave(path, 301);
+        error = await Assert.ThrowsAsync<IOException>(() => audio.ValidateChunkAsync(path, new string('x', 900), default));
+        Assert.Contains("expected 0.080–300.000 seconds", error.Message);
+    }
+
+    [Fact]
+    public void UnexpectedLongStringsAreSplitWithoutLossAndKeepUnicodeIntact()
+    {
+        var text = new string('x', 449) + "😀" + new string('7', 900);
+        var chunks = Chunker.Split(text, 450);
+        Chunker.ValidateManifest(chunks, text);
+        Assert.Equal(text, string.Concat(chunks.Select(chunk => chunk.Text)));
+        Assert.All(chunks, chunk => Assert.InRange(chunk.Length, 1, 450));
+        Assert.Contains(chunks, chunk => chunk.HardSplit);
+    }
+
     private const string UrlHeavyChunk = "(https://www.buffalobills.com/news/important-dates-in-bills-history-jan-20-1991-bills-beat-raiders-51-3-in-18477088), NFL championship summaries (https://operations.nfl.com/media/3823/2019-nfl-record-and-fact-book.pdf), the Comeback (https://www.buffalobills.com/news/20-years-later-the-comeback-game-9267435).";
 
     [Theory]
@@ -56,11 +98,11 @@ public class AudioSequenceTests
     {
         using var test = new TestWorkspace();
         var path = Path.Combine(test.Workspace.Root, "duration.wav"); TestWorkspace.WriteWave(path, duration);
-        var text = string.Join(" ", Enumerable.Repeat("private-source-word", words));
+        var text = string.Join(" ", Enumerable.Repeat("privateword", words));
         var error = await Assert.ThrowsAsync<IOException>(() => new AudioPipeline(new()).ValidateChunkAsync(path, text, default));
         Assert.Contains(FormattableString.Invariant($"measured {WaveAudio.Inspect(path).Duration:F3} seconds for {words} whitespace-delimited words"), error.Message);
         Assert.Contains($"expected {minimum}–{maximum} seconds", error.Message);
-        Assert.DoesNotContain("private-source-word", error.Message);
+        Assert.DoesNotContain("privateword", error.Message);
         Assert.DoesNotContain(path, error.Message);
     }
 

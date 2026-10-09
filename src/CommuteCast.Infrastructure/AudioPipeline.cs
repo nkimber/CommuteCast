@@ -2,7 +2,6 @@ using CommuteCast.Core;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace CommuteCast.Infrastructure;
 
@@ -34,18 +33,19 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
     {
         ct.ThrowIfCancellationRequested();
         var info = WaveAudio.Inspect(path);
-        var words = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+        var tokens = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var words = tokens.Length;
+        var characters = tokens.Sum(token => token.Length);
+        var longestToken = tokens.Select(token => token.Length).DefaultIfEmpty().Max();
         var minimumDuration = words > 12 ? Math.Max(0.08, words * 0.07) : 0.08;
-        // Preparation preserves URLs. Their host/path components are spoken separately,
-        // even though each complete address occupies just one whitespace-delimited word.
-        // Only extend the upper bound: URL pronunciation varies by speech engine, so
-        // these components cannot establish a minimum spoken duration or exact fidelity.
-        var durationUnits = words;
-        foreach (Match url in Regex.Matches(text, @"https?://[^\s]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-            durationUnits += Math.Max(0, Regex.Matches(url.Value, @"[\p{L}\p{N}]+", RegexOptions.CultureInvariant).Count - 1);
-        var maximumDuration = Math.Max(30, durationUnits * 2.5);
+        // Keep the prose allowance; unusually long tokens can be spelled or expanded
+        // by the provider (URLs, identifiers, numbers, or arbitrary unbroken strings).
+        // Budget half a second for each character beyond twelve in any token. This
+        // heuristic extends only the upper bound; it cannot prove spoken fidelity.
+        var extraCharacters = tokens.Sum(token => Math.Max(0, token.Length - 12));
+        var maximumDuration = Math.Min(300, Math.Max(30, words * 2.5 + extraCharacters * 0.5));
         if (info.Duration < minimumDuration || info.Duration > maximumDuration)
-            throw new IOException(FormattableString.Invariant($"Chunk duration is implausible for the prepared text: measured {info.Duration:F3} seconds for {words} whitespace-delimited words ({durationUnits} duration units including URL components); expected {minimumDuration:F3}–{maximumDuration:F3} seconds. Review the voice or text and retry."));
+            throw new IOException(FormattableString.Invariant($"Chunk duration is implausible for the prepared text: measured {info.Duration:F3} seconds for {words} whitespace-delimited words, {characters} non-whitespace characters (longest token {longestToken}); expected {minimumDuration:F3}–{maximumDuration:F3} seconds. Review the voice or text and retry."));
         if (info.Rms < 0.0001 || info.Peak > 1) throw new IOException("Chunk contains silence or invalid sample values. Export is blocked.");
         return info;
     }, ct);
