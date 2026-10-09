@@ -182,7 +182,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private bool loading = true, queueLoaded, draftLoadFailed, draftDirty;
     private JobView? selectedJob;
     public ObservableCollection<JobView> Jobs { get; } = [];
-    public ObservableCollection<string> Voices { get; } = [];
+    public ObservableCollection<SpeechVoiceChoice> Voices { get; private set; } = [];
+    private readonly NarrationPreferences narrationPreferences;
     public string[] Engines { get; } = ["kokoro", "piper"];
     public event Action? DraftQueued;
     public string PageHeading => page switch { "library" => "Your listening library", "settings" => "Settle in. Set it up.", "codex" => "Write something worth hearing.", _ => "Make time to listen." };
@@ -212,12 +213,18 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         selectionSource = text; selectionStart = start; selectionLength = length;
         Raise(nameof(HasAuditionSelection)); Raise(nameof(AuditionSelectionSummary));
     }
-    public string Engine { get => settings.Engine; set { if (settings.Engine == value || value is null) return; settings.Engine = value; settings.Voice = value == "kokoro" ? "af_heart" : "en_US-lessac-medium"; Voices.Clear(); Voices.Add(settings.Voice); Raise(); Raise(nameof(Voice)); RaiseProfile(); ServiceStatus = "Check readiness to refresh voices"; } }
-    public string Voice { get => settings.Voice; set { if (value is not null) { settings.Voice = value; Raise(); } } }
-    public double Speed { get => settings.Speed; set { settings.Speed = Math.Round(value, 2); Raise(); Raise(nameof(SpeedLabel)); } }
+    public string Engine { get => settings.Engine; set { if (settings.Engine == value || value is null) return; narrationPreferences.SelectEngine(value); RefreshVoiceChoices(); Raise(); Raise(nameof(Voice)); RaiseProfile(); RaiseNarrationChoices(); ServiceStatus = "Refreshing " + value + " voices…"; if (!loading) _ = RefreshChangedEngineAsync(value); } }
+    public string Voice { get => settings.Voice; set { if (value is not null && settings.Voice != value) { settings.Voice = value; Raise(); RaiseNarrationChoices(); } } }
+    public double Speed { get => settings.Speed; set { settings.Speed = Math.Round(value, 2); Raise(); Raise(nameof(SpeedLabel)); RaiseNarrationChoices(); } }
     public string SpeedLabel => $"{Speed:0.00}×";
-    public bool ExcludeCode { get => settings.ExcludeCode; set { settings.ExcludeCode = value; Raise(); } }
-    public string Pronunciation { get => settings.Pronunciation; set { settings.Pronunciation = value; Raise(); } }
+    public bool UsingNarrationDefaults => narrationPreferences.UsingDefaults;
+    public string NarrationChoiceStatus => UsingNarrationDefaults ? "Using your saved defaults" : "Custom choices for this MP3";
+    public string NarrationChoiceSummary => $"{SpeechVoiceCatalog.Describe(Engine, Voice).DisplayName} · {Speed:0.00}× pace";
+    public string NarrationDefaultsSummary => $"{(narrationPreferences.Defaults.Engine == "kokoro" ? "Kokoro" : "Piper")} · {SpeechVoiceCatalog.Describe(narrationPreferences.Defaults.Engine, narrationPreferences.Defaults.Voice).DisplayName} · {narrationPreferences.Defaults.Speed:0.00}× pace";
+    public string VoiceLibrarySummary => settings.Providers.TryGetValue(Engine, out var info) && info.State == "ready" ? $"{info.Voices.Length} voices · choose one and play a sample" : "Refresh voices to check this engine's installed library.";
+    private void RaiseNarrationChoices() { Raise(nameof(UsingNarrationDefaults)); Raise(nameof(NarrationChoiceStatus)); Raise(nameof(NarrationChoiceSummary)); Raise(nameof(NarrationDefaultsSummary)); }
+    public bool ExcludeCode { get => settings.ExcludeCode; set { settings.ExcludeCode = value; Raise(); RaiseNarrationChoices(); } }
+    public string Pronunciation { get => settings.Pronunciation; set { settings.Pronunciation = value; Raise(); RaiseNarrationChoices(); } }
     public PronunciationOption<NumberReading>[] NumberOptions { get; } = [new(NumberReading.AsWritten, "Keep numbers as written"), new(NumberReading.LiteralDigits, "Read each digit and symbol"), new(NumberReading.NumberWords, "Read integer and decimal values"), new(NumberReading.ScientificWords, "Read values and scientific exponents")];
     public PronunciationOption<AcronymReading>[] AcronymOptions { get; } = [new(AcronymReading.AsWritten, "Keep uppercase words as written"), new(AcronymReading.SpellUppercaseWords, "Spell uppercase words (2–32 letters)")];
     public PronunciationOption<DateReading>[] DateOptions { get; } = [new(DateReading.NoCalendarInterpretation, "No calendar interpretation"), new(DateReading.IsoYearMonthDay, "ISO dates: yyyy-MM-dd"), new(DateReading.MonthDayYear, "Month/day/year: M/d/yyyy"), new(DateReading.DayMonthYear, "Day/month/year: d/M/yyyy")];
@@ -231,7 +238,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         ? "English preparation for Kokoro and Piper. Dictionary entries take priority. No acronym meanings are guessed. Preview the complete script and exact changes before queueing."
         : "This engine, language or saved profile version is unsupported. Choose Kokoro or Piper and reset to the supported English profile for a new narration.";
     public string ProfileSummary => PronunciationSupported ? $"English · {NumberOptions.First(o => o.Value == NumberStyle).Label}\n{AcronymOptions.First(o => o.Value == AcronymStyle).Label} · {DateOptions.First(o => o.Value == DateStyle).Label}" : PronunciationCapability;
-    private void RaiseProfile() { Raise(nameof(NumberStyle)); Raise(nameof(AcronymStyle)); Raise(nameof(DateStyle)); Raise(nameof(PronunciationSupported)); Raise(nameof(PronunciationUnsupported)); Raise(nameof(PronunciationCapability)); Raise(nameof(ProfileSummary)); }
+    private void RaiseProfile() { Raise(nameof(NumberStyle)); Raise(nameof(AcronymStyle)); Raise(nameof(DateStyle)); Raise(nameof(PronunciationSupported)); Raise(nameof(PronunciationUnsupported)); Raise(nameof(PronunciationCapability)); Raise(nameof(ProfileSummary)); RaiseNarrationChoices(); }
     private PronunciationProfile CaptureProfile() { var profile = Profile; profile.Validate(Engine); return profile; }
     public string Ffmpeg { get => settings.Ffmpeg; set { settings.Ffmpeg = value; Raise(); } }
     public string Ffprobe { get => settings.Ffprobe; set { settings.Ffprobe = value; Raise(); } }
@@ -280,6 +287,9 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public ICommand SetupCommand { get; }
     public ICommand AuditionCommand { get; }
     public ICommand SaveSettingsCommand { get; }
+    public ICommand SaveNarrationDefaultsCommand { get; }
+    public ICommand UseNarrationDefaultsCommand { get; }
+    public ICommand RefreshVoicesCommand { get; }
     public ICommand ResetPronunciationCommand { get; }
     public ICommand CheckEncoderCommand { get; }
     public ICommand ThemeCommand { get; }
@@ -303,7 +313,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
 
     public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null, Action<ProcessStartInfo>? openFolder = null)
     {
-        settings = saved; Workspace = workspace ?? new();
+        settings = saved; narrationPreferences = new(settings); Workspace = workspace ?? new();
         drafts = new(Workspace);
         store = new SqliteJobStore(Workspace);
         provider = speechProvider ?? new(Workspace); publisher = new(Workspace, store);
@@ -317,7 +327,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         syncTimer.Tick += (_, _) => { _ = RefreshCloudSyncAsync(); };
         syncTimer.Start();
         player.MediaFailed += (_, _) => ReportError("Playback failed. Check that the local audio exists and is decodable.");
-        Voices.Add(settings.Voice);
+        RefreshVoiceChoices();
         NavigateCommand = Command(p => { Navigate(p?.ToString() ?? "compose"); return Task.CompletedTask; }, false);
         CopyCodexCommand = Command(p => { if (p is string text && text.Length > 0) { Clipboard.SetText(text); StatusMessage = "Copied. Paste into your Codex chat."; } return Task.CompletedTask; }, false);
         ViewLatestCommand = Command(_ => { SelectedJob = LatestJob; Navigate("library"); return Task.CompletedTask; }, false);
@@ -342,8 +352,11 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         ReadinessCommand = Command(_ => CheckReadinessAsync(true));
         SetupCommand = Command(async _ => { await RefreshSetupAsync(); StatusMessage = "Setup inspection finished. Corporate approval and real narration acceptance remain separate."; });
         AuditionCommand = Command(p => AuditionAsync(p?.ToString() == "selection"));
-        SaveSettingsCommand = Command(async _ => { CaptureProfile(); TextPreparation.ValidateDictionary(Pronunciation); await SaveSettingsAsync(); StatusMessage = "Settings saved for future submissions."; });
-        ResetPronunciationCommand = Command(_ => { settings.PronunciationProfile = new(); RaiseProfile(); StatusMessage = "English profile selected for new narrations. Save settings to retain it."; return Task.CompletedTask; });
+        SaveSettingsCommand = Command(async _ => { await SaveSettingsAsync(); StatusMessage = "Settings saved. Use Save as my defaults to retain narration choices."; });
+        SaveNarrationDefaultsCommand = Command(_ => SaveNarrationDefaultsAsync());
+        UseNarrationDefaultsCommand = Command(_ => { RestoreNarrationDefaults(); StatusMessage = "Saved defaults restored for this narration."; return Task.CompletedTask; });
+        RefreshVoicesCommand = Command(_ => RefreshVoiceLibraryAsync());
+        ResetPronunciationCommand = Command(_ => { settings.PronunciationProfile = new(); RaiseProfile(); RaiseNarrationChoices(); StatusMessage = "English profile selected for this narration. Save as my defaults to retain it."; return Task.CompletedTask; });
         CheckEncoderCommand = Command(_ => CheckEncoderAsync());
         ThemeCommand = Command(_ => { App.ToggleTheme(); return Task.CompletedTask; }, false);
         PauseCommand = Command(async _ => { if (queue.Paused && queue.PersistenceError.Length > 0) throw new IOException(queue.PersistenceError); queue.Paused = !queue.Paused; settings.QueuePaused = queue.Paused; RefreshJobs(queue.Snapshot()); await SaveSettingsAsync(); StatusMessage = queue.Paused ? "Future dispatch paused. The current narration can finish." : "Queue resumed."; });
@@ -443,6 +456,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         catch (IOException error) { AppLogging.Failure("AuditionRecovery", error); previewNotice = "An interrupted voice preview needs inspection. Its files were preserved in private storage."; }
         using (var trace = new StartupStepTrace(StartupPhase.QueueRecovery)) { await Task.Run(() => queue.InitializeAsync(shutdown.Token)); queueLoaded = true; Raise(nameof(LibrarySummary)); trace.Complete(); }
         try { using var trace = new StartupStepTrace(StartupPhase.SpeechReadiness); await CheckReadinessAsync(); trace.Complete(); } catch (Exception error) { AppLogging.Failure("InitialSpeechReadiness", error); StatusMessage = QueueCoordinator.FriendlyError(error); }
+        await RefreshVoiceLibraryAsync();
         if (previewNotice is not null) ReportError(previewNotice);
     }
     private void ScheduleDraftSave()
@@ -472,7 +486,74 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private Task SaveSettingsAsync()
     {
         ValidateRetention(); queue.CacheQuotaMiB = CacheQuotaMiB; queue.ScratchRetentionDays = ScratchRetentionDays; queue.PrivateStorageLimitMiB = PrivateStorageLimitMiB; settings.QueuePaused = queue.Paused;
-        return Workspace.SaveSettingsAsync(settings);
+        return Workspace.SaveSettingsAsync(narrationPreferences.ForPersistence());
+    }
+    private void RefreshVoiceChoices()
+    {
+        var selected = Voice;
+        var installed = settings.Providers.TryGetValue(Engine, out var info) && info.State == "ready" ? info.Voices : [];
+        var choices = SpeechVoiceCatalog.Choices(Engine, installed, selected);
+        if (!Voices.SequenceEqual(choices)) { Voices = new(choices); Raise(nameof(Voices)); }
+        Raise(nameof(Voice)); Raise(nameof(VoiceLibrarySummary)); RaiseNarrationChoices();
+    }
+    private void RestoreNarrationDefaults()
+    {
+        var previousEngine = Engine;
+        narrationPreferences.UseDefaults(); RefreshVoiceChoices();
+        Raise(nameof(Engine)); Raise(nameof(Voice)); Raise(nameof(Speed)); Raise(nameof(SpeedLabel));
+        Raise(nameof(ExcludeCode)); Raise(nameof(Pronunciation)); RaiseProfile();
+        if (Engine != previousEngine && !loading) _ = RefreshChangedEngineAsync(Engine);
+    }
+    private async Task SaveNarrationDefaultsAsync()
+    {
+        var selected = narrationPreferences.Current;
+        selected.Validate();
+        settings.Providers.TryGetValue(selected.Engine, out var cached);
+        var info = await provider.CaptureForSubmissionAsync(selected.Engine, cached, shutdown.Token);
+        if (!info.Voices.Contains(selected.Voice)) throw new ArgumentException("Choose an installed voice before saving narration defaults. Refresh voices to update the list.");
+        if (narrationPreferences.Current != selected) throw new IOException("Narration choices changed while checking the voice. Save defaults again with your current choices.");
+        settings.Providers[selected.Engine] = info;
+        var before = narrationPreferences.Defaults;
+        var previousVoices = new Dictionary<string, string>(settings.DefaultVoices);
+        narrationPreferences.SaveDefaults();
+        try { await SaveSettingsAsync(); }
+        catch
+        {
+            settings.DefaultVoices = previousVoices;
+            narrationPreferences.RestoreSavedDefaults(before);
+            throw;
+        }
+        RefreshVoiceChoices(); RaiseNarrationChoices();
+        StatusMessage = "Narration defaults saved. Create MP3 will use them for each new narration; saved jobs keep their original choices.";
+    }
+    private async Task RefreshChangedEngineAsync(string engine)
+    {
+        try { await operations.RunAsync(() => RefreshVoiceEngineAsync(engine)); }
+        catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
+        catch (Exception error)
+        {
+            AppLogging.Failure("VoiceLibraryRefresh", error);
+            if (Engine == engine) ServiceStatus = "Voice refresh needs attention · check speech readiness";
+        }
+    }
+    private async Task RefreshVoiceEngineAsync(string engine)
+    {
+        var info = await provider.ProbeAsync(engine, shutdown.Token);
+        if (info.State != "ready") throw new IOException("The speech engine is still loading or needs repair. Check speech readiness to refresh its voices.");
+        settings.Providers[engine] = info;
+        if (engine == Engine) { RefreshVoiceChoices(); ServiceStatus = engine + " · ready on this laptop"; }
+        await SaveSettingsAsync();
+    }
+    private async Task RefreshVoiceLibraryAsync()
+    {
+        var results = new List<string>();
+        foreach (var engine in Engines)
+        {
+            try { await RefreshVoiceEngineAsync(engine); results.Add($"{engine}: {settings.Providers[engine].Voices.Length} voices"); }
+            catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { throw; }
+            catch (Exception error) { AppLogging.Failure("VoiceLibraryRefresh", error); results.Add(engine + ": refresh unavailable; check speech readiness"); }
+        }
+        StatusMessage = string.Join(" · ", results);
     }
     private void ValidateRetention()
     {
@@ -506,9 +587,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         await SaveSettingsAsync();
         if (engine == Engine)
         {
-            var voice = Voice;
-            Voices.Clear(); foreach (var item in info.Voices) Voices.Add(item);
-            Voice = info.Voices.Contains(voice) ? voice : info.Voices.First();
+            RefreshVoiceChoices();
             ServiceStatus = engine + " · ready on this laptop";
             ProviderDetails = $"Contract v1 · {info.Engine}\nModel: {info.Fingerprint}\nEncoder: {encoderVersion}";
         }
@@ -560,7 +639,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private async Task SubmitAsync()
     {
         if (!queueLoaded) throw new IOException("Local queue records have not loaded. Repair storage or restore a verified compatible backup before submitting. Your draft is retained.");
-        var text = Source; var title = DraftTitle.Trim();
+        var text = Source; var title = DraftTitle.Trim(); var choices = narrationPreferences.Current;
         var engine = Engine; var voice = Voice; var speed = Speed; var exclusion = ExcludeCode; var dictionary = Pronunciation; var destination = settings.Destination;
         var profile = CaptureProfile();
         var prepared = await Task.Run(() => TextPreparation.Prepare(text, exclusion, dictionary, profile, shutdown.Token), shutdown.Token);
@@ -580,7 +659,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         RefreshJobs(queue.Snapshot());
         SelectedJob = Jobs.Single(j => j.Id == job.Id);
         Navigate("library");
-        if (Source == text) { Source = ""; DraftTitle = ""; }
+        if (Source == text) { Source = ""; DraftTitle = ""; if (narrationPreferences.Current == choices) RestoreNarrationDefaults(); }
         StatusMessage = "Narration saved. Its progress is shown here. You do not need to queue it again.";
         DraftQueued?.Invoke();
         await SaveSettingsAsync();

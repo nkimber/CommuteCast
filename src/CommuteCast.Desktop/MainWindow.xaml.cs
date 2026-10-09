@@ -20,13 +20,39 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel model;
     private bool closing, closed;
+    private bool syncingVoiceSelection, voiceSelectionPending;
     public MainWindow(MainViewModel model)
     {
         this.model = model;
         InitializeComponent();
         DataContext = model;
+        model.PropertyChanged += NarrationChoicesChanged;
+        Closed += (_, _) => model.PropertyChanged -= NarrationChoicesChanged;
+        ScheduleVoiceSelection();
         ContentRendered += (_, _) => Serilog.Log.Information("Editor content rendered; visible {Visible}, state {WindowState}", IsVisible, WindowState);
         model.DraftQueued += () => NarrationList.Focus();
+    }
+    private void NarrationChoicesChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(MainViewModel.Voice) or nameof(MainViewModel.Voices)) ScheduleVoiceSelection();
+    }
+    private void VoiceCatalogUpdated(object sender, DataTransferEventArgs e) => ScheduleVoiceSelection();
+    private void ScheduleVoiceSelection()
+    {
+        if (voiceSelectionPending) return;
+        voiceSelectionPending = true;
+        // Wait for the refreshed ItemsSource before selecting by exact provider identity.
+        // Explicit selection also keeps the displayed label and internal selected index consistent.
+        Dispatcher.InvokeAsync(() =>
+        {
+            voiceSelectionPending = false; syncingVoiceSelection = true;
+            try { VoiceInput.SelectedIndex = VoiceInput.Items.Cast<Core.SpeechVoiceChoice>().ToList().FindIndex(v => v.Id == model.Voice); }
+            finally { syncingVoiceSelection = false; }
+        }, System.Windows.Threading.DispatcherPriority.DataBind);
+    }
+    private void VoiceSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!syncingVoiceSelection && VoiceInput.SelectedItem is Core.SpeechVoiceChoice choice && model.Voices.Any(v => v.Id == choice.Id)) model.Voice = choice.Id;
     }
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {

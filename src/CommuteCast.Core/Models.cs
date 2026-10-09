@@ -79,6 +79,8 @@ public sealed class AppSettings
     public string Engine { get; set; } = "kokoro";
     public string Voice { get; set; } = "af_heart";
     public double Speed { get; set; } = 1;
+    public NarrationOptions? NarrationDefaults { get; set; }
+    public Dictionary<string, string> DefaultVoices { get; set; } = [];
     public string Pronunciation { get; set; } = "";
     public PronunciationProfile PronunciationProfile { get; set; } = new();
     public bool ExcludeCode { get; set; }
