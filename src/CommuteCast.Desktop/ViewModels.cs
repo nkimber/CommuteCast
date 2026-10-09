@@ -57,17 +57,18 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
     public CloudSyncState SyncState { get; private set; }
     public bool IsCloudSynced => SyncState == CloudSyncState.InSync;
     public string CloudSyncSymbol => SyncState switch { CloudSyncState.InSync => "✓", CloudSyncState.NotInSync => "…", CloudSyncState.Missing => "!", _ => "?" };
-    public string CloudSyncDescription => SyncState switch
+    private string CloudSyncSummary => SyncState switch
     {
-        CloudSyncState.InSync => "Windows reports this MP3 is synced with the cloud. Other files in the folder are not checked. Click to open its folder.",
-        CloudSyncState.NotInSync => "This MP3 is not yet marked as synced. Check your sync app for progress or errors. Click to open its folder.",
-        CloudSyncState.Missing => "The exported MP3 is missing or moved. Click to open its recorded folder.",
-        _ => "MP3 sync status is unavailable. Click to open its folder and check your sync app."
+        CloudSyncState.InSync => "Windows reports this MP3 is synced with the cloud. Other files in the folder are not checked.",
+        CloudSyncState.NotInSync => "This MP3 is not yet marked as synced. Check your sync app for progress or errors.",
+        CloudSyncState.Missing => "The exported MP3 is missing or moved. History is preserved.",
+        _ => "MP3 sync status is unavailable. Check your sync app."
     };
+    public string CloudSyncDescription => CloudSyncSummary + " Click to open its recorded folder.";
     public void RefreshCloudSync(CloudSyncState state)
     {
         SyncState = state; Raise(nameof(SyncState)); Raise(nameof(IsCloudSynced));
-        Raise(nameof(CloudSyncSymbol)); Raise(nameof(CloudSyncDescription));
+        Raise(nameof(CloudSyncSymbol)); Raise(nameof(CloudSyncDescription)); Raise(nameof(Delivery));
     }
     public string AudioSummary { get; } = DescribeAudio(job, workspace);
     private static string DescribeAudio(Job job, Workspace workspace)
@@ -140,7 +141,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
         string.IsNullOrWhiteSpace(Job.ExportNotice) || Job.Error.Contains(Job.ExportNotice, StringComparison.Ordinal) ? "" : Job.ExportNotice,
         Job.PrivateStorageNotice }.Where(s => !string.IsNullOrWhiteSpace(s)));
     public string Delivery => Job.Stage == JobStage.Exported
-        ? (File.Exists(Path.Combine(Job.Destination, Job.ExportName)) ? "Finished MP3 exists in the selected local folder. Cloud upload is unknown. Check OneDrive and your phone." : "The exported file is missing or moved. History is preserved. Cloud upload is unknown.")
+        ? CloudSyncSummary
         : File.Exists(workspace.FinalPath(Job)) && Job.FinalHash.Length > 0 ? "Generated audio is saved privately on this laptop. It has not been exported." : "Audio is generated privately on this laptop before publication.";
 }
 
