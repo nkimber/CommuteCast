@@ -184,10 +184,11 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public ObservableCollection<string> Voices { get; } = [];
     public string[] Engines { get; } = ["kokoro", "piper"];
     public event Action? DraftQueued;
-    public string PageHeading => page switch { "library" => "Your listening library", "settings" => "Settle in. Set it up.", _ => "Make time to listen." };
+    public string PageHeading => page switch { "library" => "Your listening library", "settings" => "Settle in. Set it up.", "codex" => "Write something worth hearing.", _ => "Make time to listen." };
     public bool IsCompose => page == "compose";
     public bool IsLibrary => page == "library";
     public bool IsSettings => page == "settings";
+    public bool IsCodex => page == "codex";
     public string Source
     {
         get => source;
@@ -266,6 +267,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public ICommand ViewLatestCommand { get; }
     public ICommand ViewAttentionCommand { get; }
     public ICommand CopyDetailsCommand { get; }
+    public ICommand CopyCodexCommand { get; }
     public ICommand SelectedReadinessCommand { get; }
     public ICommand RepairSelectedCommand { get; }
     public ICommand RepairSpeechCommand { get; }
@@ -316,6 +318,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         player.MediaFailed += (_, _) => ReportError("Playback failed. Check that the local audio exists and is decodable.");
         Voices.Add(settings.Voice);
         NavigateCommand = Command(p => { Navigate(p?.ToString() ?? "compose"); return Task.CompletedTask; }, false);
+        CopyCodexCommand = Command(p => { if (p is string text && text.Length > 0) { Clipboard.SetText(text); StatusMessage = "Copied. Paste into your Codex chat."; } return Task.CompletedTask; }, false);
         ViewLatestCommand = Command(_ => { SelectedJob = LatestJob; Navigate("library"); return Task.CompletedTask; }, false);
         ViewAttentionCommand = Command(_ => { SelectedJob = AttentionJob ?? LatestJob; Navigate("library"); return Task.CompletedTask; }, false);
         CopyDetailsCommand = Command(_ => { RequireSelected(); Clipboard.SetText(SelectedDetailsForCopy); StatusMessage = "Narration details copied, including the error and repair steps. Source text and spoken script are not included."; return Task.CompletedTask; }, false);
@@ -386,7 +389,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         await operations.RunAsync(() => action(p));
         if (clearsError) { operationError = ""; RaiseAttention(); }
     }, e => ReportError(QueueCoordinator.FriendlyError(e)));
-    private void Navigate(string value) { page = value; Raise(nameof(IsCompose)); Raise(nameof(IsLibrary)); Raise(nameof(IsSettings)); Raise(nameof(PageHeading)); }
+    private void Navigate(string value) { page = value; Raise(nameof(IsCompose)); Raise(nameof(IsLibrary)); Raise(nameof(IsSettings)); Raise(nameof(IsCodex)); Raise(nameof(PageHeading)); }
     private void SetSelectedSpeechResult(string id, string result) { checkedJobId = id; selectedSpeechResult = result; Raise(nameof(SelectedSpeechResult)); Raise(nameof(SelectedDetailsForCopy)); }
     private Job RequireSelected() => SelectedJob?.Job ?? throw new ArgumentException("Select a narration first.");
     private async Task ResumeAsync(Job job)
