@@ -134,7 +134,8 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
         Raise(nameof(ShowProcessingDetails));
         Raise(nameof(ShowCloudSync));
     }
-    public string Details => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.FailedStage is { } stage ? $"\nStopped during: {stage}" : "") + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
+    public string TechnicalDetails => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.FailedStage is { } stage ? $"\nStopped during: {stage}" : "");
+    public string Details => TechnicalDetails + $"\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks" + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
     public string Error => string.Join(Environment.NewLine, new[] { Job.Error,
         string.IsNullOrWhiteSpace(Job.ExportNotice) || Job.Error.Contains(Job.ExportNotice, StringComparison.Ordinal) ? "" : Job.ExportNotice,
         Job.PrivateStorageNotice }.Where(s => !string.IsNullOrWhiteSpace(s)));
