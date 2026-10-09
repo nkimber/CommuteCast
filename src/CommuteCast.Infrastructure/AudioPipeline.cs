@@ -60,6 +60,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
         var gaps = job.Chunks.Take(job.Chunks.Count - 1).Select(c => c.Text.TrimEnd().EndsWith('.') || c.Text.EndsWith('\n') ? 3600 : 0).ToArray();
         var total = samples + gaps.Sum(g => (long)g);
         if (total * 2 > uint.MaxValue - 36) throw new IOException("This narration exceeds the supported WAV size. Split it into separate submissions.");
+        var comment = Mp3Comments.CreateFrame(Mp3Comments.Describe(job));
         await PrivateJobFiles.WriteRecordedAsync(job, directory, "assembled.wav", async output =>
         {
             WaveAudio.WriteHeader(output, total);
@@ -86,8 +87,10 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
         }, checkpoint ?? (() => Task.CompletedTask), ct);
         await PrivateJobFiles.WriteRecordedAsync(job, directory, "encoded.partial.mp3", async output =>
         {
-            var encode = await ProcessRunner.RunToFileAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-n", "-protocol_whitelist", "file,pipe,fd", "-f", "wav", "-i", assembled, "-c:a", "libmp3lame", "-b:a", "128k", "-id3v2_version", "3", "-metadata", "title=" + job.Title, "-metadata", "artist=CommuteCast", "-metadata", "date=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_created_utc=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_job_id=" + job.Id, "-metadata", "comment=CommuteCast job " + job.Id, "-f", "mp3", "-fd", "1", "fd:"], (FileStream)output, checked(total * 2 + 1024 * 1024), TimeSpan.FromMinutes(15), ct);
+            var encode = await ProcessRunner.RunToFileAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-n", "-protocol_whitelist", "file,pipe,fd", "-f", "wav", "-i", assembled, "-c:a", "libmp3lame", "-b:a", "128k", "-id3v2_version", "3", "-metadata_header_padding", (comment.Length + 10).ToString(CultureInfo.InvariantCulture), "-metadata", "title=" + job.Title, "-metadata", "artist=CommuteCast", "-metadata", "date=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_created_utc=" + job.CreatedUtc.ToString("O"), "-metadata", "commutecast_job_id=" + job.Id, "-f", "mp3", "-fd", "1", "fd:"], (FileStream)output, checked(total * 2 + 1024 * 1024), TimeSpan.FromMinutes(15), ct);
             if (encode.ExitCode != 0) throw new IOException("MP3 encoding failed. Validated chunks are retained. Check FFmpeg and free disk space.");
+            ct.ThrowIfCancellationRequested();
+            Mp3Comments.WriteFrame(output, comment);
         }, checkpoint ?? (() => Task.CompletedTask), ct);
         ct.ThrowIfCancellationRequested();
         await PrivateJobFiles.MoveRecordedAsync(job, directory, "encoded.partial.mp3", "complete.mp3", checkpoint ?? (() => Task.CompletedTask), ct);

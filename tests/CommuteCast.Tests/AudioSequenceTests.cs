@@ -1,5 +1,9 @@
 using CommuteCast.Core;
 using CommuteCast.Infrastructure;
+using System.Buffers.Binary;
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 
 namespace CommuteCast.Tests;
@@ -189,7 +193,120 @@ public class AudioSequenceTests
         Assert.Equal(job.Title, tags.GetProperty("title").GetString()); Assert.Equal("CommuteCast", tags.GetProperty("artist").GetString());
         Assert.Equal(job.CreatedUtc.ToString("yyyy"), tags.GetProperty("date").GetString());
         Assert.Equal(job.CreatedUtc.ToString("O"), tags.GetProperty("commutecast_created_utc").GetString()); Assert.Equal(job.Id, tags.GetProperty("commutecast_job_id").GetString());
-        Assert.Equal("CommuteCast job " + job.Id, tags.GetProperty("comment").GetString());
+        var comment = tags.GetProperty("comment").GetString();
+        Assert.Contains("Speech model: Kokoro\r\n", comment);
+        Assert.Contains("Voice: af_heart\r\nPace: 1x", comment);
+        Assert.Contains("Provider image: not recorded (legacy job)", comment);
+        Assert.Contains("Pronunciation profile: legacy literal substitutions", comment);
+        Assert.Contains("Custom pronunciation rules: 0", comment);
+        Assert.Contains("Segments: 3; inserted join pauses: 2 at 150 ms; expected audio duration: 3.300 seconds", comment);
+        Assert.Contains("Job ID: " + job.Id, comment);
+        Assert.Equal(comment, ReadStandardComment(test.Workspace.FinalPath(job)));
+    }
+
+    [Theory]
+    [InlineData("kokoro", "af_heart", true)]
+    [InlineData("kokoro", "bf_emma", true)]
+    [InlineData("piper", "en_US-lessac-medium", true)]
+    [InlineData("piper", "en_US-lessac-medium", false)]
+    public async Task ExportedCommentsRetainFrozenSpeechAndPreparationSettings(string engine, string voice, bool useProfile)
+    {
+        using var test = new TestWorkspace(); var job = await ToneJobAsync(test);
+        job.Destination = test.Destination;
+        var profile = useProfile ? new PronunciationProfile(Numbers: NumberReading.ScientificWords,
+            Acronyms: AcronymReading.SpellUppercaseWords, Dates: DateReading.DayMonthYear) : null;
+        const string dictionary = "PRIVATE=confidential pronunciation\nAPI=A P I";
+        job.Settings = new(engine, voice, 1.125, true, dictionary, engine + ":contract-v1:" + new string('a', 64), profile,
+            "sha256:" + new string('b', 64));
+        job.Source = "Private source: API 24 on 03/04/2026.";
+        // Keep the tone manifest while capturing the preparation's frozen dictionary review.
+        var prepared = TextPreparation.Prepare(job.Source, true, dictionary, profile);
+        job.Prepared = job.Prepared with { Version = prepared.Version, ProfileReview = prepared.ProfileReview };
+        job.Receipts = job.Receipts.Select(r => r with { Fingerprint = job.Fingerprint }).ToList();
+        var currentSettings = new AppSettings { Engine = "other-engine", Voice = "other-voice", Speed = .7 };
+        var audio = new AudioPipeline(currentSettings);
+        var previousCulture = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+            await audio.AssembleAsync(job, test.Workspace.JobDirectory(job.Id), default);
+        }
+        finally { CultureInfo.CurrentCulture = previousCulture; }
+        var info = await audio.ValidateFinalAsync(job, test.Workspace.FinalPath(job), default);
+        job.DurationSeconds = info.Duration;
+        job.FinalHash = await Workspace.HashFileAsync(test.Workspace.FinalPath(job));
+        await new ExportPublisher(test.Workspace, new SqliteJobStore(test.Workspace)).PublishAsync(job, default);
+        var path = Path.Combine(job.Destination, job.ExportName);
+        var result = await ProcessRunner.RunAsync("ffprobe", ["-v", "error", "-show_entries", "format_tags=comment", "-of", "json", path], TimeSpan.FromSeconds(10));
+        Assert.Equal(0, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Output);
+        var comment = document.RootElement.GetProperty("format").GetProperty("tags").GetProperty("comment").GetString()!;
+        Assert.Equal(comment, ReadStandardComment(path));
+        Assert.Equal(comment, ReadWindowsComment(path));
+        Assert.Contains("Speech model: " + (engine == "kokoro" ? "Kokoro" : "Piper (en_US-lessac-medium)"), comment);
+        Assert.Contains("Speech engine: " + engine, comment);
+        Assert.Contains("Voice: " + voice + "\r\nPace: 1.125x", comment);
+        Assert.Contains("Provider/model fingerprint: " + job.Settings.ProviderFingerprint, comment);
+        Assert.Contains("Provider image: " + job.Settings.ProviderImageId, comment);
+        Assert.Contains("Code blocks excluded: yes", comment);
+        Assert.Contains("Speech language: " + (engine == "piper" ? "en-US" : voice.StartsWith('b') ? "en-gb" : "en-us"), comment);
+        if (engine == "piper") Assert.Contains("Piper length scale: " + (1 / job.Settings.Speed).ToString(CultureInfo.InvariantCulture), comment);
+        Assert.Contains("Custom pronunciation rules: 2", comment);
+        Assert.Contains("Pronunciation dictionary revision: " + (prepared.ProfileReview?.DictionaryRevision ?? Job.Hash(dictionary)), comment);
+        if (useProfile)
+        {
+            Assert.Contains("Pronunciation profile: pronunciation-v2; language: en", comment);
+            Assert.Contains("Number reading: ScientificWords; acronym reading: SpellUppercaseWords; date reading: DayMonthYear", comment);
+            Assert.Contains("Dictionary format: literal-dictionary-v1", comment);
+        }
+        else Assert.Contains("Pronunciation profile: legacy literal substitutions", comment);
+        Assert.Contains("Audio: MP3; libmp3lame; 128 kbps; 24000 Hz; mono; one encode from 16-bit PCM", comment);
+        Assert.Contains("Preparation: " + prepared.Version + "; chunking: " + job.ChunkingVersion + "; audio contract: " + job.AudioContractVersion, comment);
+        Assert.Contains("Queued UTC: " + job.CreatedUtc.ToString("O"), comment);
+        Assert.DoesNotContain("other-engine", comment); Assert.DoesNotContain("other-voice", comment);
+        Assert.DoesNotContain(job.Source, comment); Assert.DoesNotContain("confidential pronunciation", comment);
+        Assert.DoesNotContain(job.Destination, comment);
+        Assert.Equal(job.FinalHash, await Workspace.HashFileAsync(path));
+    }
+
+    private static string ReadWindowsComment(string path)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("MP3 Comments acceptance requires Windows.");
+        dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application")!)!;
+        dynamic? folder = null; dynamic? item = null;
+        try
+        {
+            folder = shell.NameSpace(Path.GetDirectoryName(path)!);
+            item = folder.ParseName(Path.GetFileName(path));
+            return (string)item.ExtendedProperty("System.Comment");
+        }
+        finally
+        {
+            if (item is not null) Marshal.FinalReleaseComObject(item);
+            if (folder is not null) Marshal.FinalReleaseComObject(folder);
+            Marshal.FinalReleaseComObject(shell);
+        }
+    }
+
+    private static string ReadStandardComment(string path)
+    {
+        using var file = File.OpenRead(path); var header = new byte[10]; file.ReadExactly(header);
+        Assert.Equal("ID3", Encoding.ASCII.GetString(header, 0, 3)); Assert.Equal(3, header[3]);
+        var size = (header[6] << 21) | (header[7] << 14) | (header[8] << 7) | header[9];
+        var tag = new byte[size]; file.ReadExactly(tag); var comments = new List<string>();
+        for (var offset = 0; offset + 10 <= tag.Length && tag[offset] != 0;)
+        {
+            var length = BinaryPrimitives.ReadInt32BigEndian(tag.AsSpan(offset + 4));
+            if (Encoding.ASCII.GetString(tag, offset, 4) == "COMM")
+            {
+                var body = tag.AsSpan(offset + 10, length);
+                Assert.Equal(1, body[0]); Assert.Equal("eng", Encoding.ASCII.GetString(body.Slice(1, 3)));
+                Assert.Equal(new byte[] { 0xff, 0xfe, 0, 0, 0xff, 0xfe }, body.Slice(4, 6).ToArray());
+                comments.Add(Encoding.Unicode.GetString(body[10..]).TrimEnd('\0'));
+            }
+            offset += 10 + length;
+        }
+        return Assert.Single(comments);
     }
     [Theory] [InlineData("missing")] [InlineData("duplicate")] [InlineData("reordered")] [InlineData("ordinal")] [InlineData("offset")] [InlineData("receipt")] [InlineData("sample-count")] [InlineData("corruption")]
     public async Task InvalidSequenceCannotProduceACompletedMp3(string defect)
