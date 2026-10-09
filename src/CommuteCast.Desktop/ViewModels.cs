@@ -53,6 +53,22 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
     public bool CanResume => (Job.Stage is JobStage.Failed or JobStage.Cancelled) && !Job.ExportCommitted && !Job.DeletionRequested;
     public bool CanOpenFolder => !Job.DeletionRequested && (Job.ExportCommitted || Job.FinalHash.Length > 0);
     public bool ShowProcessingDetails => Job.Stage != JobStage.Exported || !Job.ExportCommitted;
+    public bool ShowCloudSync => !ShowProcessingDetails && !Job.DeletionRequested;
+    public CloudSyncState SyncState { get; private set; }
+    public bool IsCloudSynced => SyncState == CloudSyncState.InSync;
+    public string CloudSyncSymbol => SyncState switch { CloudSyncState.InSync => "✓", CloudSyncState.NotInSync => "…", CloudSyncState.Missing => "!", _ => "?" };
+    public string CloudSyncDescription => SyncState switch
+    {
+        CloudSyncState.InSync => "Windows reports this MP3 is synced with the cloud. Other files in the folder are not checked. Click to open its folder.",
+        CloudSyncState.NotInSync => "This MP3 is not yet marked as synced. Check your sync app for progress or errors. Click to open its folder.",
+        CloudSyncState.Missing => "The exported MP3 is missing or moved. Click to open its recorded folder.",
+        _ => "MP3 sync status is unavailable. Click to open its folder and check your sync app."
+    };
+    public void RefreshCloudSync(CloudSyncState state)
+    {
+        SyncState = state; Raise(nameof(SyncState)); Raise(nameof(IsCloudSynced));
+        Raise(nameof(CloudSyncSymbol)); Raise(nameof(CloudSyncDescription));
+    }
     public string AudioSummary { get; } = DescribeAudio(job, workspace);
     private static string DescribeAudio(Job job, Workspace workspace)
     {
@@ -116,6 +132,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
         Raise(nameof(CanResume));
         Raise(nameof(CanOpenFolder));
         Raise(nameof(ShowProcessingDetails));
+        Raise(nameof(ShowCloudSync));
     }
     public string Details => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.FailedStage is { } stage ? $"\nStopped during: {stage}" : "") + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
     public string Error => string.Join(Environment.NewLine, new[] { Job.Error,
@@ -134,6 +151,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private readonly ISetupRuntime setupRuntime;
     private readonly Action<ProcessStartInfo> openFolder;
     private readonly DispatcherTimer progressTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
+    private readonly DispatcherTimer syncTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(10) };
+    private bool checkingSync;
     private readonly ExportPublisher publisher;
     private readonly QueueCoordinator queue;
     private readonly SqliteJobStore store;
@@ -291,6 +310,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         queue.Changed += _ => Application.Current.Dispatcher.InvokeAsync(() => RefreshJobs(queue.Snapshot()));
         progressTimer.Tick += (_, _) => { foreach (var job in Jobs) job.RefreshActivity(); };
         progressTimer.Start();
+        syncTimer.Tick += (_, _) => { _ = RefreshCloudSyncAsync(); };
+        syncTimer.Start();
         player.MediaFailed += (_, _) => ReportError("Playback failed. Check that the local audio exists and is decodable.");
         Voices.Add(settings.Voice);
         NavigateCommand = Command(p => { Navigate(p?.ToString() ?? "compose"); return Task.CompletedTask; }, false);
@@ -390,6 +411,21 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         Raise(nameof(PauseLabel));
         Raise(nameof(LatestJob)); Raise(nameof(HasLatestJob)); RaiseAttention();
         if (queue.PersistenceError.Length > 0) StatusMessage = queue.PersistenceError;
+        _ = RefreshCloudSyncAsync();
+    }
+    private async Task RefreshCloudSyncAsync()
+    {
+        if (checkingSync || shutdown.IsCancellationRequested) return;
+        checkingSync = true;
+        try
+        {
+            var rows = Jobs.Where(j => j.ShowCloudSync).ToArray();
+            var states = await Task.Run(() => rows.Select(row => CloudFileSync.Read(row.Job)).ToArray());
+            if (!shutdown.IsCancellationRequested)
+                for (var i = 0; i < rows.Length; i++)
+                    if (Jobs.Contains(rows[i])) rows[i].RefreshCloudSync(states[i]);
+        }
+        finally { checkingSync = false; }
     }
     public Task InitializeAsync() => operations.RunAsync(InitializeCoreAsync);
     private async Task InitializeCoreAsync()
@@ -628,6 +664,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private async Task DisposeCoreAsync()
     {
         progressTimer.Stop();
+        syncTimer.Stop();
         var settled = operations.StopAsync();
         draftSave?.Cancel(); shutdown.Cancel(); player.Close();
         await settled.WaitAsync(TimeSpan.FromSeconds(20));
