@@ -41,6 +41,17 @@ Prerequisites: Windows, .NET 10 SDK (or the portable self-contained package), ap
 
 On first use, choose your actual corporate OneDrive folder, audition Kokoro and Piper, and select a voice and pace. Paste text, edit the suggested title, inspect **Review spoken text**, and click **Queue narration** (Ctrl+Enter). The library displays generation, errors, local playback, cancellation, and retry. Keep the app open and the laptop awake while generating. Closing saves the queue; cancelled jobs require explicit retry. Pause stops future dispatch, allowing the current job to finish.
 
+Speech provisioning installs the 28 English voices in the pinned Kokoro pack and eight Piper voices: American English Amy, Bryce, Joe, Lessac and LJ Speech; British English Alan, Alba and Jenny. Piper keeps only one ONNX voice session loaded, switching to the requested installed model without a fallback voice. Every artifact is SHA256 checked; Piper download URLs are pinned to repository revision `c10ece1aade47bb51c153c893d14e5bf8e5b7117` in `services/speech/model-sources.json`. Model files remain in local provisioning storage and the speech image, outside Git. `Provision-Speech.ps1 -Build -BuildOnly` builds and checks the image without replacing running containers or updating the local image pin. Reprovisioning changes the captured speech/image identity; existing finished MP3s remain usable, while unfinished older jobs require their original compatible service or **Use as a new draft**.
+
+Run the real full-pipeline voice check in fresh isolated folders:
+
+```powershell
+dotnet run --project tools\CommuteCast.Pilot -- piper artifacts/pilot/piper-voice-library --verify-voices
+dotnet run --project tools\CommuteCast.Pilot -- kokoro artifacts/pilot/kokoro-voice-library --verify-voices
+```
+
+This generates, validates, encodes and exports a short MP3 for every advertised voice, checks each saved voice snapshot and chunk receipt, and records an inspectable `voice-library-report.json`. It does not establish listening approval or native desktop interaction.
+
 A successful submission opens its saved item in **Your library**. Returning to **New narration** shows the latest saved item's stage and validated-chunk progress, with a link back to that exact item. Waiting, paused, active, failed and exported states have separate explanations; completing all chunks still leaves assembly, final validation and export. If a saved item needs attention, resolve its displayed error and use **Retry / resume** on that item rather than submitting another copy.
 
 **Narration Details** supports selecting text and Ctrl+C. **Copy all details** copies the selected job's ID, submission time, settings/progress, delivery state, error, repair instructions and latest speech-check result, without the source or spoken script. Failed narrations show **How to fix** immediately after the error. **Check saved speech service** checks the engine captured by that narration, resets its recovery allowance explicitly and verifies compatibility with its captured model/image. The result remains visible and copyable for that job. An exhausted automatic allowance can remain after provisioning or restarting; use the explicit check, then **Retry / resume** on the saved item when ready.

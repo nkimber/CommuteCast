@@ -17,8 +17,8 @@ if (args.FirstOrDefault() == "--queue-host-child")
 }
 var engine = args.FirstOrDefault() ?? "kokoro";
 if (engine is not ("kokoro" or "piper")) throw new ArgumentException("Use kokoro or piper.");
-if (args.Length > 3 || args.Length == 3 && args[2] is not ("--verify-private-removal" or "--verify-audition" or "--verify-cancellation" or "--verify-stopped-recovery" or "--verify-active-service-loss" or "--verify-queue-host-loss" or "--verify-long-form"))
-    throw new ArgumentException("Use an engine, an optional fresh folder under artifacts/pilot, and optional --verify-private-removal, --verify-audition, --verify-cancellation, --verify-stopped-recovery, --verify-active-service-loss, --verify-queue-host-loss or --verify-long-form.");
+if (args.Length > 3 || args.Length == 3 && args[2] is not ("--verify-private-removal" or "--verify-audition" or "--verify-cancellation" or "--verify-stopped-recovery" or "--verify-active-service-loss" or "--verify-queue-host-loss" or "--verify-long-form" or "--verify-voices"))
+    throw new ArgumentException("Use an engine, an optional fresh folder under artifacts/pilot, and optional --verify-private-removal, --verify-audition, --verify-cancellation, --verify-stopped-recovery, --verify-active-service-loss, --verify-queue-host-loss, --verify-long-form or --verify-voices.");
 var verifyPrivateRemoval = args.ElementAtOrDefault(2) == "--verify-private-removal";
 var verifyAudition = args.ElementAtOrDefault(2) == "--verify-audition";
 var verifyLongForm = args.ElementAtOrDefault(2) == "--verify-long-form";
@@ -36,7 +36,7 @@ using var pin = JsonDocument.Parse(await File.ReadAllTextAsync(pinPath)); var im
 var destination = Path.Combine(root, "output"); Directory.CreateDirectory(destination);
 var store = new SqliteJobStore(workspace);
 using var provider = new LocalSpeechProvider(workspace);
-using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(verifyLongForm ? 60 : 8));
+using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(verifyLongForm ? 60 : args.ElementAtOrDefault(2) == "--verify-voices" ? 15 : 8));
 var readiness = Stopwatch.StartNew();
 var info = await provider.ReadyAsync(engine, timeout.Token);
 readiness.Stop();
@@ -63,6 +63,11 @@ info = await provider.CaptureForSubmissionAsync(engine, retainedMetadata, timeou
 capture.Stop();
 if (info.Engine != engine || info.ImageId != imageId || info.Fingerprint != refreshed.Fingerprint || !info.Voices.SequenceEqual(refreshed.Voices) || ReferenceEquals(info.Voices, retainedMetadata.Voices))
     throw new IOException("Fresh and persisted provider metadata did not retain the approved image identity.");
+if (args.ElementAtOrDefault(2) == "--verify-voices")
+{
+    await VoiceLibraryAcceptance.RunAsync(root, workspace, store, provider, info, destination, timeout.Token);
+    return;
+}
 var text = "# A better commute\n\n" + string.Join("\n\n", new[]
 {
     "First, preserve the original idea. CommuteCast turns substantial text into an ordered narration for listening on the road. A trustworthy result contains every paragraph you approved, in its original order. It should never silently summarize your source or skip a section just because the submission is long.",

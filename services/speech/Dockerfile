@@ -4,8 +4,9 @@ WORKDIR /app
 COPY requirements.txt .
 COPY requirements.lock.txt .
 RUN pip install --no-cache-dir -r requirements.lock.txt
-COPY --from=commutecast_models . /models/
-COPY app.py diagnostics.py .
+COPY --from=commutecast_models kokoro/kokoro-v1.0.onnx kokoro/voices-v1.0.bin /models/kokoro/
+COPY --from=commutecast_models piper/en_US-amy-medium.onnx piper/en_US-amy-medium.onnx.json piper/en_US-bryce-medium.onnx piper/en_US-bryce-medium.onnx.json piper/en_US-joe-medium.onnx piper/en_US-joe-medium.onnx.json piper/en_US-lessac-medium.onnx piper/en_US-lessac-medium.onnx.json piper/en_US-ljspeech-medium.onnx piper/en_US-ljspeech-medium.onnx.json piper/en_GB-alan-medium.onnx piper/en_GB-alan-medium.onnx.json piper/en_GB-alba-medium.onnx piper/en_GB-alba-medium.onnx.json piper/en_GB-jenny_dioco-medium.onnx piper/en_GB-jenny_dioco-medium.onnx.json /models/piper/
+COPY app.py diagnostics.py voice_library.py .
 COPY model-checksums.txt /models/model-checksums.txt
 RUN cd /models && sha256sum -c model-checksums.txt
 RUN useradd -m speech && chown -R speech:speech /app /models

@@ -52,6 +52,7 @@ def load():
         h = hashlib.sha256()
         h.update(Path(__file__).read_bytes())
         h.update(Path("/app/diagnostics.py").read_bytes())
+        h.update(Path("/app/voice_library.py").read_bytes())
         h.update(Path("/app/requirements.txt").read_bytes())
         h.update(Path("/app/requirements.lock.txt").read_bytes())
         for file in sorted(folder.iterdir()):
@@ -67,12 +68,11 @@ def load():
             model = Kokoro.from_session(session, str(folder / "voices-v1.0.bin"))
             voices = sorted(v for v in model.get_voices() if v.startswith(("af_", "am_", "bf_", "bm_")))
         elif ENGINE == "piper":
-            from piper import PiperVoice
-            from piper.config import PiperConfig
-            session = cpu_session(folder / "en_US-lessac-medium.onnx")
-            config = json.loads((folder / "en_US-lessac-medium.onnx.json").read_text())
-            model = PiperVoice(session=session, config=PiperConfig.from_dict(config))
-            voices = ["en_US-lessac-medium"]
+            from voice_library import PiperVoiceLibrary
+            model = PiperVoiceLibrary(folder, cpu_session)
+            voices = model.voice_ids
+            default_voice = "en_US-lessac-medium" if "en_US-lessac-medium" in voices else voices[0]
+            session = model.select(default_voice).session
         else:
             raise ValueError("unsupported engine")
         actual = session.get_session_options()
@@ -185,7 +185,7 @@ def speech(request: SpeechRequest):
         else:
             from piper import SynthesisConfig
             with wave.open(output, "wb") as wav:
-                model.synthesize_wav(request.text, wav, syn_config=SynthesisConfig(length_scale=1 / request.speed))
+                model.select(request.voice).synthesize_wav(request.text, wav, syn_config=SynthesisConfig(length_scale=1 / request.speed))
         emit("synthesis_completed", engine=ENGINE, instance=instance, sequence=request.sequence,
              elapsed_ms=round((time.monotonic() - started) * 1000), audio_bytes=output.getbuffer().nbytes)
         return Response(output.getvalue(), media_type="audio/wav")

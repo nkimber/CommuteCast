@@ -1,31 +1,32 @@
-param([switch]$Build)
+param([switch]$Build, [switch]$BuildOnly)
 $ErrorActionPreference = 'Stop'
+if ($BuildOnly -and -not $Build) { throw 'BuildOnly requires Build.' }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $context = (& docker context inspect --format '{{.Endpoints.docker.Host}}')
 if ($LASTEXITCODE -ne 0 -or $context.Trim() -ne 'npipe:////./pipe/dockerDesktopLinuxEngine') { throw 'Use the local Docker Desktop Linux context.' }
 if ($Build) {
     $modelCache = Join-Path $env:LOCALAPPDATA 'CommuteCast\provisioning-models'
-    $modelSources = @{
-        'kokoro/kokoro-v1.0.onnx' = 'https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx'
-        'kokoro/voices-v1.0.bin' = 'https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin'
-        'piper/en_US-lessac-medium.onnx' = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx'
-        'piper/en_US-lessac-medium.onnx.json' = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json'
-    }
+    $modelSources = Get-Content -LiteralPath (Join-Path $projectRoot 'services\speech\model-sources.json') -Raw | ConvertFrom-Json
     foreach ($line in Get-Content -LiteralPath (Join-Path $projectRoot 'services\speech\model-checksums.txt')) {
         $parts = $line -split '\s+', 2
         $relative = $parts[1].Trim()
-        if (-not $modelSources.ContainsKey($relative)) { throw 'Unrecognized model artifact.' }
+        $source = $modelSources.PSObject.Properties[$relative]
+        if ($null -eq $source) { throw 'Unrecognized model artifact.' }
         $target = Join-Path $modelCache $relative
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
         if ((Test-Path -LiteralPath $target) -and (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -eq $parts[0]) { continue }
         Write-Host "Acquiring pinned model: $relative"
         $partial = $target + '.partial'
-        Invoke-WebRequest -Uri $modelSources[$relative] -OutFile $partial -TimeoutSec 900
+        Invoke-WebRequest -Uri $source.Value -OutFile $partial -TimeoutSec 900
         if ((Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash -ne $parts[0]) { throw "Model checksum mismatch: $relative. The original file was preserved." }
         Move-Item -LiteralPath $partial -Destination $target -Force
     }
     & docker build --build-context "commutecast_models=$modelCache" -t commutecast-speech:1 (Join-Path $projectRoot 'services\speech')
     if ($LASTEXITCODE -ne 0) { throw 'Speech image build failed.' }
+}
+if ($BuildOnly) {
+    Write-Host 'Speech image built and model checksums verified. Running services and the local image pin were not changed.'
+    return
 }
 & docker compose -f (Join-Path $projectRoot 'services\compose.yaml') up -d --pull never
 if ($LASTEXITCODE -ne 0) { throw 'Service provisioning failed. Existing services were not removed.' }
