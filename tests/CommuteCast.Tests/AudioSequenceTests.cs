@@ -6,6 +6,48 @@ namespace CommuteCast.Tests;
 
 public class AudioSequenceTests
 {
+    private const string UrlHeavyChunk = "(https://www.buffalobills.com/news/important-dates-in-bills-history-jan-20-1991-bills-beat-raiders-51-3-in-18477088), NFL championship summaries (https://operations.nfl.com/media/3823/2019-nfl-record-and-fact-book.pdf), the Comeback (https://www.buffalobills.com/news/20-years-later-the-comeback-game-9267435).";
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UrlComponentsAllowReportedDurationWithoutRequiringEveryComponentToBeSpoken(bool uppercase)
+    {
+        using var test = new TestWorkspace(); var path = Path.Combine(test.Workspace.Root, "urls.wav");
+        var text = uppercase ? UrlHeavyChunk.ToUpperInvariant() : UrlHeavyChunk;
+        Assert.Equal(8, UrlHeavyChunk.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length);
+        TestWorkspace.WriteWave(path, 38.534);
+        var audio = new AudioPipeline(new());
+        Assert.Equal(WaveAudio.Inspect(path), await audio.ValidateChunkAsync(path, text, default));
+        // Providers may pronounce or abbreviate URLs differently; the URL estimate is upper-only.
+        TestWorkspace.WriteWave(path, 1);
+        await audio.ValidateChunkAsync(path, text, default);
+    }
+
+    [Theory]
+    [InlineData("One two three four five six seven eight", 38.534)]
+    [InlineData(UrlHeavyChunk, 200)]
+    [InlineData("See HTTPS://example.com/news/long-technical-address", 40)]
+    public async Task ExcessiveDurationStillFailsForPlainTextAndUrls(string text, double duration)
+    {
+        using var test = new TestWorkspace(); var path = Path.Combine(test.Workspace.Root, "excess.wav");
+        TestWorkspace.WriteWave(path, duration);
+        await Assert.ThrowsAsync<IOException>(() => new AudioPipeline(new()).ValidateChunkAsync(path, text, default));
+    }
+
+    [Fact]
+    public async Task UrlDurationAllowanceStillRejectsSilence()
+    {
+        using var test = new TestWorkspace(); var path = Path.Combine(test.Workspace.Root, "silence.wav");
+        Directory.CreateDirectory(test.Workspace.Root);
+        using (var file = File.Create(path))
+        {
+            WaveAudio.WriteHeader(file, 24000 * 39); file.Write(new byte[24000 * 39 * 2]);
+        }
+        var error = await Assert.ThrowsAsync<IOException>(() => new AudioPipeline(new()).ValidateChunkAsync(path, UrlHeavyChunk, default));
+        Assert.Contains("silence", error.Message);
+    }
+
     [Theory]
     [InlineData(1, 0.079, "0.080", "30.000")]
     [InlineData(13, 0.90, "0.910", "32.500")]
