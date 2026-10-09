@@ -170,7 +170,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private readonly SemaphoreSlim draftGate = new(1);
     private readonly OperationLifetime operations = new();
     private Task? disposal;
-    private string page = "compose", source = "", draftTitle = "", statusMessage = "Paste something worth listening to. Queue it when you're ready.", serviceStatus = "Checking local speech…";
+    private string page = "library", source = "", draftTitle = "", statusMessage = "Loading your listening library…", serviceStatus = "Checking local speech…";
     private string providerDetails = "", encoderVersion = "Not checked";
     private string operationError = "", speechError = "", speechErrorEngine = "";
     private string checkedJobId = "", selectedSpeechResult = "";
