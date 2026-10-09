@@ -34,7 +34,10 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
         ct.ThrowIfCancellationRequested();
         var info = WaveAudio.Inspect(path);
         var words = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
-        if (info.Duration < 0.08 || info.Duration > Math.Max(30, words * 2.5) || (words > 12 && info.Duration < words * 0.07)) throw new IOException("Chunk duration is implausible for the prepared text. Review the voice or text and retry.");
+        var minimumDuration = words > 12 ? Math.Max(0.08, words * 0.07) : 0.08;
+        var maximumDuration = Math.Max(30, words * 2.5);
+        if (info.Duration < minimumDuration || info.Duration > maximumDuration)
+            throw new IOException(FormattableString.Invariant($"Chunk duration is implausible for the prepared text: measured {info.Duration:F3} seconds for {words} whitespace-delimited words; expected {minimumDuration:F3}–{maximumDuration:F3} seconds. Review the voice or text and retry."));
         if (info.Rms < 0.0001 || info.Peak > 1) throw new IOException("Chunk contains silence or invalid sample values. Export is blocked.");
         return info;
     }, ct);

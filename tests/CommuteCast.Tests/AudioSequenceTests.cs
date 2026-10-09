@@ -6,6 +6,37 @@ namespace CommuteCast.Tests;
 
 public class AudioSequenceTests
 {
+    [Theory]
+    [InlineData(1, 0.079, "0.080", "30.000")]
+    [InlineData(13, 0.90, "0.910", "32.500")]
+    [InlineData(15, 39.671, "1.050", "37.500")]
+    public async Task ImplausibleDurationReportsMeasuredAndExpectedValues(int words, double duration, string minimum, string maximum)
+    {
+        using var test = new TestWorkspace();
+        var path = Path.Combine(test.Workspace.Root, "duration.wav"); TestWorkspace.WriteWave(path, duration);
+        var text = string.Join(" ", Enumerable.Repeat("private-source-word", words));
+        var error = await Assert.ThrowsAsync<IOException>(() => new AudioPipeline(new()).ValidateChunkAsync(path, text, default));
+        Assert.Contains(FormattableString.Invariant($"measured {WaveAudio.Inspect(path).Duration:F3} seconds for {words} whitespace-delimited words"), error.Message);
+        Assert.Contains($"expected {minimum}–{maximum} seconds", error.Message);
+        Assert.DoesNotContain("private-source-word", error.Message);
+        Assert.DoesNotContain(path, error.Message);
+    }
+
+    [Theory]
+    [InlineData(1, 0.08)]
+    [InlineData(12, 0.08)]
+    [InlineData(13, 0.911)]
+    [InlineData(1, 30)]
+    [InlineData(13, 32.5)]
+    [InlineData(16, 39.671)]
+    public async Task PlausibleDurationStillPassesIncludingBoundaries(int words, double duration)
+    {
+        using var test = new TestWorkspace();
+        var path = Path.Combine(test.Workspace.Root, "duration.wav"); TestWorkspace.WriteWave(path, duration);
+        var info = await new AudioPipeline(new()).ValidateChunkAsync(path, string.Join(" ", Enumerable.Repeat("word", words)), default);
+        Assert.Equal(WaveAudio.Inspect(path).Samples, info.Samples);
+    }
+
     [Fact] public async Task NormalizationPersistsExclusiveCreationThenCanonicalHashBeforeReturning()
     {
         using var test = new TestWorkspace(); var job = new Job(); var store = new SqliteJobStore(test.Workspace);
