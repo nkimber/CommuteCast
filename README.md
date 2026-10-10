@@ -256,7 +256,7 @@ Stopped and cancelled library rows offer a prominent green **Resume** button bes
 
 Launch displays a **Starting CommuteCast** window while local recovery, saved-library validation and settings checks complete. It shows the current step and elapsed time, and supports **Cancel startup** while local operations settle safely. Startup diagnostics include individual step timings and periodic long-running-step notices even when the UI is blocked; see [Debugging with operational logs](documents/Logging.md). Docker readiness failures appear after the editor opens and are logged separately.
 
-## Work with Codex
+## Narration tools and everyday use
 
 Settings includes **Notify when an MP3 is exported or a narration needs attention**. Windows notification-area banners contain fixed messages without titles, text, paths or raw errors. Clicking a banner opens its saved item and clears library filters. Old history is not replayed on startup; muting and re-enabling do not replay outcomes. Windows can suppress transient banners through notification/quiet-time preferences. The app removes its notification icon and event subscriptions on shutdown or maintenance transition.
 
@@ -275,6 +275,8 @@ The editor shows prepared spoken-word count and calibrated listening/generation 
 The listening library supports title search (all entered words must match), status filters and date/title/audio-length sorting. Display sorting does not reorder the generation queue. Progress updates retain existing rows and selection; an explicit view-latest/view-attention action clears filters to reveal its saved item. Unknown audio lengths sort after measured lengths.
 
 Native desktop regression checks run on an isolated STA dispatcher with synthetic saved items and private test workspaces: `dotnet test tests/CommuteCast.Desktop.Tests -c Release`. They verify controls/bindings separately from the backend suite and do not require Docker or establish physical input, listening or phone acceptance.
+
+## Work with Codex
 
 Choose **Work with Codex** in the sidebar for an offline guide to writing narration. **Copy setup prompt and full skill** includes the complete `commute-narrative` instructions for Codex's `$skill-creator`; the expandable skill viewer is selectable and read-only. Ask Codex to create and validate it as a personal skill available across projects. The bundled source lives in `src/CommuteCast.Desktop/Codex/commute-narrative/SKILL.md` and is embedded in the desktop build, so the guide also works on machines without an existing personal skill folder.
 
