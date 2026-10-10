@@ -45,6 +45,9 @@ public class WorkspaceBackupTests
     [Fact] public async Task FullBackupAndRestorePreserveSourceSettingsDraftReceiptsAndEveryAudioByte()
     {
         using var source = new TestWorkspace(); using var target = new TestWorkspace(); var original = await SeedAsync(source, "Original source 😀"); var later = await SeedAsync(target, "Later source");
+        var draftStore = new DraftStore(source.Workspace); var draft = await draftStore.LoadAsync();
+        var brief = new NarrationBrief { Topic = "The history of railways", SourceMaterial = "Private reference notes 😀" };
+        await draftStore.SaveAsync(draft with { PromptDraft = new(brief, NarrationPrompt.Build(brief, new(2026, 10, 10)) + "\nEdited prompt", brief) });
         var unrelated = Path.Combine(target.Workspace.Root, "keep-unrelated.txt"); await File.WriteAllTextAsync(unrelated, "Keep unrelated local file");
         var exported = Path.Combine(target.Destination, "keep-exported.mp3"); await File.WriteAllTextAsync(exported, "Keep separate export");
         using var sourceLease = WorkspaceLease.Acquire(source.Workspace); var backup = await WorkspaceBackup.CreateAsync(sourceLease); var manifest = await WorkspaceBackup.ValidateAsync(backup);

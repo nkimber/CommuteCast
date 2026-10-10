@@ -28,13 +28,17 @@ public class LayoutTests
         try
         {
             model.Source = "# A useful commute\n" + string.Join(" ", Enumerable.Repeat("This sample text demonstrates a calm, clear narration.", 10));
+            model.PromptTopic = "How railways changed cities";
+            model.PromptGoal = "Understand how transport changed everyday life, and why those effects still matter.";
+            model.PromptInclude = "The first commuter suburbs; a concrete example of a journey; who benefited and who paid the costs.";
+            await DesktopHost.Execute(model.BuildPromptCommand);
             model.RefreshJobs([new() { Title = "A completed narration", Stage = JobStage.Exported, ExportCommitted = true, DurationSeconds = 120 }, new() { Title = "A queued narration", Stage = JobStage.Queued }]);
             var window = new MainWindow(model);
             for (var theme = 0; theme < 2; theme++)
             {
                 if (theme == 1) App.ToggleTheme();
                 foreach (var size in new[] { (Width: 1060, Height: 700), (Width: 1380, Height: 900) })
-                    foreach (var page in new[] { "compose", "library", "settings" })
+                    foreach (var page in new[] { "compose", "library", "settings", "prompt" })
                     {
                         model.NavigateCommand.Execute(page);
                         await Dispatcher.Yield(DispatcherPriority.Background);
@@ -51,9 +55,29 @@ public class LayoutTests
                             Assert.False(createBounds.IntersectsWith(reviewBounds)); Assert.False(createBounds.IntersectsWith(importBounds));
                             Assert.Same(model.QueueCommand, create.Command);
                         }
+                        if (page == "prompt")
+                        {
+                            foreach (var name in new[] { "BuildPromptButton", "CopyPromptButton", "PromptToNarrationButton", "GeneratedPromptInput" })
+                            {
+                                var control = (FrameworkElement)window.FindName(name);
+                                var bounds = control.TransformToAncestor(root).TransformBounds(new(0, 0, control.ActualWidth, control.ActualHeight));
+                                Assert.True(control.ActualWidth > 0 && control.ActualHeight > 0);
+                                Assert.True(bounds.Right <= size.Width && bounds.Bottom <= size.Height);
+                            }
+                        }
                         var bitmap = new RenderTargetBitmap(size.Width, size.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(root);
                         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
                         using var image = File.Create(Path.Combine(workspace.Root, $"{page}-{size.Width}-{(theme == 0 ? "light" : "dark")}.png")); encoder.Save(image);
+                        if (page == "prompt")
+                        {
+                            var details = (Expander)window.FindName("PromptDetailsExpander"); details.IsExpanded = true;
+                            root.UpdateLayout(); ((ScrollViewer)window.FindName("PromptBriefScroll")).ScrollToEnd();
+                            await Dispatcher.Yield(DispatcherPriority.Background); root.UpdateLayout();
+                            var expanded = new RenderTargetBitmap(size.Width, size.Height, 96, 96, PixelFormats.Pbgra32); expanded.Render(root);
+                            var expandedEncoder = new PngBitmapEncoder(); expandedEncoder.Frames.Add(BitmapFrame.Create(expanded));
+                            using var expandedImage = File.Create(Path.Combine(workspace.Root, $"prompt-sources-{size.Width}-{(theme == 0 ? "light" : "dark")}.png")); expandedEncoder.Save(expandedImage);
+                            details.IsExpanded = false; ((ScrollViewer)window.FindName("PromptBriefScroll")).ScrollToTop();
+                        }
                     }
             }
             Assert.Equal("", errors.Text.ToString());

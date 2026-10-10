@@ -205,7 +205,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private readonly NarrationPreferences narrationPreferences;
     public string[] Engines { get; } = ["kokoro", "piper"];
     public event Action? DraftQueued;
-    public string PageHeading => page switch { "library" => "Your listening library", "settings" => "Settle in. Set it up.", "codex" => "Write something worth hearing.", _ => "Make time to listen." };
+    public string PageHeading => page switch { "library" => "Your listening library", "settings" => "Settle in. Set it up.", "codex" => "Write something worth hearing.", "prompt" => "Start with a good question.", _ => "Make time to listen." };
     public bool IsCompose => page == "compose";
     public bool IsLibrary => page == "library";
     public bool IsSettings => page == "settings";
@@ -420,6 +420,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         MeasureStorageCommand = Command(_ => RefreshStorageAsync());
         CleanCacheCommand = Command(async _ => { ValidateRetention(); queue.CacheQuotaMiB = CacheQuotaMiB; queue.ScratchRetentionDays = ScratchRetentionDays; var result = await queue.CleanCacheAsync(shutdown.Token); await RefreshStorageAsync(); StatusMessage = $"Cleanup removed {result.FilesRemoved} files ({result.BytesRemoved / 1048576.0:0.0} MiB). {result.Failures} files could not be removed. Protected data and exports are retained."; });
         InitializeNarrationTools();
+        InitializePromptBuilder();
         InitializeLifecycle(powerEvents, notifications);
     }
     private ICommand Command(Func<object?, Task> action, bool clearsError = true) => new AsyncCommand(async p =>
@@ -427,7 +428,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         await operations.RunAsync(() => action(p));
         if (clearsError) { operationError = ""; RaiseAttention(); }
     }, e => ReportError(QueueCoordinator.FriendlyError(e)));
-    private void Navigate(string value) { page = value; Raise(nameof(IsCompose)); Raise(nameof(IsLibrary)); Raise(nameof(IsSettings)); Raise(nameof(IsCodex)); Raise(nameof(PageHeading)); }
+    private void Navigate(string value) { page = value; Raise(nameof(IsCompose)); Raise(nameof(IsLibrary)); Raise(nameof(IsSettings)); Raise(nameof(IsCodex)); Raise(nameof(IsPromptBuilder)); Raise(nameof(PrimaryActionCommand)); Raise(nameof(PageHeading)); }
     private void SetSelectedSpeechResult(string id, string result) { checkedJobId = id; selectedSpeechResult = result; Raise(nameof(SelectedSpeechResult)); Raise(nameof(SelectedDetailsForCopy)); }
     private Job RequireSelected() => SelectedJob?.Job ?? throw new ArgumentException("Select a narration first.");
     private async Task ResumeAsync(Job job)
@@ -504,7 +505,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public Task InitializeAsync() => operations.RunAsync(InitializeCoreAsync);
     private async Task InitializeCoreAsync()
     {
-        try { using var trace = new StartupStepTrace(StartupPhase.DraftLoad); var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; trace.Complete(); }
+        try { using var trace = new StartupStepTrace(StartupPhase.DraftLoad); var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; RestorePromptDraft(saved.PromptDraft); trace.Complete(); }
         catch (IOException error) { AppLogging.Failure("DraftLoad", error); draftLoadFailed = true; ReportError(error.Message); }
         loading = false;
         string? previewNotice = null;
@@ -521,9 +522,9 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         draftDirty = true;
         draftSave?.Cancel();
         draftSave = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
-        _ = SaveDraftAsync(DraftTitle, Source, draftSave.Token);
+        _ = SaveDraftAsync(CaptureDraft(), draftSave.Token);
     }
-    private async Task SaveDraftAsync(string title, string text, CancellationToken ct)
+    private async Task SaveDraftAsync(Draft draft, CancellationToken ct)
     {
         try
         {
@@ -531,7 +532,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
             await draftGate.WaitAsync(ct);
             try
             {
-                ct.ThrowIfCancellationRequested(); var preserved = await drafts.SaveAsync(new(title, text), ct); draftLoadFailed = false;
+                ct.ThrowIfCancellationRequested(); var preserved = await drafts.SaveAsync(draft, ct); draftLoadFailed = false;
                 if (preserved is not null) StatusMessage = "The unreadable original draft was preserved in local recovery storage. Your current draft is saved.";
             }
             finally { draftGate.Release(); }
@@ -825,7 +826,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         Playback.Dispose(); // An already admitted playback action may have finished after the first stop.
         await queue.DisposeAsync();
         await draftGate.WaitAsync();
-        try { if (!draftLoadFailed || draftDirty) await drafts.SaveAsync(new(DraftTitle, Source)); }
+        try { if (!draftLoadFailed || draftDirty) await drafts.SaveAsync(CaptureDraft()); }
         finally { draftGate.Release(); }
         await SaveSettingsAsync();
         try { await CleanupAuditionAsync(); }
