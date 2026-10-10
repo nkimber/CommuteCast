@@ -310,8 +310,10 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
                 try
                 {
                     await StageAsync(job, JobStage.WaitingForService, ct);
+                    var readinessStarted = System.Diagnostics.Stopwatch.StartNew();
                     var info = provider is IJobSpeechStatusProvider statusProvider
                         ? await statusProvider.ReadyForJobAsync(job, ct) : await provider.ReadyAsync(job.Settings.Engine, ct);
+                    job.SpeechReadinessMilliseconds = (job.SpeechReadinessMilliseconds ?? 0) + readinessStarted.ElapsedMilliseconds;
                     if (info.Fingerprint != job.Settings.ProviderFingerprint || job.Settings.ProviderImageId is not null && info.ImageId != job.Settings.ProviderImageId)
                         throw new IOException("The speech model or image changed since submission. Restore it or submit a new job to avoid mixed audio.");
                     foreach (var chunk in job.Chunks)

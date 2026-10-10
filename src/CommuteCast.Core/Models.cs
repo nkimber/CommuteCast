@@ -40,6 +40,7 @@ public sealed class Job
     public string PrivateStorageNotice { get; set; } = "";
     public int CompletedChunks { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public JobRunTiming? RunTiming { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public long? SpeechReadinessMilliseconds { get; set; }
     [JsonIgnore] public JobActivity Activity { get; } = new();
     public string Error { get; set; } = "";
     public FailureCategory FailureCategory { get; set; }
@@ -81,6 +82,7 @@ public sealed class AppSettings
     public double Speed { get; set; } = 1;
     public NarrationOptions? NarrationDefaults { get; set; }
     public Dictionary<string, string> DefaultVoices { get; set; } = [];
+    public List<NarrationPreset>? NarrationPresets { get; set; }
     public string Pronunciation { get; set; } = "";
     public PronunciationProfile PronunciationProfile { get; set; } = new();
     public bool ExcludeCode { get; set; }

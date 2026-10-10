@@ -151,7 +151,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
         : File.Exists(workspace.FinalPath(Job)) && Job.FinalHash.Length > 0 ? "Generated audio is saved privately on this laptop. It has not been exported." : "Audio is generated privately on this laptop before publication.";
 }
 
-public sealed class MainViewModel : Observable, IAsyncDisposable
+public sealed partial class MainViewModel : Observable, IAsyncDisposable
 {
     public Workspace Workspace { get; }
     private readonly AppSettings settings;
@@ -216,6 +216,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         {
             if (!Set(ref source, value)) return;
             Raise(nameof(CharacterCount));
+            ScheduleEstimate();
             if (DraftTitle.Length == 0 && source.Length > 0) DraftTitle = TextPreparation.SuggestTitle(source[..Math.Min(source.Length, TextPreparation.MaximumCharacters)]);
             ScheduleDraftSave();
         }
@@ -240,7 +241,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public string NarrationChoiceSummary => $"{SpeechVoiceCatalog.Describe(Engine, Voice).DisplayName} · {Speed:0.00}× pace";
     public string NarrationDefaultsSummary => $"{(narrationPreferences.Defaults.Engine == "kokoro" ? "Kokoro" : "Piper")} · {SpeechVoiceCatalog.Describe(narrationPreferences.Defaults.Engine, narrationPreferences.Defaults.Voice).DisplayName} · {narrationPreferences.Defaults.Speed:0.00}× pace";
     public string VoiceLibrarySummary => settings.Providers.TryGetValue(Engine, out var info) && info.State == "ready" ? $"{info.Voices.Length} voices · choose one and play a sample" : "Refresh voices to check this engine's installed library.";
-    private void RaiseNarrationChoices() { Raise(nameof(UsingNarrationDefaults)); Raise(nameof(NarrationChoiceStatus)); Raise(nameof(NarrationChoiceSummary)); Raise(nameof(NarrationDefaultsSummary)); }
+    private void RaiseNarrationChoices() { Raise(nameof(UsingNarrationDefaults)); Raise(nameof(NarrationChoiceStatus)); Raise(nameof(NarrationChoiceSummary)); Raise(nameof(NarrationDefaultsSummary)); ScheduleEstimate(); }
     public bool ExcludeCode { get => settings.ExcludeCode; set { settings.ExcludeCode = value; Raise(); RaiseNarrationChoices(); } }
     public string Pronunciation { get => settings.Pronunciation; set { settings.Pronunciation = value; Raise(); RaiseNarrationChoices(); } }
     public PronunciationOption<NumberReading>[] NumberOptions { get; } = [new(NumberReading.AsWritten, "Keep numbers as written"), new(NumberReading.LiteralDigits, "Read each digit and symbol"), new(NumberReading.NumberWords, "Read integer and decimal values"), new(NumberReading.ScientificWords, "Read values and scientific exponents")];
@@ -415,6 +416,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         DiagnosticsCommand = Command(_ => DiagnosticsAsync());
         MeasureStorageCommand = Command(_ => RefreshStorageAsync());
         CleanCacheCommand = Command(async _ => { ValidateRetention(); queue.CacheQuotaMiB = CacheQuotaMiB; queue.ScratchRetentionDays = ScratchRetentionDays; var result = await queue.CleanCacheAsync(shutdown.Token); await RefreshStorageAsync(); StatusMessage = $"Cleanup removed {result.FilesRemoved} files ({result.BytesRemoved / 1048576.0:0.0} MiB). {result.Failures} files could not be removed. Protected data and exports are retained."; });
+        InitializeNarrationTools();
     }
     private ICommand Command(Func<object?, Task> action, bool clearsError = true) => new AsyncCommand(async p =>
     {
@@ -452,6 +454,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         Raise(nameof(LibrarySummary));
         Raise(nameof(PauseLabel));
         Raise(nameof(LatestJob)); Raise(nameof(HasLatestJob)); RaiseAttention();
+        ScheduleEstimate();
         if (queue.PersistenceError.Length > 0) StatusMessage = queue.PersistenceError;
         _ = RefreshCloudSyncAsync();
     }

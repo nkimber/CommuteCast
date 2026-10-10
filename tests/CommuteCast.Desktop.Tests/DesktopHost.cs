@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
+using System.Windows.Input;
 using CommuteCast.Desktop;
 using CommuteCast.Infrastructure;
 
@@ -41,6 +42,16 @@ internal static class DesktopHost
         await result.Task.WaitAsync(TimeSpan.FromSeconds(90));
     }
     public static Workspace Workspace() => new(Path.GetFullPath(Path.Combine("artifacts", "desktop-tests", Guid.NewGuid().ToString("N"))));
+    public static async Task Execute(ICommand command, object? parameter = null)
+    {
+        Assert.True(command.CanExecute(parameter)); command.Execute(parameter);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        while (!command.CanExecute(parameter))
+        {
+            if (watch.Elapsed > TimeSpan.FromSeconds(60)) throw new TimeoutException("Native command did not settle.");
+            await Task.Delay(20);
+        }
+    }
     public static void Layout(Window window, double width = 1380, double height = 900)
     {
         window.Width = width; window.Height = height;

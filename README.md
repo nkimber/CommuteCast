@@ -258,6 +258,12 @@ Launch displays a **Starting CommuteCast** window while local recovery, saved-li
 
 ## Work with Codex
 
+**Narration presets** offers Technical reading, Relaxed storytelling and Fast briefing, plus named presets you save with the displayed voice, pace, code handling and pronunciation rules. **Apply preset** changes this draft; **Save / replace named preset** persists that named choice without changing saved defaults. Removing every preset keeps the list empty across relaunch. Applying an unavailable installed voice is refused; refresh the voice library or update the preset.
+
+**Import text…** and dropping one `.txt`/`.md` file load exact Unicode text/line breaks into the draft. UTF-8 (with/without BOM) and UTF-16 with BOM are supported. Invalid, empty, binary or oversized input is refused before replacement. Replacing a nonempty draft requires confirmation; cancelling retains it. Import never submits a narration.
+
+The editor shows prepared spoken-word count and calibrated listening/generation ranges after three successful matching voice/model/image jobs of at least 20 words. Retried jobs are excluded. Pace is normalized; recorded service readiness/loading is a separate fixed allowance rather than scaled by document length. Listening can use older history; generation requires three newer jobs with readiness measurements. Estimates exclude queue time, retain uncertainty for technical text and cold starts, and never control validation or export. With insufficient history, the editor says what is missing.
+
 The listening library supports title search (all entered words must match), status filters and date/title/audio-length sorting. Display sorting does not reorder the generation queue. Progress updates retain existing rows and selection; an explicit view-latest/view-attention action clears filters to reveal its saved item. Unknown audio lengths sort after measured lengths.
 
 Native desktop regression checks run on an isolated STA dispatcher with synthetic saved items and private test workspaces: `dotnet test tests/CommuteCast.Desktop.Tests -c Release`. They verify controls/bindings separately from the backend suite and do not require Docker or establish physical input, listening or phone acceptance.

@@ -64,6 +64,20 @@ public partial class MainWindow : Window
     {
         if (sender is TextBox input) model.UpdateAuditionSelection(input.Text, input.SelectionStart, input.SelectionLength);
     }
+    private void TextFileDragOver(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        var paths = e.Data.GetData(DataFormats.FileDrop) as string[];
+        e.Effects = paths is { Length: 1 } && TextFileImport.Supported(paths[0]) && model.ImportCommand.CanExecute(paths[0]) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+    private void TextFileDrop(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        e.Handled = true;
+        if (e.Data.GetData(DataFormats.FileDrop) is string[] { Length: 1 } paths && TextFileImport.Supported(paths[0]) && model.ImportCommand.CanExecute(paths[0]))
+            model.ImportCommand.Execute(paths[0]);
+    }
     private async void OpenMaintenance(object sender, RoutedEventArgs e)
     {
         if (closing) return;
