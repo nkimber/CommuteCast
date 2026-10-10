@@ -17,7 +17,7 @@ public sealed record PronunciationProfile(string Version = "pronunciation-v2", s
         if (Version != "pronunciation-v2" || DictionaryVersion != "literal-dictionary-v1") throw new ArgumentException("This pronunciation profile version is unsupported. Choose the supported English profile for a new narration.");
         if (Language != "en") throw new ArgumentException("The installed pronunciation profiles support English. Other languages require a verified model and profile.");
         if (!Enum.IsDefined(Numbers) || !Enum.IsDefined(Acronyms) || !Enum.IsDefined(Dates)) throw new ArgumentException("Choose supported number, acronym and date options.");
-        if (engine is not null && engine is not ("kokoro" or "piper")) throw new ArgumentException("Pronunciation options require a supported Kokoro or Piper speech contract.");
+        if (engine is not null && !SpeechProviders.IsKnown(engine)) throw new ArgumentException("Pronunciation options require a supported speech contract.");
     }
 }
 public sealed record PronunciationChange(int SourceStart, int SourceLength, string Original, string Before, string After, string Rule, bool Warning = false);

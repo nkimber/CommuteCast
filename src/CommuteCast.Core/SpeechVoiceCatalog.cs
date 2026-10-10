@@ -14,7 +14,7 @@ public static class SpeechVoiceCatalog
     };
 
     public static string DefaultVoice(string engine) => engine switch
-    { "kokoro" => "af_heart", "piper" => "en_US-lessac-medium", _ => throw new ArgumentException("Choose Kokoro or Piper.") };
+    { "kokoro" => "af_heart", "piper" => "en_US-lessac-medium", _ => SpeechProviders.Get(engine).DefaultVoice };
 
     public static SpeechVoiceChoice Describe(string engine, string id, bool available = true)
     {

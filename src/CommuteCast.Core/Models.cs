@@ -13,7 +13,8 @@ public record SourceSpan(int Start, int Length, string Kind, string Original, st
 public record PreparedText(string Script, IReadOnlyList<SourceSpan> Spans, string Version = "prepare-v1", PronunciationReview? ProfileReview = null);
 public record TextChunk(int Index, int Start, int Length, string Text, bool HardSplit);
 public record NarrationSettings(string Engine, string Voice, double Speed, bool ExcludeCode, string Pronunciation, string ProviderFingerprint, PronunciationProfile? Profile = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProviderImageId = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProviderImageId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SpeechConfiguration? Speech = null)
 {
     public void ValidateProviderImage()
     {
@@ -60,7 +61,7 @@ public sealed class Job
     public bool DeleteExportRequested { get; set; }
     public string Fingerprint => Hash(JsonSerializer.Serialize(new { Settings = FingerprintSettings(), Prepared.Version, Prepared.Script, AudioContractVersion, ChunkingVersion }));
     // Preserve the exact six-field legacy and seven-field pronunciation snapshots when no image was captured.
-    private object FingerprintSettings() => Settings.Profile is null && Settings.ProviderImageId is null
+    private object FingerprintSettings() => Settings.Profile is null && Settings.ProviderImageId is null && Settings.Speech is null
         ? new { Settings.Engine, Settings.Voice, Settings.Speed, Settings.ExcludeCode, Settings.Pronunciation, Settings.ProviderFingerprint }
         : Settings;
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
@@ -94,6 +95,7 @@ public sealed class AppSettings
     public int ScratchRetentionDays { get; set; } = 7;
     public int PrivateStorageLimitMiB { get; set; } = 10240;
     public Dictionary<string, ProviderInfo> Providers { get; set; } = [];
+    public Dictionary<string, HostedConnection> HostedConnections { get; set; } = [];
 }
 public interface IJobStore
 {

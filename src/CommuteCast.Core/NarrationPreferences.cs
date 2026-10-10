@@ -16,7 +16,7 @@ public sealed record NarrationOptions(string Engine, string Voice, double Speed,
 
     public void Validate()
     {
-        if (Engine is not ("kokoro" or "piper") || string.IsNullOrWhiteSpace(Voice) || !double.IsFinite(Speed) || Speed is < .7 or > 1.4)
+        if (!SpeechProviders.IsKnown(Engine) || string.IsNullOrWhiteSpace(Voice) || !double.IsFinite(Speed) || Speed is < .7 or > 1.4)
             throw new ArgumentException("Choose a speech engine, voice and pace between 0.70 and 1.40 before saving defaults.");
         Profile.Validate(Engine); TextPreparation.ValidateDictionary(Pronunciation);
     }
@@ -43,7 +43,7 @@ public sealed class NarrationPreferences
 
     public void SelectEngine(string engine)
     {
-        if (engine is not ("kokoro" or "piper")) throw new ArgumentException("Choose Kokoro or Piper.");
+        SpeechProviders.Get(engine);
         if (settings.Engine == engine) return;
         sessionVoices[settings.Engine] = settings.Voice;
         settings.Engine = engine;
