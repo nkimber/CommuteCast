@@ -27,7 +27,8 @@ public partial class MainWindow : Window
         InitializeComponent();
         DataContext = model;
         model.PropertyChanged += NarrationChoicesChanged;
-        Closed += (_, _) => model.PropertyChanged -= NarrationChoicesChanged;
+        model.NotificationOpened += OpenFromNotification;
+        Closed += (_, _) => { model.PropertyChanged -= NarrationChoicesChanged; model.NotificationOpened -= OpenFromNotification; };
         ScheduleVoiceSelection();
         ContentRendered += (_, _) => Serilog.Log.Information("Editor content rendered; visible {Visible}, state {WindowState}", IsVisible, WindowState);
         model.DraftQueued += () => NarrationList.Focus();
@@ -63,6 +64,12 @@ public partial class MainWindow : Window
     private void SourceSelectionChanged(object sender, RoutedEventArgs e)
     {
         if (sender is TextBox input) model.UpdateAuditionSelection(input.Text, input.SelectionStart, input.SelectionLength);
+    }
+    private void OpenFromNotification()
+    {
+        if (closing) return;
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        Show(); Activate();
     }
     private void TextFileDragOver(object sender, DragEventArgs e)
     {

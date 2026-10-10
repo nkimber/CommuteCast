@@ -87,6 +87,7 @@ public sealed class AppSettings
     public PronunciationProfile PronunciationProfile { get; set; } = new();
     public bool ExcludeCode { get; set; }
     public bool QueuePaused { get; set; }
+    public bool NotificationsEnabled { get; set; } = true;
     public string Ffmpeg { get; set; } = "ffmpeg";
     public string Ffprobe { get; set; } = "ffprobe";
     public int CacheQuotaMiB { get; set; } = 1024;

@@ -331,7 +331,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public ICommand MeasureStorageCommand { get; }
     public ICommand CleanCacheCommand { get; }
 
-    public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null, Action<ProcessStartInfo>? openFolder = null, IPlaybackOutput? playbackOutput = null)
+    public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null, Action<ProcessStartInfo>? openFolder = null, IPlaybackOutput? playbackOutput = null, IPowerEvents? powerEvents = null, IUserNotifications? notifications = null)
     {
         settings = saved; narrationPreferences = new(settings); Workspace = workspace ?? new();
         Playback = new(playbackOutput ?? new WpfPlaybackOutput(player));
@@ -420,6 +420,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         MeasureStorageCommand = Command(_ => RefreshStorageAsync());
         CleanCacheCommand = Command(async _ => { ValidateRetention(); queue.CacheQuotaMiB = CacheQuotaMiB; queue.ScratchRetentionDays = ScratchRetentionDays; var result = await queue.CleanCacheAsync(shutdown.Token); await RefreshStorageAsync(); StatusMessage = $"Cleanup removed {result.FilesRemoved} files ({result.BytesRemoved / 1048576.0:0.0} MiB). {result.Failures} files could not be removed. Protected data and exports are retained."; });
         InitializeNarrationTools();
+        InitializeLifecycle(powerEvents, notifications);
     }
     private ICommand Command(Func<object?, Task> action, bool clearsError = true) => new AsyncCommand(async p =>
     {
@@ -458,6 +459,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         Raise(nameof(PauseLabel));
         Raise(nameof(LatestJob)); Raise(nameof(HasLatestJob)); RaiseAttention();
         ScheduleEstimate();
+        NotifyJobChanges(snapshots);
         if (queue.PersistenceError.Length > 0) StatusMessage = queue.PersistenceError;
         _ = RefreshCloudSyncAsync();
     }
@@ -621,12 +623,12 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         if (queue.MaintenanceError.Length > 0) storageSummary += "\nAutomatic cleanup needs attention: " + queue.MaintenanceError;
         Raise(nameof(StorageDetails));
     }
-    private async Task<ProviderInfo> CheckReadinessAsync(bool explicitRetry = false, string? savedEngine = null)
+    private async Task<ProviderInfo> CheckReadinessAsync(bool explicitRetry = false, string? savedEngine = null, CancellationToken? operationToken = null)
     {
         var engine = savedEngine ?? Engine;
         ServiceStatus = "Checking " + engine + " locally…";
         ProviderInfo info;
-        try { info = await provider.ReadyAsync(engine, shutdown.Token, explicitRetry); }
+        try { info = await provider.ReadyAsync(engine, operationToken ?? shutdown.Token, explicitRetry); }
         catch (Exception error)
         {
             if (engine == Engine || savedEngine is not null)
@@ -726,6 +728,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private NarrationSettings CapturePreviewSettings() => new(Engine, Voice, Speed, ExcludeCode, Pronunciation, "", CaptureProfile());
     private async Task AuditionAsync(AuditionRequest request, bool selection)
     {
+        if (queue.PowerSuspended) throw new IOException("Local speech is held after suspend. Recheck wake recovery before auditioning.");
         var generation = ++auditionGeneration;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
         activeAudition = cancellation;
@@ -815,6 +818,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     {
         progressTimer.Stop();
         syncTimer.Stop();
+        powerEvents.Changed -= PowerChanged; powerEvents.Dispose(); notifications.Dispose();
         var settled = operations.StopAsync();
         draftSave?.Cancel(); shutdown.Cancel(); Playback.Stop();
         await settled.WaitAsync(TimeSpan.FromSeconds(20));

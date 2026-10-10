@@ -13,7 +13,7 @@ public record DeletionResult(IReadOnlyList<DeletionItemResult> Items)
     public int Failed => Items.Count - Removed;
 }
 
-public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpeechProvider provider, AudioPipeline audio, ExportPublisher publisher) : IAsyncDisposable
+public sealed partial class QueueCoordinator(Workspace workspace, IJobStore store, ISpeechProvider provider, AudioPipeline audio, ExportPublisher publisher) : IAsyncDisposable
 {
     private readonly List<Job> jobs = [];
     private readonly object sync = new();
@@ -170,10 +170,11 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             {
                 lock (sync)
                 {
-                    job = Paused || PersistenceError.Length > 0 || lifetime.IsCancellationRequested ? null : jobs.FirstOrDefault(j => j.Stage == JobStage.Queued && !j.DeletionRequested && !j.CancellationRequested);
+                    job = Paused || powerHeld || PersistenceError.Length > 0 || lifetime.IsCancellationRequested ? null : jobs.FirstOrDefault(j => j.Stage == JobStage.Queued && !j.DeletionRequested && !j.CancellationRequested);
                     if (job is not null)
                     {
                         activeId = job.Id;
+                        powerInterrupted = false;
                         activeCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                         activeFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
                         job.Stage = JobStage.Preparing;
@@ -197,9 +198,10 @@ public sealed class QueueCoordinator(Workspace workspace, IJobStore store, ISpee
             {
                 job.Activity.Stop();
                 Log.Information("Job interrupted; user cancellation {UserCancellation}, shutdown {Shutdown}", job.CancellationRequested, lifetime.IsCancellationRequested);
-                if (!job.ExportCommitted) job.Stage = job.CancellationRequested || !lifetime.IsCancellationRequested ? JobStage.Cancelled : JobStage.Queued;
+                var interruptedByPower = false; lock (sync) interruptedByPower = powerInterrupted;
+                if (!job.ExportCommitted) job.Stage = job.CancellationRequested || (!lifetime.IsCancellationRequested && !interruptedByPower) ? JobStage.Cancelled : JobStage.Queued;
                 job.Error = "";
-                job.FailureCategory = job.ExportCommitted || (lifetime.IsCancellationRequested && !job.CancellationRequested) ? FailureCategory.None : FailureCategory.Cancelled;
+                job.FailureCategory = job.ExportCommitted || ((lifetime.IsCancellationRequested || interruptedByPower) && !job.CancellationRequested) ? FailureCategory.None : FailureCategory.Cancelled;
                 job.FailedStage = null;
                 await PersistOutcomeAsync(job);
             }
