@@ -19,6 +19,7 @@ public sealed class AuditionGenerator(Workspace workspace, ISpeechProvider provi
             if (info.Engine != request.Settings.Engine || info.State != "ready" || info.Active != 0 || !info.Voices.Contains(request.Settings.Voice))
                 throw new IOException("The selected audition engine or voice is unavailable. Check speech readiness, then select an installed voice.");
             var snapshot = request.Settings with { ProviderFingerprint = info.Fingerprint, ProviderImageId = info.ImageId };
+            snapshot.LocalVoice?.RequireAvailable(info, snapshot.Voice);
             snapshot.ValidateProviderImage(); ct.ThrowIfCancellationRequested();
             var relative = "auditions/audition-" + Guid.NewGuid().ToString("N") + ".wav";
             var path = OwnedFileRemoval.Resolve(workspace.Root, relative);

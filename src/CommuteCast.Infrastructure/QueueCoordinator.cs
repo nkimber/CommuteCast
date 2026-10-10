@@ -122,6 +122,7 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
         job.Settings.Speech?.Validate(job.Settings.Engine);
         if (SpeechProviders.IsHosted(job.Settings.Engine)) HostedSpeechProvider.ValidateSettings(job.Settings);
         if (job.Episode is not null) PodcastScript.ValidateManifest(job);
+        job.Settings.LocalVoice?.Validate(job.Settings.Engine, job.Settings.Voice);
         if (job.Settings.Profile is not { } profile) return;
         profile.Validate(job.Settings.Engine);
         if (job.Prepared.Version != (job.Episode is null ? "prepare-v3" : "podcast-prepare-v1") || job.Prepared.ProfileReview is not { } review || review.Profile != profile ||
@@ -296,9 +297,10 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
         await PrivateJobFiles.ReconcilePromotionsAsync(job, directory, () => CheckpointAsync(job, ct), ct);
         job.Error = "";
         job.FailureCategory = FailureCategory.None; job.FailedStage = null;
-        lock (sync) if (job.Chunks.Count == 0) job.Chunks = Chunker.Split(job.Prepared.Script, 450);
-        if (job.Episode is null && (job.ChunkingVersion != "chunk450-v1" || job.AudioContractVersion != AudioPipeline.ContractVersion)) throw new IOException("This job uses an unsupported chunk/audio contract. Restore its application version or submit a new narration.");
-        Chunker.ValidateManifest(job.Chunks, job.Prepared.Script, job.Episode is null ? 900 : 1800);
+        var natural = NaturalChunker.IsNatural(job);
+        lock (sync) if (job.Chunks.Count == 0) job.Chunks = natural ? NaturalChunker.Split(job.Prepared.Script) : Chunker.Split(job.Prepared.Script, 450);
+        if (job.Episode is null && !natural && (job.ChunkingVersion != "chunk450-v1" || job.AudioContractVersion != AudioPipeline.ContractVersion)) throw new IOException("This job uses an unsupported chunk/audio contract. Restore its application version or submit a new narration.");
+        Chunker.ValidateManifest(job.Chunks, job.Prepared.Script, job.Episode is not null ? 1800 : natural ? 900 : 450);
         ValidateConfiguration(job);
         PrivateJobFiles.RetainReceipts(job);
         await StageAsync(job, JobStage.Preparing, ct);

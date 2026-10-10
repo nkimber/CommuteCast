@@ -27,6 +27,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CommuteCast.Pilot", "tools\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CommuteCast.Desktop.Tests", "tests\CommuteCast.Desktop.Tests\CommuteCast.Desktop.Tests.csproj", "{5D6B2871-D552-47A3-B183-B049F8CB6857}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CommuteCast.VoiceQuality", "tools\CommuteCast.VoiceQuality\CommuteCast.VoiceQuality.csproj", "{FB7193F8-554B-4C73-8624-51DF46348B2D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -145,6 +147,18 @@ Global
 		{5D6B2871-D552-47A3-B183-B049F8CB6857}.Release|x64.Build.0 = Release|Any CPU
 		{5D6B2871-D552-47A3-B183-B049F8CB6857}.Release|x86.ActiveCfg = Release|Any CPU
 		{5D6B2871-D552-47A3-B183-B049F8CB6857}.Release|x86.Build.0 = Release|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Debug|x64.Build.0 = Debug|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Debug|x86.Build.0 = Debug|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Release|x64.ActiveCfg = Release|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Release|x64.Build.0 = Release|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Release|x86.ActiveCfg = Release|Any CPU
+		{FB7193F8-554B-4C73-8624-51DF46348B2D}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -159,5 +173,6 @@ Global
 		{027FDFF0-88FD-4242-BD8F-3DEEAB0D9D58} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 		{1C6A8624-2500-48CB-B6C5-F360E17897D7} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 		{5D6B2871-D552-47A3-B183-B049F8CB6857} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{FB7193F8-554B-4C73-8624-51DF46348B2D} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 	EndGlobalSection
 EndGlobal

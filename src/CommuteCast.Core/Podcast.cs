@@ -5,7 +5,9 @@ using System.Text.RegularExpressions;
 namespace CommuteCast.Core;
 
 public sealed record SpeakerPersonality(string Id, string Name, string Expertise, string Style, string Delivery = "", string Emotion = "");
-public sealed record SpeakerVoiceBinding(string PersonalityId, string Provider, string Model, string Voice, double Speed, string Delivery, string Emotion);
+public sealed record SpeakerVoiceBinding(string PersonalityId, string Provider, string Model, string Voice, double Speed, string Delivery, string Emotion,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] LocalVoiceOptions? LocalVoice = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? Pronunciation = null);
 public sealed record PodcastFormat(string Id, string Name, int Hosts, int MinimumGuests, int MaximumGuests, string Structure)
 {
     public void Validate()
@@ -14,7 +16,9 @@ public sealed record PodcastFormat(string Id, string Name, int Hosts, int Minimu
             throw new ArgumentException("A podcast format needs 2–5 participants, one or two hosts, and a short structure description.");
     }
 }
-public sealed record PodcastSpeaker(string Name, string Role, string Expertise, string Style, string Voice, double Speed = 1, string Delivery = "", string Emotion = "");
+public sealed record PodcastSpeaker(string Name, string Role, string Expertise, string Style, string Voice, double Speed = 1, string Delivery = "", string Emotion = "",
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] LocalVoiceOptions? LocalVoice = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? Pronunciation = null);
 public sealed record PodcastTurn(string Speaker, string Text, int? SourceStart = null, int? SourceLength = null);
 public sealed record PodcastEpisode(PodcastFormat Format, IReadOnlyList<PodcastSpeaker> Speakers, bool Dialogue = true, int Version = 1)
 {
@@ -22,7 +26,7 @@ public sealed record PodcastEpisode(PodcastFormat Format, IReadOnlyList<PodcastS
     public void ValidateStorage()
     {
         if (Format is null || Speakers is null || Speakers.Count is < 2 or > 5 || Format.Name is null || Format.Name.Length > 100 || Format.Structure is null || Format.Structure.Length > 2000 ||
-            Speakers.Any(s => s is null || s.Name is null || s.Name.Length > 40 || s.Role is null || s.Role.Length > 20 || s.Expertise is null || s.Expertise.Length > 1000 || s.Style is null || s.Style.Length > 1000 || s.Voice is null || s.Voice.Length > 200 || s.Delivery is null || s.Delivery.Length > 2000 || s.Emotion is null || s.Emotion.Length > 100))
+            Speakers.Any(s => s is null || s.Name is null || s.Name.Length > 40 || s.Role is null || s.Role.Length > 20 || s.Expertise is null || s.Expertise.Length > 1000 || s.Style is null || s.Style.Length > 1000 || s.Voice is null || s.Voice.Length > 200 || s.Delivery is null || s.Delivery.Length > 2000 || s.Emotion is null || s.Emotion.Length > 100 || s.Pronunciation?.Length > 16000))
             throw new ArgumentException("The saved podcast draft is invalid or too large.");
     }
     public void Validate(bool requireVoices = true)
@@ -61,6 +65,17 @@ public static class PodcastScript
 {
     public const string ChunkVersion = "podcast-block1800-v1";
     public const string AudioVersion = "podcast-pcm24k-loudnorm-gap80-v1";
+    public const string NaturalChunkVersion = "podcast-natural900-v2";
+    public const string NaturalAudioVersion = "podcast-pcm24k-natural-loudnorm-v2";
+    public static LocalVoiceOptions? LocalDelivery(PodcastSpeaker speaker, NarrationSettings settings) =>
+        SpeechProviders.IsHosted(settings.Engine) || settings.LocalVoice is null && speaker.LocalVoice is null ? null :
+        (speaker.LocalVoice ?? new()) with { NaturalPhrasing = settings.LocalVoice?.NaturalPhrasing == true };
+    public static string PronunciationFor(PodcastSpeaker speaker, NarrationSettings settings)
+    {
+        var rules = TextPreparation.ParseDictionary(settings.Pronunciation).ToDictionary(r => r.From, r => r.To);
+        foreach (var (term, spoken) in TextPreparation.ParseDictionary(speaker.Pronunciation ?? "")) rules[term] = spoken;
+        return string.Join("\n", rules.Select(r => r.Key + "=" + r.Value));
+    }
     public static IReadOnlyList<PodcastTurn> Parse(string source, PodcastEpisode episode)
     {
         episode.Validate(false);
@@ -91,6 +106,9 @@ public static class PodcastScript
         episode.Validate(); settings.Speech?.Validate(settings.Engine);
         foreach (var speaker in episode.Speakers)
         {
+            if (SpeechProviders.IsHosted(settings.Engine) && speaker.LocalVoice is not null) throw new ArgumentException("This cast has local voice controls. Choose a local provider or clear those controls.");
+            LocalDelivery(speaker, settings)?.Validate(settings.Engine, speaker.Voice);
+            TextPreparation.ValidateDictionary(speaker.Pronunciation ?? "");
             if (settings.Speech is { } speech) (speech with { Delivery = speaker.Delivery, Emotion = speaker.Emotion }).Validate(settings.Engine);
             else if (speaker.Delivery.Length > 0 || speaker.Emotion.Length > 0) throw new ArgumentException($"{speaker.Name}: this local provider supports voice and pace controls.");
             if (settings.Engine == "elevenlabs" && speaker.Speed > 1.2) throw new ArgumentException($"{speaker.Name}: ElevenLabs supports pace up to 1.2.");
@@ -100,29 +118,31 @@ public static class PodcastScript
         var capabilities = SpeechProviders.Capabilities(settings.Engine, settings.Speech?.Model);
         var joint = episode.Dialogue && settings.Speech?.Dialogue == true && capabilities.DialogueSpeakers >= episode.Speakers.Count && episode.Speakers.All(s => s.Speed == 1);
         int TagCharacters(string speaker) { var emotion = episode.Speakers.Single(s => s.Name == speaker).Emotion; return settings.Engine == "elevenlabs" && emotion is not ("" or "neutral") ? emotion.Length + 3 : 0; }
-        var maximum = joint ? 1800 - episode.Speakers.Max(s => TagCharacters(s.Name)) : 450;
-        var units = new List<TextChunk>(); var script = new StringBuilder(); var current = new List<PodcastTurn>(); var spans = new List<SourceSpan>(); var changes = new List<PronunciationChange>();
+        var natural = settings.LocalVoice is { NaturalPhrasing: true } && !SpeechProviders.IsHosted(settings.Engine);
+        var maximum = joint ? 1800 - episode.Speakers.Max(s => TagCharacters(s.Name)) : natural ? 900 : 450;
+        var units = new List<TextChunk>(); var script = new StringBuilder(); var current = new List<PodcastTurn>(); var spans = new List<SourceSpan>(); var changes = new List<PronunciationChange>(); var currentHard = false;
         void Flush()
         {
             if (current.Count == 0) return;
             var text = string.Concat(current.Select(t => t.Text));
-            units.Add(new(units.Count, script.Length, text.Length, text, false, current.ToArray())); script.Append(text); current.Clear();
+            units.Add(new(units.Count, script.Length, text.Length, text, currentHard, current.ToArray())); script.Append(text); current.Clear(); currentHard = false;
         }
         var ordinal = 0;
         foreach (Match line in Regex.Matches(source, @"[^\r\n]*(?:\r\n|\r|\n|$)"))
         {
             if (line.Length == 0) continue;
             if (string.IsNullOrWhiteSpace(line.Value)) { spans.Add(new(line.Index, line.Length, "podcast formatting", line.Value, "")); continue; }
-            var turn = parsed[ordinal++]; var preparedTurn = TextPreparation.Prepare(turn.Text, settings.ExcludeCode, settings.Pronunciation, settings.Profile);
+            var turn = parsed[ordinal++]; var speaker = episode.Speakers.Single(s => s.Name == turn.Speaker);
+            var preparedTurn = TextPreparation.Prepare(turn.Text, settings.ExcludeCode, PronunciationFor(speaker, settings), settings.Profile);
             var text = preparedTurn.Script.Trim() + "\n";
             if (script.Length + current.Sum(t => t.Text.Length) + text.Length > TextPreparation.MaximumCharacters) throw new ArgumentException("The prepared podcast exceeds the supported text limit. Shorten the dialogue or dictionary expansions.");
             spans.Add(new(line.Index, line.Length, "podcast dialogue · " + turn.Speaker, line.Value, text));
             var bodyStart = line.Value.IndexOf(':') + 1; while (bodyStart < line.Length && char.IsWhiteSpace(line.Value[bodyStart])) bodyStart++;
             if (preparedTurn.ProfileReview is { } turnReview) changes.AddRange(turnReview.Changes.Select(c => c with { SourceStart = c.SourceStart + line.Index + bodyStart }));
-            foreach (var part in Chunker.Split(text, maximum))
+            foreach (var part in natural ? NaturalChunker.Split(text, maximum) : Chunker.Split(text, maximum))
             {
                 if (!joint || current.Count >= 16 || current.Sum(t => t.Text.Length + TagCharacters(t.Speaker)) + part.Length + TagCharacters(turn.Speaker) > 1800) Flush();
-                current.Add(new(turn.Speaker, part.Text, line.Index + bodyStart, turn.Text.Length));
+                current.Add(new(turn.Speaker, part.Text, line.Index + bodyStart, turn.Text.Length)); currentHard = natural && part.HardSplit;
                 if (!joint) Flush();
             }
         }
@@ -133,9 +153,9 @@ public static class PodcastScript
     public static void ValidateManifest(Job job)
     {
         var episode = job.Episode ?? throw new ArgumentException("Missing podcast cast."); episode.Validate();
-        if (job.ChunkingVersion != ChunkVersion || job.AudioContractVersion != AudioVersion || job.Prepared.Version != "podcast-prepare-v1") throw new ArgumentException("Unsupported podcast render contract.");
+        if ((!NaturalChunker.IsNatural(job) && (job.ChunkingVersion != ChunkVersion || job.AudioContractVersion != AudioVersion)) || job.Prepared.Version != "podcast-prepare-v1") throw new ArgumentException("Unsupported podcast render contract.");
         if (string.Concat(job.Prepared.Spans.Select(s => s.Original)) != job.Source || string.Concat(job.Prepared.Spans.Select(s => s.Narration)) != job.Prepared.Script) throw new ArgumentException("Podcast source coverage differs from its prepared script.");
-        Chunker.ValidateManifest(job.Chunks, job.Prepared.Script, 1800);
+        Chunker.ValidateManifest(job.Chunks, job.Prepared.Script, NaturalChunker.IsNatural(job) ? 900 : 1800);
         foreach (var unit in job.Chunks)
         {
             if (unit.Turns is null || unit.Turns.Count == 0 || string.Concat(unit.Turns.Select(t => t.Text)) != unit.Text || unit.Turns.Any(t => !episode.Speakers.Any(s => s.Name == t.Speaker)))

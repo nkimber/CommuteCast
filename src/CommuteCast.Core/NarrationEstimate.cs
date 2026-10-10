@@ -16,6 +16,7 @@ public sealed record NarrationEstimate(int WordCount, int SampleCount, EstimateR
         // Technical material remains uncertain: ranges are widened and are never a validation threshold.
         var samples = history.Where(j => j.Episode is null && j.Stage == JobStage.Exported && j.ExportCommitted && j.Attempts <= 1 &&
                 j.Settings.Engine == options.Engine && j.Settings.Voice == options.Voice &&
+                j.Settings.LocalVoice == options.LocalVoice &&
                 j.Settings.ProviderFingerprint == provider.Fingerprint && j.Settings.ProviderImageId == provider.ImageId &&
                 double.IsFinite(j.DurationSeconds) && j.DurationSeconds > 0 && double.IsFinite(j.Settings.Speed) && j.Settings.Speed is >= .7 and <= 1.4)
             .OrderByDescending(j => j.CreatedUtc).Take(30)

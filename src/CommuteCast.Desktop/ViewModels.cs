@@ -237,7 +237,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         Raise(nameof(HasAuditionSelection)); Raise(nameof(AuditionSelectionSummary));
     }
     public string Engine { get => settings.Engine; set { if (settings.Engine == value || value is null) return; narrationPreferences.SelectEngine(value); RefreshVoiceChoices(); Raise(); Raise(nameof(Voice)); RaiseProfile(); RaiseNarrationChoices(); ProviderChanged(); ServiceStatus = "Refreshing " + value + " voices…"; if (!loading) _ = RefreshChangedEngineAsync(value); } }
-    public string Voice { get => settings.Voice; set { if (value is not null && settings.Voice != value) { settings.Voice = value; Raise(); RaiseNarrationChoices(); } } }
+    public string Voice { get => settings.Voice; set { if (value is not null && settings.Voice != value) { settings.Voice = value; Raise(); RaiseLocalVoice(); RaiseNarrationChoices(); } } }
     public double Speed { get => settings.Speed; set { settings.Speed = Math.Round(value, 2); Raise(); Raise(nameof(SpeedLabel)); RaiseNarrationChoices(); } }
     public string SpeedLabel => $"{Speed:0.00}×";
     public bool UsingNarrationDefaults => narrationPreferences.UsingDefaults;
@@ -376,7 +376,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         TestFolderCommand = Command(async _ => { await publisher.TestDestinationAsync(settings.Destination); StatusMessage = "Local write access passed. OneDrive cloud upload is still unknown."; });
         ReadinessCommand = Command(_ => CheckReadinessAsync(true));
         SetupCommand = Command(async _ => { await RefreshSetupAsync(); StatusMessage = "Setup inspection finished. Corporate approval and real narration acceptance remain separate."; });
-        AuditionCommand = Command(p => AuditionAsync(p?.ToString() == "selection"));
+        AuditionCommand = Command(p => p?.ToString() == "expressive" ? AuditionAsync(AuditionRequest.Expressive(CapturePreviewSettings()), false) : AuditionAsync(p?.ToString() == "selection"));
         SaveSettingsCommand = Command(async _ => { await SaveSettingsAsync(); StatusMessage = "Settings saved. Use Save as my defaults to retain narration choices."; });
         SaveNarrationDefaultsCommand = Command(_ => SaveNarrationDefaultsAsync());
         UseNarrationDefaultsCommand = Command(_ => { RestoreNarrationDefaults(); StatusMessage = "Saved defaults restored for this narration."; return Task.CompletedTask; });
@@ -416,7 +416,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         });
         ReplaceDestinationCommand = Command(async _ => { var job = RequireSelected(); var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); await queue.RetryAsync(job.Id, path); StatusMessage = queue.Snapshot().Single(j => j.Id == job.Id).ExportNotice is { Length: > 0 } notice ? notice : "Narration queued in the selected output folder."; } });
         CancelCommand = Command(async _ => { var id = RequireSelected().Id; await queue.CancelAsync(id); StatusMessage = "Cancellation settled. Exported files remain exported; validated chunks are retained for retry."; });
-        ReuseCommand = Command(_ => { var job = RequireSelected(); DraftTitle = job.Title; Source = job.Source; Engine = job.Settings.Engine; Voice = job.Settings.Voice; Speed = job.Settings.Speed; ExcludeCode = job.Settings.ExcludeCode; Pronunciation = job.Settings.Pronunciation; settings.PronunciationProfile = job.Settings.Profile ?? new(); RaiseProfile(); if (job.Settings.Speech is { } speech) settings.SpeechDefaults[job.Settings.Engine] = speech; PodcastMode = job.Episode is not null; if (job.Episode is { } episode) LoadEpisode(episode); ProviderChanged(); Navigate("compose"); return Task.CompletedTask; });
+        ReuseCommand = Command(_ => { var job = RequireSelected(); DraftTitle = job.Title; Source = job.Source; Engine = job.Settings.Engine; Voice = job.Settings.Voice; Speed = job.Settings.Speed; ExcludeCode = job.Settings.ExcludeCode; Pronunciation = job.Settings.Pronunciation; settings.PronunciationProfile = job.Settings.Profile ?? new(); settings.LocalVoice = job.Settings.LocalVoice; RaiseProfile(); RaiseLocalVoice(); if (job.Settings.Speech is { } speech) settings.SpeechDefaults[job.Settings.Engine] = speech; PodcastMode = job.Episode is not null; if (job.Episode is { } episode) LoadEpisode(episode); ProviderChanged(); Navigate("compose"); return Task.CompletedTask; });
         DeleteCommand = Command(_ => DeleteAsync(false));
         DeleteAllCommand = Command(_ => DeleteAsync(true));
         DiagnosticsCommand = Command(_ => DiagnosticsAsync());
@@ -555,7 +555,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         var installed = settings.Providers.TryGetValue(Engine, out var info) && info.State == "ready" && (!IsHosted || info.Fingerprint == CurrentSpeech.Identity(Engine)) ? info.Voices : [];
         var choices = SpeechVoiceCatalog.Choices(Engine, installed, selected).Select(v => provider.VoiceNames.TryGetValue(Engine + ":" + v.Id, out var name) ? v with { DisplayName = name } : v).ToArray();
         if (!Voices.SequenceEqual(choices)) { Voices = new(choices); Raise(nameof(Voices)); }
-        Raise(nameof(Voice)); Raise(nameof(VoiceLibrarySummary)); RaiseNarrationChoices();
+        Raise(nameof(Voice)); Raise(nameof(VoiceLibrarySummary)); RaiseNarrationChoices(); RaiseLocalVoice();
     }
     private void RestoreNarrationDefaults()
     {
@@ -574,6 +574,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         if (!info.Voices.Contains(selected.Voice)) throw new ArgumentException("Choose an installed voice before saving narration defaults. Refresh voices to update the list.");
         if (narrationPreferences.Current != selected) throw new IOException("Narration choices changed while checking the voice. Save defaults again with your current choices.");
         settings.Providers[selected.Engine] = info;
+        selected.LocalVoice?.RequireAvailable(info, selected.Voice);
         var before = narrationPreferences.Defaults;
         var previousVoices = new Dictionary<string, string>(settings.DefaultVoices);
         narrationPreferences.SaveDefaults();
@@ -703,15 +704,17 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         if (!queueLoaded) throw new IOException("Local queue records have not loaded. Repair storage or restore a verified compatible backup before submitting. Your draft is retained.");
         var text = Source; var title = DraftTitle.Trim(); var choices = narrationPreferences.Current;
         var engine = Engine; var voice = Voice; var speed = Speed; var exclusion = ExcludeCode; var dictionary = Pronunciation; var destination = settings.Destination;
-        var profile = CaptureProfile(); var speech = IsHosted ? CurrentSpeech : null;
+        var profile = CaptureProfile(); var speech = IsHosted ? CurrentSpeech : null; var local = choices.LocalVoice;
+        if (!PodcastMode) local?.Validate(engine, voice);
         var episode = PodcastMode ? CaptureEpisode() : null;
         if (episode is not null && validatedPodcastIdentity != PodcastValidationIdentity(episode)) throw new ArgumentException("Validate the current podcast dialogue and cast before creating an MP3.");
         if (episode is not null)
         {
             voice = episode.Speakers[0].Voice; speed = episode.Speakers[0].Speed;
+            if (local is not null) local = local with { BlendVoice = "", NoiseScale = null, NoiseWidth = null, GainDb = 0 };
             if (speech is not null) speech = speech with { Delivery = episode.Speakers[0].Delivery, Emotion = episode.Speakers[0].Emotion };
         }
-        var snapshot = new NarrationSettings(engine, voice, speed, exclusion, dictionary, "", profile, Speech: speech);
+        var snapshot = new NarrationSettings(engine, voice, speed, exclusion, dictionary, "", profile, Speech: speech, LocalVoice: local);
         var rendered = episode is null ? default : PodcastScript.Prepare(text, episode, snapshot);
         var prepared = episode is null ? await Task.Run(() => TextPreparation.Prepare(text, exclusion, dictionary, profile, shutdown.Token), shutdown.Token) : rendered.Prepared;
         ValidateRetention();
@@ -725,9 +728,12 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         var info = await provider.CaptureForSubmissionAsync(engine, cached, shutdown.Token);
         if (episode is null ? !info.Voices.Contains(voice) : episode.Speakers.Any(s => !info.Voices.Contains(s.Voice))) throw new ArgumentException("Select an available voice for every speaker after checking readiness.");
         if (speech is not null && info.Fingerprint != speech.Identity(engine)) throw new IOException("Speech model changed during submission. Check the current model and submit again.");
+        if (episode is null) local?.RequireAvailable(info, voice);
+        else foreach (var member in episode.Speakers) PodcastScript.LocalDelivery(member, snapshot)?.RequireAvailable(info, member.Voice);
         settings.Providers[engine] = info;
-        var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint, profile, info.ImageId, speech), Destination = destination, Episode = episode };
+        var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint, profile, info.ImageId, speech, local), Destination = destination, Episode = episode };
         if (episode is not null) { job.Chunks = rendered.Units; job.ChunkingVersion = PodcastScript.ChunkVersion; job.AudioContractVersion = PodcastScript.AudioVersion; }
+        NaturalChunker.ConfigureNew(job);
         await queue.AddAsync(job, shutdown.Token);
         RefreshJobs(queue.Snapshot());
         RevealJob(Jobs.Single(j => j.Id == job.Id));
@@ -743,7 +749,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         var request = selection ? AuditionRequest.Selection(selectionSource, selectionStart, selectionLength, snapshot) : AuditionRequest.Standard(snapshot);
         await AuditionAsync(request, selection);
     }
-    private NarrationSettings CapturePreviewSettings() => new(Engine, Voice, Speed, ExcludeCode, Pronunciation, "", CaptureProfile(), Speech: IsHosted ? CurrentSpeech : null);
+    private NarrationSettings CapturePreviewSettings() => new(Engine, Voice, Speed, ExcludeCode, Pronunciation, "", CaptureProfile(), Speech: IsHosted ? CurrentSpeech : null, LocalVoice: narrationPreferences.Current.LocalVoice);
     private async Task AuditionAsync(AuditionRequest request, bool selection)
     {
         if (queue.PowerSuspended) throw new IOException("Local speech is held after suspend. Recheck wake recovery before auditioning.");
@@ -759,8 +765,8 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
             if (generation != auditionGeneration || cancellation.IsCancellationRequested)
             { await auditions.RemoveAsync(audio); return; }
             auditionAudio = audio;
-            Playback.Open(OwnedFileRemoval.Resolve(Workspace.Root, audio.RelativePath), selection ? "Selected spoken excerpt" : "Standard voice sample");
-            StatusMessage = selection ? "Playing the selected excerpt with its captured voice and pronunciation settings." : "Playing the standard voice sample with its captured pronunciation settings.";
+            Playback.Open(OwnedFileRemoval.Resolve(Workspace.Root, audio.RelativePath), selection ? "Selected spoken excerpt" : request.Source == AuditionRequest.ExpressiveSample ? "Expressive voice sample" : "Standard voice sample");
+            StatusMessage = selection ? "Playing the selected excerpt with its captured voice and pronunciation settings." : request.Source == AuditionRequest.ExpressiveSample ? "Playing the expressive sample with its captured voice profile." : "Playing the standard voice sample with its captured pronunciation settings.";
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         { if (!shutdown.IsCancellationRequested && generation == auditionGeneration) StatusMessage = "Audition stopped."; }

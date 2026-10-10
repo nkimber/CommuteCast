@@ -204,7 +204,9 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
                 if (admission.GetInt32() != 1 || instance is null || !Regex.IsMatch(instance, "^[a-f0-9]{32}$") || sequence is < 0 or >= 9007199254740991)
                     throw new IOException("Speech reservation metadata is incompatible. Reprovision the local service explicitly.");
             }
-            return new(engine, fingerprint, voices, state, active, InstanceId: instance, AdmissionSequence: sequence);
+            var quality = root.TryGetProperty("localVoiceContract", out var contract) ? contract.GetInt32() : 0;
+            if (quality is < 0 or > 1) throw new IOException("Unsupported local voice profile contract.");
+            return new(engine, fingerprint, voices, state, active, InstanceId: instance, AdmissionSequence: sequence, LocalVoiceContract: quality);
         }
         catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException) { throw new IOException("Speech health returned incomplete or incompatible metadata. No text has been sent.", error); }
     }
@@ -260,6 +262,7 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
     {
         settings.ValidateProviderImage();
         settings.Profile?.Validate(settings.Engine);
+        settings.LocalVoice?.Validate(settings.Engine, settings.Voice);
         if (string.IsNullOrWhiteSpace(text) || text.Length > 900 || settings.Speed is < .7 or > 1.4 || !double.IsFinite(settings.Speed)) throw new ArgumentException("Choose valid text within the 900-character provider limit and a supported speaking pace.");
         output = Path.GetFullPath(output);
         if (!Workspace.IsWithin(workspace.Root, output)) throw new IOException("Speech output must remain in the private workspace.");
@@ -303,13 +306,16 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
                         if (info.State != "ready" || info.Fingerprint != settings.ProviderFingerprint || !info.Voices.Contains(settings.Voice)) throw new IOException("Speech identity, voice, or readiness changed while waiting. Restore the configured service, then retry.");
                     }
                     RequireAdmission(info);
+                    settings.LocalVoice?.RequireAvailable(info, settings.Voice);
                     await RequireUnchangedPinAsync(image, deadline.Token);
                     Serilog.Log.Information("Speech attempt {Attempt} using {Engine}, instance {ProviderInstance}, sequence {AdmissionSequence}", attempt + 1, settings.Engine, info.InstanceId, info.AdmissionSequence!.Value + 1);
                     var admission = new PendingSpeechAdmission(1, settings.Engine, image, settings.ProviderFingerprint, info.InstanceId!, info.AdmissionSequence!.Value + 1);
                     settlementAttempted = false;
                     await admission.SaveAsync(workspace, deadline.Token);
                     if (await AdmissionControlAsync(admission, "reserve", deadline.Token) != "reserved") throw new IOException("Speech reservation was not admitted. No source text was sent.");
-                    using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(settings.Engine, "speech")) { Content = JsonContent.Create(new { text, voice = settings.Voice, speed = settings.Speed, fingerprint = settings.ProviderFingerprint, instance = admission.Instance, sequence = admission.Sequence }) };
+                    var body = new Dictionary<string, object?> { ["text"] = text, ["voice"] = settings.Voice, ["speed"] = settings.Speed, ["fingerprint"] = settings.ProviderFingerprint, ["instance"] = admission.Instance, ["sequence"] = admission.Sequence };
+                    if (settings.LocalVoice is { } local) body["localVoice"] = local;
+                    using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(settings.Engine, "speech")) { Content = JsonContent.Create(body) };
                     job?.Activity.Update("Generating this segment's audio");
                     using var response = await SendAsync(request, deadline.Token);
                     if ((int)response.StatusCode is 429 or 500 or 502 or 503 or 504) throw new HttpRequestException("The local speech service returned a transient failure.", null, response.StatusCode);

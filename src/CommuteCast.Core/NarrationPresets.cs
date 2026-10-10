@@ -11,9 +11,9 @@ public sealed class NarrationPresets
         this.settings = settings;
         settings.NarrationPresets ??=
         [
-            new("Technical reading", new("kokoro", "af_heart", 1, true, "", new(Numbers: NumberReading.ScientificWords, Acronyms: AcronymReading.SpellUppercaseWords))),
-            new("Relaxed storytelling", new("kokoro", "af_heart", .9, false, "", new(Numbers: NumberReading.NumberWords))),
-            new("Fast briefing", new("piper", "en_US-lessac-medium", 1.2, true, "", new()))
+            new("Technical reading", new("kokoro", "af_heart", 1, true, "", new(Numbers: NumberReading.ScientificWords, Acronyms: AcronymReading.SpellUppercaseWords), new())),
+            new("Relaxed storytelling", new("kokoro", "af_heart", .9, false, "", new(Numbers: NumberReading.NumberWords), new())),
+            new("Fast briefing", new("piper", "en_US-lessac-medium", 1.2, true, "", new(), new()))
         ];
     }
     public void Save(string name, NarrationOptions options)

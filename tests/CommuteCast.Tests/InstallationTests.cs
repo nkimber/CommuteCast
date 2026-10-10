@@ -236,7 +236,7 @@ public class InstallationTests
         await File.WriteAllTextAsync(Path.Combine(path, ReleasePackage.ManifestName), JsonSerializer.Serialize(manifest with { PackageId = identity }));
         Assert.Equal(maximumSchema, (await ReleasePackage.ValidateAsync(path)).MaximumSchema); return path;
     }
-    [Theory] [InlineData(2)] [InlineData(3)]
+    [Theory] [InlineData(2)] [InlineData(3)] [InlineData(5)]
     public async Task OlderReleaseCannotActivateOverPreviewOwnershipAwareState(int maximumSchema)
     {
         using var test = new TestWorkspace(); await SeedAsync(test, "Schema-four state");

@@ -30,7 +30,9 @@ public sealed record AuditionRequest
         return new(text, null, null, Validate(settings), true);
     }
 
+    public const string ExpressiveSample = "I thought we had the answer. Then one small detail changed everything. Really? Yes—and that is the interesting part. Imagine a quiet street becoming a busy station: people arriving, doors opening, and a city finding a new rhythm. What happens next? Let's slow down and follow the evidence.\n\nThere is a practical lesson here. Small changes can have large consequences, but we need to understand why.";
     public static AuditionRequest Standard(NarrationSettings settings) => new(StandardSample, null, null, Validate(settings));
+    public static AuditionRequest Expressive(NarrationSettings settings) => new(ExpressiveSample, null, null, Validate(settings));
     public static AuditionRequest Selection(string source, int start, int length, NarrationSettings settings)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -61,6 +63,7 @@ public sealed record AuditionRequest
         if (!SpeechProviders.IsKnown(settings.Engine) || string.IsNullOrWhiteSpace(settings.Voice) || !double.IsFinite(settings.Speed) || settings.Speed is < .7 or > 1.4)
             throw new ArgumentException("Choose an installed speech engine, voice and supported pace before auditioning.");
         settings.Speech?.Validate(settings.Engine); settings.Profile?.Validate(settings.Engine); TextPreparation.ValidateDictionary(settings.Pronunciation);
+        settings.LocalVoice?.Validate(settings.Engine, settings.Voice);
         return settings with { ProviderFingerprint = "", ProviderImageId = null };
     }
     public PreparedText Prepare(CancellationToken ct = default)

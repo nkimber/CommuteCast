@@ -13,5 +13,6 @@
     <Project Path="tools/CommuteCast.Maintenance/CommuteCast.Maintenance.csproj" />
     <Project Path="tools/CommuteCast.Launcher/CommuteCast.Launcher.csproj" />
     <Project Path="tools/CommuteCast.Pilot/CommuteCast.Pilot.csproj" />
+    <Project Path="tools/CommuteCast.VoiceQuality/CommuteCast.VoiceQuality.csproj" />
   </Folder>
 </Solution>

@@ -10,8 +10,8 @@ public interface ISchemaMigrationObserver
 }
 public static class SqliteSchema
 {
-    // Version 5 fences immutable podcast casts and hosted request journals from older runtimes.
-    public const int CurrentVersion = 5;
+    // Version 6 fences local voice recipes and speaker pronunciation overrides from older runtimes.
+    public const int CurrentVersion = 6;
     public const int ApplicationId = 0x434D4354;
     public const string AppVersion = "0.1.0";
     public static string ConnectionString(string path, SqliteOpenMode mode = SqliteOpenMode.ReadWriteCreate) =>

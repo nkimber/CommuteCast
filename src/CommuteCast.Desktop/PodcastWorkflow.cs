@@ -11,8 +11,9 @@ public sealed class SpeakerEditor : Observable
 {
     private PodcastSpeaker value;
     private readonly Action changed;
+    private readonly Func<string, string, IReadOnlyList<SpeechVoiceChoice>>? blends;
     private readonly Action<SpeakerEditor, SpeakerPersonality>? bindPersonality;
-    public SpeakerEditor(PodcastSpeaker speaker, Action changed, Action<SpeakerEditor, SpeakerPersonality>? bindPersonality = null) { value = speaker; this.changed = changed; this.bindPersonality = bindPersonality; }
+    public SpeakerEditor(PodcastSpeaker speaker, Action changed, Action<SpeakerEditor, SpeakerPersonality>? bindPersonality = null, Func<string, string, IReadOnlyList<SpeechVoiceChoice>>? blends = null) { value = speaker; this.changed = changed; this.bindPersonality = bindPersonality; this.blends = blends; }
     public PodcastSpeaker Capture() => value;
     private void Update(PodcastSpeaker next) { value = next; Raise(null); changed(); }
     public string Name { get => value.Name; set => Update(this.value with { Name = value }); }
@@ -23,6 +24,18 @@ public sealed class SpeakerEditor : Observable
     public double Speed { get => value.Speed; set => Update(this.value with { Speed = Math.Round(value, 2) }); }
     public string Delivery { get => value.Delivery; set => Update(this.value with { Delivery = value }); }
     public string Emotion { get => value.Emotion; set => Update(this.value with { Emotion = value }); }
+    public LocalVoiceOptions? LocalVoice { get => value.LocalVoice; set => Update(this.value with { LocalVoice = value }); }
+    private LocalVoiceOptions Local => value.LocalVoice ?? new();
+    public string LocalBlendVoice { get => Local.BlendVoice; set { if (value is not null) LocalVoice = Local with { BlendVoice = value }; } }
+    public double LocalBlendWeight { get => Local.BlendWeight; set => LocalVoice = Local with { BlendWeight = Math.Round(value, 2) }; }
+    public IReadOnlyList<SpeechVoiceChoice> AvailableBlends => blends?.Invoke(value.Voice, Local.BlendVoice) ?? [];
+    public bool TuneLocalVariation { get => Local.NoiseScale is not null || Local.NoiseWidth is not null; set => LocalVoice = Local with { NoiseScale = value ? .667 : null, NoiseWidth = value ? .8 : null }; }
+    public double LocalNoiseScale { get => Local.NoiseScale ?? .667; set => LocalVoice = Local with { NoiseScale = Math.Round(value, 3) }; }
+    public double LocalNoiseWidth { get => Local.NoiseWidth ?? .8; set => LocalVoice = Local with { NoiseWidth = Math.Round(value, 3) }; }
+    public double LocalGainDb { get => Local.GainDb; set => LocalVoice = Local with { GainDb = Math.Round(value, 1) }; }
+    public double LocalTurnPauseMs { get => Local.TurnPauseMs; set => LocalVoice = Local with { TurnPauseMs = (int)Math.Round(value) }; }
+    public string Pronunciation { get => value.Pronunciation ?? ""; set => Update(this.value with { Pronunciation = string.IsNullOrEmpty(value) ? null : value }); }
+    internal void RefreshLocal() => Raise(null);
     private SpeakerPersonality? personality;
     public SpeakerPersonality? Personality { get => personality; set { personality = value; if (value is not null) { Update(this.value with { Name = value.Name, Expertise = value.Expertise, Style = value.Style }); bindPersonality?.Invoke(this, value); } Raise(); } }
     public string[] Roles { get; } = ["Host", "Guest"];
@@ -92,13 +105,15 @@ public sealed partial class MainViewModel
         {
             if (p is not SpeakerEditor row) return; var s = row.Capture();
             var validation = new PodcastEpisode(PodcastDefaults.Formats[0], [s with { Role = "Host" }, new(s.Name == "Validation" ? "Other" : "Validation", "Host", "", "", "")]); validation.Validate(false);
+            if (!IsHosted) s.LocalVoice?.Validate(Engine, s.Voice);
+            TextPreparation.ValidateDictionary(s.Pronunciation ?? "");
             if (SpeakerLibrary.Count >= 100 && row.Personality is null) throw new ArgumentException("The personality library supports 100 entries.");
             var entry = new SpeakerPersonality(row.Personality?.Id ?? Guid.NewGuid().ToString("N"), s.Name, s.Expertise, s.Style, s.Delivery, s.Emotion);
             var old = SpeakerLibrary.FirstOrDefault(x => x.Id == entry.Id); if (old is not null) SpeakerLibrary.Remove(old); SpeakerLibrary.Add(entry); settings.SpeakerLibrary = SpeakerLibrary.ToList();
             if (s.Voice.Length > 0)
             {
                 var model = IsHosted ? SpeechModel : ""; settings.SpeakerVoiceBindings.RemoveAll(b => b.PersonalityId == entry.Id && b.Provider == Engine && b.Model == model);
-                settings.SpeakerVoiceBindings.Add(new(entry.Id, Engine, model, s.Voice, s.Speed, s.Delivery, s.Emotion));
+                settings.SpeakerVoiceBindings.Add(new(entry.Id, Engine, model, s.Voice, s.Speed, s.Delivery, s.Emotion, IsHosted ? null : s.LocalVoice, s.Pronunciation));
             }
             row.Personality = entry; await SaveSettingsAsync(); StatusMessage = "Speaker personality and provider voice binding saved. Existing episodes retain their captured cast.";
         });
@@ -115,7 +130,7 @@ public sealed partial class MainViewModel
             PodcastValidation = $"Valid dialogue · {turns.Count} turns · {units.Count} render blocks · {total:N0} spoken words (about {total / 160.0:0.0}–{total / 140.0:0.0} minutes).\nSpeaker balance: {balance}.\n" + (episode.Speakers.Select(s => s.Voice).Distinct().Count() < episode.Speakers.Count ? "Some speakers share a voice; audition for recognizability.\n" : "") + "Review spoken text before generation. Validation checks format, not factual accuracy.";
             StatusMessage = PodcastValidation; return Task.CompletedTask;
         });
-        AuditionSpeakerCommand = Command(async p => { if (p is not SpeakerEditor row) return; var s = row.Capture(); var snapshot = CapturePreviewSettings() with { Voice = s.Voice, Speed = s.Speed, Speech = IsHosted ? CurrentSpeech with { Delivery = s.Delivery, Emotion = s.Emotion } : null }; await AuditionAsync(AuditionRequest.Standard(snapshot), false); });
+        AuditionSpeakerCommand = Command(async p => { if (p is not SpeakerEditor row) return; var s = row.Capture(); var current = CapturePreviewSettings(); var snapshot = current with { Voice = s.Voice, Speed = s.Speed, Pronunciation = PodcastScript.PronunciationFor(s, current), LocalVoice = PodcastScript.LocalDelivery(s, current), Speech = IsHosted ? CurrentSpeech with { Delivery = s.Delivery, Emotion = s.Emotion } : null }; await AuditionAsync(AuditionRequest.Expressive(snapshot), false); });
         RemoveHostedKeyCommand = Command(_ => { if (IsHosted) speechSecrets.Remove(Engine); Raise(nameof(HostedKeyStatus)); return Task.CompletedTask; });
         RefreshHostedUsageCommand = Command(async _ => { var requests = await new HostedAuditionHistory(Workspace).RecentAsync(shutdown.Token); HostedUsageSummary = requests.Count == 0 ? "No hosted audition requests recorded." : "Recent hosted auditions (provider billing is authoritative):\n" + string.Join("\n", requests.Take(20).Select(a => $"{a.StartedUtc:MMM d HH:mm} · {a.Provider} · {a.State} · request {a.RequestId ?? "ID unavailable"}")); });
     }
@@ -127,7 +142,7 @@ public sealed partial class MainViewModel
     private void AddDefaultSpeaker(int index)
     {
         var p = PodcastDefaults.Personalities[index % 5]; var name = p.Name; var n = 2; while (Cast.Any(s => s.Name == name)) name = p.Name + " " + n++;
-        Cast.Add(new(new(name, index < PodcastFormat.Hosts ? "Host" : "Guest", p.Expertise, p.Style, ""), PodcastChanged, BindPersonality));
+        Cast.Add(new(new(name, index < PodcastFormat.Hosts ? "Host" : "Guest", p.Expertise, p.Style, ""), PodcastChanged, BindPersonality, VoiceBlends));
     }
     private void ApplyFormat()
     {
@@ -138,7 +153,7 @@ public sealed partial class MainViewModel
     internal PodcastEpisode CaptureEpisode() => new(PodcastFormat, Cast.Select(s => s.Capture()).ToArray(), DialogueMode);
     internal void LoadEpisode(PodcastEpisode episode)
     {
-        podcastFormat = episode.Format; dialogueMode = episode.Dialogue; Cast.Clear(); foreach (var s in episode.Speakers) Cast.Add(new(s, PodcastChanged, BindPersonality)); Raise(null);
+        podcastFormat = episode.Format; dialogueMode = episode.Dialogue; Cast.Clear(); foreach (var s in episode.Speakers) Cast.Add(new(s, PodcastChanged, BindPersonality, VoiceBlends)); Raise(null);
     }
     private string PodcastValidationIdentity(PodcastEpisode episode) => Job.Hash(Source + episode.Identity + Engine + System.Text.Json.JsonSerializer.Serialize(CapturePreviewSettings()));
     private (PodcastEpisode Episode, PreparedText Prepared, List<TextChunk> Units) PreparePodcast(string text, NarrationSettings snapshot)
@@ -149,7 +164,7 @@ public sealed partial class MainViewModel
     {
         if (PodcastMode) podcastTouched = true;
         validatedPodcastIdentity = null; PodcastValidation = "Cast or text changed. Validate dialogue before creating an MP3."; Raise(nameof(CastSummary)); RaisePromptState(); ScheduleDraftSave();
-        Raise(nameof(PodcastValidationHeading));
+        Raise(nameof(PodcastValidationHeading)); Raise(nameof(IsKokoroNarrator)); Raise(nameof(IsPiperNarrator));
     }
     private void HostedChanged() { Raise(null); PodcastChanged(); }
     private void ProviderChanged()
@@ -159,12 +174,13 @@ public sealed partial class MainViewModel
     }
     private void ClearUnsupportedCastControls()
     {
-        foreach (var row in Cast) { if (!SupportsDelivery && row.Delivery.Length > 0) row.Delivery = ""; if (!SupportsEmotion && row.Emotion.Length > 0) row.Emotion = ""; }
+        foreach (var row in Cast) { if ((IsHosted || IsPiperVoice && row.LocalVoice?.BlendVoice.Length > 0 || IsKokoroVoice && (row.LocalVoice?.NoiseScale is not null || row.LocalVoice?.NoiseWidth is not null)) && row.LocalVoice is not null) row.LocalVoice = null; if (!SupportsDelivery && row.Delivery.Length > 0) row.Delivery = ""; if (!SupportsEmotion && row.Emotion.Length > 0) row.Emotion = ""; }
     }
     private void BindPersonality(SpeakerEditor row, SpeakerPersonality personality)
     {
         var model = IsHosted ? SpeechModel : ""; var binding = settings.SpeakerVoiceBindings.FirstOrDefault(b => b.PersonalityId == personality.Id && b.Provider == Engine && b.Model == model);
         row.Voice = binding?.Voice ?? ""; row.Speed = binding?.Speed ?? 1;
+        row.LocalVoice = IsHosted ? null : binding?.LocalVoice; row.Pronunciation = binding?.Pronunciation ?? "";
         row.Delivery = SupportsDelivery ? binding?.Delivery ?? personality.Delivery : ""; row.Emotion = SupportsEmotion ? binding?.Emotion ?? personality.Emotion : "";
     }
     internal void RestorePodcastDraft(PodcastDraft? draft) { if (draft is null) return; podcastTouched = true; LoadEpisode(draft.Episode); PodcastMode = draft.Enabled; }

@@ -15,7 +15,8 @@ public record TextChunk(int Index, int Start, int Length, string Text, bool Hard
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<PodcastTurn>? Turns = null);
 public record NarrationSettings(string Engine, string Voice, double Speed, bool ExcludeCode, string Pronunciation, string ProviderFingerprint, PronunciationProfile? Profile = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProviderImageId = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SpeechConfiguration? Speech = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SpeechConfiguration? Speech = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LocalVoiceOptions? LocalVoice = null)
 {
     public void ValidateProviderImage()
     {
@@ -67,7 +68,7 @@ public sealed class Job
         ? Hash(JsonSerializer.Serialize(new { Settings = FingerprintSettings(), Prepared.Version, Prepared.Script, AudioContractVersion, ChunkingVersion }))
         : Hash(JsonSerializer.Serialize(new { Settings = FingerprintSettings(), Prepared.Version, Prepared.Script, AudioContractVersion, ChunkingVersion, Episode, Chunks }));
     // Preserve the exact six-field legacy and seven-field pronunciation snapshots when no image was captured.
-    private object FingerprintSettings() => Settings.Profile is null && Settings.ProviderImageId is null && Settings.Speech is null
+    private object FingerprintSettings() => Settings.Profile is null && Settings.ProviderImageId is null && Settings.Speech is null && Settings.LocalVoice is null
         ? new { Settings.Engine, Settings.Voice, Settings.Speed, Settings.ExcludeCode, Settings.Pronunciation, Settings.ProviderFingerprint }
         : Settings;
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
@@ -79,7 +80,7 @@ public record PrivateArtifactReceipt(string RelativePath, string Hash,
 public record ExportStagingIdentity(int FormatVersion, ulong VolumeSerialNumber, string FileId, long CreationFileTime);
 public record ProviderInfo(string Engine, string Fingerprint, string[] Voices, string State, int Active,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ImageId = null,
-    string? InstanceId = null, long? AdmissionSequence = null);
+    string? InstanceId = null, long? AdmissionSequence = null, int LocalVoiceContract = 0);
 public record AudioInfo(double Duration, int SampleRate, int Channels, long Samples, double Peak, double Rms);
 public sealed class AppSettings
 {
@@ -87,6 +88,7 @@ public sealed class AppSettings
     public string Engine { get; set; } = "kokoro";
     public string Voice { get; set; } = "af_heart";
     public double Speed { get; set; } = 1;
+    public LocalVoiceOptions? LocalVoice { get; set; } = new();
     public NarrationOptions? NarrationDefaults { get; set; }
     public Dictionary<string, string> DefaultVoices { get; set; } = [];
     public List<NarrationPreset>? NarrationPresets { get; set; }

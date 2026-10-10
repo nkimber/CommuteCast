@@ -144,9 +144,9 @@ if ($ActivationCrashCheckpoint) {
         }
         $observed = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
         if ($observed.processId -ne $child.Id -or $child.HasExited -or $observed.point -ne $ActivationCrashCheckpoint -or $observed.PackageId -ne $sealed.PackageId) { throw 'Activation marker does not identify the live owned process and revision.' }
-        Same $observed.schemaVersion $(if ($LegacySchemaThree -and $ActivationCrashCheckpoint -in @('Prepared','MigrationBeforeCommit')) { 3 } else { 5 }) 'Committed schema at host-loss boundary'
+        Same $observed.schemaVersion $(if ($LegacySchemaThree -and $ActivationCrashCheckpoint -in @('Prepared','MigrationBeforeCommit')) { 3 } else { 6 }) 'Committed schema at host-loss boundary'
         if ($ActivationCrashCheckpoint -eq 'MigrationBeforeCommit') {
-            Same $observed.migrationFrom 3 'Migration transaction source'; Same $observed.migrationTo 5 'Migration transaction target'
+            Same $observed.migrationFrom 3 'Migration transaction source'; Same $observed.migrationTo 6 'Migration transaction target'
         }
         $child.Kill($false)
         if (-not $child.WaitForExit(10000)) { throw 'Owned activation host did not terminate.' }
@@ -158,7 +158,7 @@ if ($ActivationCrashCheckpoint) {
     $recovery = Invoke-Tool -Arguments @('recover-install','--root',$privateRoot,'--install-root',$installRoot)
     Same $recovery.recovered $true 'Pending activation recovered'
     $recoveredSchema = (Fixture-State inspect-schema).version
-    Same $recoveredSchema $(if ($LegacySchemaThree -and $ActivationCrashCheckpoint -ne 'Activated') { 3 } else { 5 }) 'Schema before ordinary queue reopening'
+    Same $recoveredSchema $(if ($LegacySchemaThree -and $ActivationCrashCheckpoint -ne 'Activated') { 3 } else { 6 }) 'Schema before ordinary queue reopening'
     $afterCrash = Invoke-Tool -Arguments @('inspect-install','--root',$privateRoot,'--install-root',$installRoot)
     Same $afterCrash.State.CurrentPackageId $(if ($ActivationCrashCheckpoint -eq 'Activated') { $sealed.PackageId } else { $first.State.CurrentPackageId }) 'Recovered activation side of commit'
     Same ((Fixture-State inspect) | ConvertTo-Json -Depth 8 -Compress) ($beforeCrashState | ConvertTo-Json -Depth 8 -Compress) 'Activation host loss preserves frozen private state'

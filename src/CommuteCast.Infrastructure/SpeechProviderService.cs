@@ -35,7 +35,7 @@ public sealed class SpeechProviderService(Workspace workspace, AppSettings setti
         PodcastScript.ValidateManifest(job);
         var turns = unit.Turns!; var speaker = job.Episode.Speakers.Single(s => s.Name == turns[0].Speaker);
         var speech = job.Settings.Speech is { } config ? config with { Delivery = speaker.Delivery, Emotion = speaker.Emotion } : null;
-        var snapshot = job.Settings with { Voice = speaker.Voice, Speed = speaker.Speed, Speech = speech };
+        var snapshot = job.Settings with { Voice = speaker.Voice, Speed = speaker.Speed, Speech = speech, LocalVoice = PodcastScript.LocalDelivery(speaker, job.Settings) };
         if (SpeechProviders.IsHosted(snapshot.Engine))
         {
             foreach (var name in turns.Select(t => t.Speaker).Distinct())

@@ -4,9 +4,11 @@ A native Windows WPF utility that turns pasted text into a single MP3 using loca
 
 Local Kokoro/Piper and hosted ElevenLabs, OpenAI, Cartesia and Google Gemini are available through the same queue. Podcast mode supports two to five speakers with reusable personalities, provider voice bindings and formats. Hosted adapters have automated contract/audio tests; live provider-account and listening acceptance remains pending. See [Podcast and hosted speech](documents/Podcast-and-Hosted-Speech.md) for setup, workflow and limits, and the [original implementation plan](documents/Multi-Provider-TTS-and-Podcast-Plan.md) for design decisions.
 
+Local voices now have saved delivery profiles, Kokoro blends, Piper variation controls, speaker pronunciation overrides, expressive auditions and natural phrasing with final loudness matching. See [Local voice quality](documents/Local-Voice-Quality.md) for controls, service update instructions, measured comparisons and optional expressive-model trials.
+
 ## Build in Visual Studio
 
-Open **CommuteCast.sln** in Visual Studio 2026 with the **.NET desktop development** workload and .NET 10 SDK. The checked-in `.vsconfig` identifies that workload. The solution contains all nine projects and lists **CommuteCast.Desktop** first. Select it as the startup project if Visual Studio has saved a different choice, build the solution, then press F5 to run the native WPF client. **CommuteCast.slnx** contains the same projects for tools that use the XML solution format. Microsoft documents this WPF/.NET 10 setup in its [Visual Studio tutorial](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/getting-started).
+Open **CommuteCast.sln** in Visual Studio 2026 with the **.NET desktop development** workload and .NET 10 SDK. The checked-in `.vsconfig` identifies that workload. The solution contains all ten projects and lists **CommuteCast.Desktop** first. Select it as the startup project if Visual Studio has saved a different choice, build the solution, then press F5 to run the native WPF client. **CommuteCast.slnx** contains the same projects for tools that use the XML solution format. Microsoft documents this WPF/.NET 10 setup in its [Visual Studio tutorial](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/getting-started).
 
 The client project sets `OutputType=WinExe`, `TargetFramework=net10.0-windows`, and `UseWPF=true`; its application and windows are compiled XAML with C# code-behind. A Release build produces `src\CommuteCast.Desktop\bin\Release\net10.0-windows\CommuteCast.Desktop.exe`. FFmpeg is required for audio generation; Docker and speech provisioning are additionally required for local narration; they are not required to compile or open the client.
 
@@ -14,7 +16,7 @@ The client project sets `OutputType=WinExe`, `TargetFramework=net10.0-windows`, 
 dotnet build .\CommuteCast.sln -c Release
 ```
 
-If opening the solution appears to close Visual Studio, check whether an existing **CommuteCast** window is still open. A loaded solution shows **9 of 9 projects** in Solution Explorer. To capture a recurring failure, launch the IDE directly with [activity logging](https://learn.microsoft.com/en-us/visualstudio/ide/reference/log-devenv-exe?view=visualstudio) from the repository folder:
+If opening the solution appears to close Visual Studio, check whether an existing **CommuteCast** window is still open. A loaded solution shows **10 of 10 projects** in Solution Explorer. To capture a recurring failure, launch the IDE directly with [activity logging](https://learn.microsoft.com/en-us/visualstudio/ide/reference/log-devenv-exe?view=visualstudio) from the repository folder:
 
 ```powershell
 $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Workload.ManagedDesktop -property installationPath

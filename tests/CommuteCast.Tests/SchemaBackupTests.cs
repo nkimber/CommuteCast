@@ -7,6 +7,31 @@ namespace CommuteCast.Tests;
 
 public class SchemaBackupTests
 {
+    [Fact] public async Task VersionFiveMigrationFencesVoiceRecipesAndPreservesExactLegacyPayloadAndSnapshot()
+    {
+        using var test = new TestWorkspace(); var store = new SqliteJobStore(test.Workspace); await store.SaveAsync(MakeJob());
+        await ExecuteAsync(Database(test), "DELETE FROM schema_history WHERE version>5; PRAGMA user_version=5");
+        var original = await PayloadAsync(Database(test)); Assert.Equal(5, await SqliteSchema.ValidateDatabaseAsync(Database(test)));
+        await store.LoadAsync(); Assert.Equal(original, await PayloadAsync(Database(test)));
+        Assert.Equal(6, await SqliteSchema.ValidateDatabaseAsync(Database(test)));
+        var snapshot = Assert.Single(Directory.GetFiles(Path.Combine(test.Workspace.Root, "schema-backups"), "*.db"));
+        Assert.Equal(5, await SqliteSchema.ValidateDatabaseAsync(snapshot)); Assert.Equal(original, await PayloadAsync(snapshot));
+        using var receipt = JsonDocument.Parse(await File.ReadAllTextAsync(snapshot + ".json"));
+        Assert.Equal(await Workspace.HashFileAsync(snapshot), receipt.RootElement.GetProperty("sha256").GetString());
+        Assert.Equal(5, receipt.RootElement.GetProperty("fromVersion").GetInt32()); Assert.Equal(6, receipt.RootElement.GetProperty("toVersion").GetInt32());
+    }
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public async Task VersionFiveMigrationFailureOrCancellationPreservesExactPayloadAndHistory(bool cancel)
+    {
+        using var test = new TestWorkspace(); await new SqliteJobStore(test.Workspace).SaveAsync(MakeJob());
+        await ExecuteAsync(Database(test), "DELETE FROM schema_history WHERE version>5; PRAGMA user_version=5");
+        var original = await PayloadAsync(Database(test)); using var cancellation = new CancellationTokenSource();
+        var store = new SqliteJobStore(test.Workspace, cancel ? new CancelMigration(cancellation) : new FailingMigration());
+        if (cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.LoadAsync(cancellation.Token));
+        else await Assert.ThrowsAsync<IOException>(() => store.LoadAsync());
+        Assert.Equal(5, await SqliteSchema.ValidateDatabaseAsync(Database(test))); Assert.Equal(original, await PayloadAsync(Database(test)));
+        Assert.Equal(5, await ScalarAsync(Database(test), "SELECT count(*) FROM schema_history"));
+    }
     [Fact] public async Task VersionThreeMigrationAddsEmptyPreviewOwnershipAndPreservesExactPayloadAndSnapshot()
     {
         using var test = new TestWorkspace(); var job = MakeJob();

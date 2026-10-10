@@ -16,7 +16,7 @@ import numpy as np
 import onnxruntime as ort
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 ENGINE = os.environ.get("COMMUTECAST_ENGINE", "kokoro")
 state = "loading"
@@ -101,7 +101,7 @@ def health():
     with gate:
         return {"service": "CommuteCast", "contract": 1, "engine": ENGINE,
                 "fingerprint": fingerprint, "voices": voices, "state": state, "active": active, "execution": execution,
-                "admission": 1, "instance": instance, "sequence": sequence}
+                "admission": 1, "instance": instance, "sequence": sequence, "localVoiceContract": 1}
 
 
 class AdmissionRequest(BaseModel):
@@ -152,11 +152,32 @@ def settle(request: AdmissionRequest):
         return admission_result(request, "active" if active else "settled")
 
 
+class LocalVoiceOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    naturalPhrasing: bool = True
+    blendVoice: str = Field(default="", max_length=80)
+    blendWeight: float = Field(default=.25, ge=0, le=1)
+    noiseScale: float | None = Field(default=None, ge=0, le=1.5)
+    noiseWidth: float | None = Field(default=None, ge=0, le=1.5)
+    gainDb: float = Field(default=0, ge=-12, le=0)
+    sentencePauseMs: int = Field(default=220, ge=0, le=1200)
+    paragraphPauseMs: int = Field(default=500, ge=0, le=2000)
+    turnPauseMs: int = Field(default=140, ge=0, le=1200)
+    version: int = Field(default=1, ge=1, le=1)
+
+    def validate_engine(self, engine, voice, installed):
+        if engine == "piper" and self.blendVoice or engine == "kokoro" and (self.noiseScale is not None or self.noiseWidth is not None):
+            raise HTTPException(409, "Local voice controls do not match the engine")
+        if self.blendVoice and (self.blendVoice not in installed or self.blendVoice == voice or self.blendVoice[0] != voice[0]):
+            raise HTTPException(409, "Choose two installed Kokoro voices with the same accent")
+
+
 class SpeechRequest(AdmissionRequest):
     text: str = Field(min_length=1, max_length=900)
     voice: str
     speed: float = Field(ge=0.7, le=1.4)
     fingerprint: str
+    localVoice: LocalVoiceOptions | None = None
 
 
 @app.post("/speech")
@@ -168,6 +189,8 @@ def speech(request: SpeechRequest):
             raise HTTPException(503, "Model is not ready")
         if request.voice not in voices:
             raise HTTPException(409, "Voice or model identity changed")
+        if request.localVoice is not None:
+            request.localVoice.validate_engine(ENGINE, request.voice, voices)
         if active:
             raise HTTPException(429, "Inference is active; wait for quiescence")
         if not reserved or request.sequence != sequence or request.sequence <= retired:
@@ -177,15 +200,23 @@ def speech(request: SpeechRequest):
     emit("synthesis_started", engine=ENGINE, instance=instance, sequence=request.sequence)
     try:
         output = io.BytesIO()
+        local = request.localVoice
+        gain = 10 ** (local.gainDb / 20) if local else 1.0
         if ENGINE == "kokoro":
             # create() splits long phoneme sequences internally; the desktop sends small chunks.
             language = "en-gb" if request.voice.startswith("b") else "en-us"
-            samples, rate = model.create(request.text, voice=request.voice, speed=request.speed, lang=language)
-            sf.write(output, np.asarray(samples), rate, format="WAV", subtype="PCM_16")
+            voice = request.voice
+            if local and local.blendVoice:
+                voice = (1 - local.blendWeight) * model.get_voice_style(request.voice) + local.blendWeight * model.get_voice_style(local.blendVoice)
+            options = {"trim": False} if local and local.naturalPhrasing else {}
+            samples, rate = model.create(request.text, voice=voice, speed=request.speed, lang=language, **options)
+            sf.write(output, np.asarray(samples) * gain, rate, format="WAV", subtype="PCM_16")
         else:
             from piper import SynthesisConfig
             with wave.open(output, "wb") as wav:
-                model.select(request.voice).synthesize_wav(request.text, wav, syn_config=SynthesisConfig(length_scale=1 / request.speed))
+                options = {} if local is None else {"noise_scale": local.noiseScale, "noise_w_scale": local.noiseWidth,
+                    "normalize_audio": not local.naturalPhrasing, "volume": gain}
+                model.select(request.voice).synthesize_wav(request.text, wav, syn_config=SynthesisConfig(length_scale=1 / request.speed, **options))
         emit("synthesis_completed", engine=ENGINE, instance=instance, sequence=request.sequence,
              elapsed_ms=round((time.monotonic() - started) * 1000), audio_bytes=output.getbuffer().nbytes)
         return Response(output.getvalue(), media_type="audio/wav")
