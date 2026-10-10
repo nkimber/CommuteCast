@@ -56,6 +56,9 @@ jobs:
         # Independent process/encoder collections compete for runner CPU and disk.
         # Each race test still controls its own concurrent workers and barriers.
         run: dotnet test tests/CommuteCast.Tests/CommuteCast.Tests.csproj -c Release --no-build --no-restore --logger 'trx;LogFileName=windows-regression.trx' --logger 'console;verbosity=normal' -- xUnit.ParallelizeTestCollections=false
+      - name: Verify desktop interactions
+        # WPF controls run on an isolated STA dispatcher; these checks do not require Docker.
+        run: dotnet test tests/CommuteCast.Desktop.Tests -c Release --no-build --no-restore --logger 'trx;LogFileName=desktop-regression.trx'
       - name: Publish portable client
         run: ./scripts/Publish-Portable.ps1
       - name: Verify fresh portable extraction
@@ -69,7 +72,9 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: windows-regression-${{ github.sha }}
-          path: tests/CommuteCast.Tests/TestResults/windows-regression.trx
+          path: |
+            tests/CommuteCast.Tests/TestResults/windows-regression.trx
+            tests/CommuteCast.Desktop.Tests/TestResults/desktop-regression.trx
           if-no-files-found: warn
           retention-days: 7
       - name: Retain verified portable ZIP

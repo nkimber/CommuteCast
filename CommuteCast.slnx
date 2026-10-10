@@ -5,6 +5,7 @@
     <Project Path="src/CommuteCast.Infrastructure/CommuteCast.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/CommuteCast.Desktop.Tests/CommuteCast.Desktop.Tests.csproj" />
     <Project Path="tests/CommuteCast.Tests/CommuteCast.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">

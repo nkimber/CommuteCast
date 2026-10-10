@@ -4,7 +4,7 @@ A native Windows WPF utility that turns pasted text into a single MP3 using loca
 
 ## Build in Visual Studio
 
-Open **CommuteCast.sln** in Visual Studio 2026 with the **.NET desktop development** workload and .NET 10 SDK. The checked-in `.vsconfig` identifies that workload. The solution contains all eight projects and lists **CommuteCast.Desktop** first. Select it as the startup project if Visual Studio has saved a different choice, build the solution, then press F5 to run the native WPF client. **CommuteCast.slnx** contains the same projects for tools that use the XML solution format. Microsoft documents this WPF/.NET 10 setup in its [Visual Studio tutorial](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/getting-started).
+Open **CommuteCast.sln** in Visual Studio 2026 with the **.NET desktop development** workload and .NET 10 SDK. The checked-in `.vsconfig` identifies that workload. The solution contains all nine projects and lists **CommuteCast.Desktop** first. Select it as the startup project if Visual Studio has saved a different choice, build the solution, then press F5 to run the native WPF client. **CommuteCast.slnx** contains the same projects for tools that use the XML solution format. Microsoft documents this WPF/.NET 10 setup in its [Visual Studio tutorial](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/getting-started).
 
 The client project sets `OutputType=WinExe`, `TargetFramework=net10.0-windows`, and `UseWPF=true`; its application and windows are compiled XAML with C# code-behind. A Release build produces `src\CommuteCast.Desktop\bin\Release\net10.0-windows\CommuteCast.Desktop.exe`. Docker, FFmpeg and speech provisioning are runtime prerequisites for narration; they are not required to compile or open the client.
 
@@ -12,7 +12,7 @@ The client project sets `OutputType=WinExe`, `TargetFramework=net10.0-windows`, 
 dotnet build .\CommuteCast.sln -c Release
 ```
 
-If opening the solution appears to close Visual Studio, check whether an existing **CommuteCast** window is still open. A loaded solution shows **8 of 8 projects** in Solution Explorer. To capture a recurring failure, launch the IDE directly with [activity logging](https://learn.microsoft.com/en-us/visualstudio/ide/reference/log-devenv-exe?view=visualstudio) from the repository folder:
+If opening the solution appears to close Visual Studio, check whether an existing **CommuteCast** window is still open. A loaded solution shows **9 of 9 projects** in Solution Explorer. To capture a recurring failure, launch the IDE directly with [activity logging](https://learn.microsoft.com/en-us/visualstudio/ide/reference/log-devenv-exe?view=visualstudio) from the repository folder:
 
 ```powershell
 $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Workload.ManagedDesktop -property installationPath
@@ -257,6 +257,10 @@ Stopped and cancelled library rows offer a prominent green **Resume** button bes
 Launch displays a **Starting CommuteCast** window while local recovery, saved-library validation and settings checks complete. It shows the current step and elapsed time, and supports **Cancel startup** while local operations settle safely. Startup diagnostics include individual step timings and periodic long-running-step notices even when the UI is blocked; see [Debugging with operational logs](documents/Logging.md). Docker readiness failures appear after the editor opens and are logged separately.
 
 ## Work with Codex
+
+The listening library supports title search (all entered words must match), status filters and date/title/audio-length sorting. Display sorting does not reorder the generation queue. Progress updates retain existing rows and selection; an explicit view-latest/view-attention action clears filters to reveal its saved item. Unknown audio lengths sort after measured lengths.
+
+Native desktop regression checks run on an isolated STA dispatcher with synthetic saved items and private test workspaces: `dotnet test tests/CommuteCast.Desktop.Tests -c Release`. They verify controls/bindings separately from the backend suite and do not require Docker or establish physical input, listening or phone acceptance.
 
 Choose **Work with Codex** in the sidebar for an offline guide to writing narration. **Copy setup prompt and full skill** includes the complete `commute-narrative` instructions for Codex's `$skill-creator`; the expandable skill viewer is selectable and read-only. Ask Codex to create and validate it as a personal skill available across projects. The bundled source lives in `src/CommuteCast.Desktop/Codex/commute-narrative/SKILL.md` and is embedded in the desktop build, so the guide also works on machines without an existing personal skill folder.
 

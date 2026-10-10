@@ -41,11 +41,17 @@ public sealed class AsyncCommand(Func<object?, Task> execute, Action<Exception> 
 }
 public sealed class JobView(Job job, Workspace workspace, bool paused = false) : Observable
 {
-    public Job Job { get; } = job;
+    public Job Job { get; private set; } = job;
+    private bool queuePaused = paused;
+    public void Update(Job snapshot, bool paused)
+    {
+        Job = snapshot; queuePaused = paused; AudioSummary = DescribeAudio(snapshot, workspace);
+        Raise(null);
+    }
     public string Id => Job.Id;
     public string Title => Job.Title;
     public string Submitted => Job.CreatedUtc.ToLocalTime().ToString("MMM d, yyyy · h:mm tt zzz");
-    private JobProgress Presentation => JobProgress.Describe(Job, paused);
+    private JobProgress Presentation => JobProgress.Describe(Job, queuePaused);
     public string Status => IsWorking && Job.Activity.Read().Waiting && !Job.CancellationRequested ? "Waiting · processing will continue automatically" : Presentation.Status;
     public string Guidance => Presentation.Guidance;
     public bool IsWorking => Presentation.IsWorking;
@@ -70,7 +76,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
         SyncState = state; Raise(nameof(SyncState)); Raise(nameof(IsCloudSynced));
         Raise(nameof(CloudSyncSymbol)); Raise(nameof(CloudSyncDescription)); Raise(nameof(Delivery));
     }
-    public string AudioSummary { get; } = DescribeAudio(job, workspace);
+    public string AudioSummary { get; private set; } = DescribeAudio(job, workspace);
     private static string DescribeAudio(Job job, Workspace workspace)
     {
         if (!job.ExportCommitted && job.FinalHash.Length == 0) return "";
@@ -107,7 +113,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
     {
         JobStage.Failed => "Stopped. Completed segments are retained for retry.",
         JobStage.Cancelled => "Cancelled. Saved segments remain available.",
-        JobStage.Queued => paused ? "Queue paused · choose Resume queue" : "Waiting for its turn in the queue",
+        JobStage.Queued => queuePaused ? "Queue paused · choose Resume queue" : "Waiting for its turn in the queue",
         _ => Guidance
     };
     public string FailureSummary => NeedsAttention ? "Processing stopped. Open details for the cause and recovery steps." : "";
@@ -182,6 +188,18 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private bool loading = true, queueLoaded, draftLoadFailed, draftDirty;
     private JobView? selectedJob;
     public ObservableCollection<JobView> Jobs { get; } = [];
+    public ObservableCollection<JobView> LibraryJobs { get; } = [];
+    private string librarySearch = "";
+    private LibraryFilter libraryFilter;
+    private LibrarySort librarySort;
+    public string LibrarySearch { get => librarySearch; set { if (Set(ref librarySearch, value)) RefreshLibrary(); } }
+    public LibraryFilter LibraryFilter { get => libraryFilter; set { if (Set(ref libraryFilter, value)) RefreshLibrary(); } }
+    public LibrarySort LibrarySort { get => librarySort; set { if (Set(ref librarySort, value)) RefreshLibrary(); } }
+    public LibraryFilter[] LibraryFilters { get; } = Enum.GetValues<LibraryFilter>();
+    public PronunciationOption<LibrarySort>[] LibrarySorts { get; } =
+    [new(LibrarySort.QueueThenNewest, "Queue, then newest"), new(LibrarySort.Newest, "Newest first"), new(LibrarySort.Oldest, "Oldest first"),
+        new(LibrarySort.Title, "Title A–Z"), new(LibrarySort.Shortest, "Shortest first"), new(LibrarySort.Longest, "Longest first")];
+    public string LibraryResultSummary => $"Showing {LibraryJobs.Count} of {Jobs.Count} narrations";
     public ObservableCollection<SpeechVoiceChoice> Voices { get; private set; } = [];
     private readonly NarrationPreferences narrationPreferences;
     public string[] Engines { get; } = ["kokoro", "piper"];
@@ -330,8 +348,8 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         RefreshVoiceChoices();
         NavigateCommand = Command(p => { Navigate(p?.ToString() ?? "compose"); return Task.CompletedTask; }, false);
         CopyCodexCommand = Command(p => { if (p is string text && text.Length > 0) { Clipboard.SetText(text); StatusMessage = "Copied. Paste into your Codex chat."; } return Task.CompletedTask; }, false);
-        ViewLatestCommand = Command(_ => { SelectedJob = LatestJob; Navigate("library"); return Task.CompletedTask; }, false);
-        ViewAttentionCommand = Command(_ => { SelectedJob = AttentionJob ?? LatestJob; Navigate("library"); return Task.CompletedTask; }, false);
+        ViewLatestCommand = Command(_ => { RevealJob(LatestJob); return Task.CompletedTask; }, false);
+        ViewAttentionCommand = Command(_ => { RevealJob(AttentionJob ?? LatestJob); return Task.CompletedTask; }, false);
         CopyDetailsCommand = Command(_ => { RequireSelected(); Clipboard.SetText(SelectedDetailsForCopy); StatusMessage = "Narration details copied, including the error and repair steps. Source text and spoken script are not included."; return Task.CompletedTask; }, false);
         SelectedReadinessCommand = Command(_ => CheckSavedSpeechAsync(RequireSelected()));
         RepairSelectedCommand = Command(async _ =>
@@ -415,21 +433,51 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
             ? "This narration is queued to resume. Choose Resume queue to continue. Completed segments are retained."
             : "This narration is queued to resume from its saved progress. Completed segments are retained.";
     }
-    private void RefreshJobs(IReadOnlyList<Job> snapshots)
+    internal void RefreshJobs(IReadOnlyList<Job> snapshots)
     {
         // A running synthesis stage has passed this job's captured readiness
         // check. Retire only that engine's older readiness warning.
         if (snapshots.Any(j => j.Stage == JobStage.Synthesizing && j.Activity.Read().Running && j.Settings.Engine == speechErrorEngine))
         { speechError = ""; speechErrorEngine = ""; }
-        var id = SelectedJob?.Id;
-        Jobs.Clear();
-        foreach (var job in snapshots.Where(j => j.Stage == JobStage.Queued).Concat(snapshots.Where(j => j.Stage != JobStage.Queued).OrderByDescending(j => j.CreatedUtc))) Jobs.Add(new(job, Workspace, queue.Paused));
-        SelectedJob = Jobs.FirstOrDefault(j => j.Id == id) ?? Jobs.FirstOrDefault();
+        var byId = Jobs.ToDictionary(j => j.Id, StringComparer.Ordinal);
+        var ordered = LibraryQuery.Apply(snapshots, "", Core.LibraryFilter.All, Core.LibrarySort.QueueThenNewest);
+        var rows = ordered.Select(job =>
+        {
+            if (!byId.TryGetValue(job.Id, out var row)) row = new(job, Workspace, queue.Paused);
+            else row.Update(job, queue.Paused);
+            return row;
+        }).ToArray();
+        ReconcileRows(Jobs, rows);
+        RefreshLibrary();
         Raise(nameof(LibrarySummary));
         Raise(nameof(PauseLabel));
         Raise(nameof(LatestJob)); Raise(nameof(HasLatestJob)); RaiseAttention();
         if (queue.PersistenceError.Length > 0) StatusMessage = queue.PersistenceError;
         _ = RefreshCloudSyncAsync();
+    }
+    private static void ReconcileRows(ObservableCollection<JobView> collection, IReadOnlyList<JobView> rows)
+    {
+        var retained = rows.ToHashSet();
+        for (var i = collection.Count - 1; i >= 0; i--) if (!retained.Contains(collection[i])) collection.RemoveAt(i);
+        for (var i = 0; i < rows.Count; i++)
+        {
+            if (i < collection.Count && ReferenceEquals(collection[i], rows[i])) continue;
+            var previous = collection.IndexOf(rows[i]);
+            if (previous < 0) collection.Insert(i, rows[i]); else collection.Move(previous, i);
+        }
+    }
+    private void RefreshLibrary()
+    {
+        var selected = SelectedJob;
+        var byId = Jobs.ToDictionary(j => j.Id, StringComparer.Ordinal);
+        ReconcileRows(LibraryJobs, LibraryQuery.Apply(Jobs.Select(j => j.Job), LibrarySearch, LibraryFilter, LibrarySort).Select(j => byId[j.Id]).ToArray());
+        SelectedJob = selected is not null && LibraryJobs.Contains(selected) ? selected : LibraryJobs.FirstOrDefault();
+        Raise(nameof(LibraryResultSummary));
+    }
+    private void RevealJob(JobView? row)
+    {
+        LibrarySearch = ""; LibraryFilter = Core.LibraryFilter.All;
+        SelectedJob = row; Navigate("library");
     }
     private async Task RefreshCloudSyncAsync()
     {
@@ -657,8 +705,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint, profile, info.ImageId), Destination = destination };
         await queue.AddAsync(job, shutdown.Token);
         RefreshJobs(queue.Snapshot());
-        SelectedJob = Jobs.Single(j => j.Id == job.Id);
-        Navigate("library");
+        RevealJob(Jobs.Single(j => j.Id == job.Id));
         if (Source == text) { Source = ""; DraftTitle = ""; if (narrationPreferences.Current == choices) RestoreNarrationDefaults(); }
         StatusMessage = "Narration saved. Its progress is shown here. You do not need to queue it again.";
         DraftQueued?.Invoke();
