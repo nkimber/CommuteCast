@@ -166,6 +166,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private readonly SqliteJobStore store;
     private readonly DraftStore drafts;
     private readonly MediaPlayer player = new();
+    public PlaybackController Playback { get; }
     private readonly AuditionGenerator auditions;
     private readonly SemaphoreSlim auditionCleanup = new(1);
     private CancellationTokenSource? activeAudition;
@@ -330,9 +331,12 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public ICommand MeasureStorageCommand { get; }
     public ICommand CleanCacheCommand { get; }
 
-    public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null, Action<ProcessStartInfo>? openFolder = null)
+    public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null, Action<ProcessStartInfo>? openFolder = null, IPlaybackOutput? playbackOutput = null)
     {
         settings = saved; narrationPreferences = new(settings); Workspace = workspace ?? new();
+        Playback = new(playbackOutput ?? new WpfPlaybackOutput(player));
+        Playback.Failed += () => ReportError("Playback failed. Check that the local audio exists and is decodable.");
+        Playback.Finished += () => { _ = CleanupFinishedPlaybackAsync(); };
         drafts = new(Workspace);
         store = new SqliteJobStore(Workspace);
         provider = speechProvider ?? new(Workspace); publisher = new(Workspace, store);
@@ -345,7 +349,6 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         progressTimer.Start();
         syncTimer.Tick += (_, _) => { _ = RefreshCloudSyncAsync(); };
         syncTimer.Start();
-        player.MediaFailed += (_, _) => ReportError("Playback failed. Check that the local audio exists and is decodable.");
         RefreshVoiceChoices();
         NavigateCommand = Command(p => { Navigate(p?.ToString() ?? "compose"); return Task.CompletedTask; }, false);
         CopyCodexCommand = Command(p => { if (p is string text && text.Length > 0) { Clipboard.SetText(text); StatusMessage = "Copied. Paste into your Codex chat."; } return Task.CompletedTask; }, false);
@@ -365,7 +368,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         });
         RepairSpeechCommand = Command(_ => RepairSpeechAsync());
         QueueCommand = Command(_ => SubmitAsync());
-        ReviewCommand = Command(async _ => { var text = Source; var omit = ExcludeCode; var dictionary = Pronunciation; var profile = CaptureProfile(); var prepared = await Task.Run(() => TextPreparation.Prepare(text, omit, dictionary, profile, shutdown.Token), shutdown.Token); ShowPreparation(prepared, text); });
+        ReviewCommand = Command(async _ => { var text = Source; var snapshot = CapturePreviewSettings(); var prepared = await Task.Run(() => TextPreparation.Prepare(text, snapshot.ExcludeCode, snapshot.Pronunciation, snapshot.Profile, shutdown.Token), shutdown.Token); ShowPreparation(prepared, text, snapshot); });
         ChooseFolderCommand = Command(async _ => { var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); settings.Destination = path; Raise(nameof(DestinationDisplay)); await SaveSettingsAsync(); StatusMessage = "Output folder saved. Only completed MP3s will be exported here."; } });
         TestFolderCommand = Command(async _ => { await publisher.TestDestinationAsync(settings.Destination); StatusMessage = "Local write access passed. OneDrive cloud upload is still unknown."; });
         ReadinessCommand = Command(_ => CheckReadinessAsync(true));
@@ -381,7 +384,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         PauseCommand = Command(async _ => { if (queue.Paused && queue.PersistenceError.Length > 0) throw new IOException(queue.PersistenceError); queue.Paused = !queue.Paused; settings.QueuePaused = queue.Paused; RefreshJobs(queue.Snapshot()); await SaveSettingsAsync(); StatusMessage = queue.Paused ? "Future dispatch paused. The current narration can finish." : "Queue resumed."; });
         MoveEarlierCommand = Command(_ => queue.MovePendingAsync(RequireSelected().Id, -1, shutdown.Token));
         MoveLaterCommand = Command(_ => queue.MovePendingAsync(RequireSelected().Id, 1, shutdown.Token));
-        PlayCommand = Command(async _ => { var job = RequireSelected(); await StopPlaybackAsync(false); var file = Workspace.FinalPath(job); if (!File.Exists(file) || job.FinalHash.Length == 0 || await Infrastructure.Workspace.HashFileAsync(file) != job.FinalHash) throw new IOException("No validated local audio is available for this narration."); player.Open(new Uri(file)); player.Play(); StatusMessage = "Playing local audio. Use Stop playback to stop."; });
+        PlayCommand = Command(async _ => { var job = RequireSelected(); await StopPlaybackAsync(false); var file = Workspace.FinalPath(job); if (!File.Exists(file) || job.FinalHash.Length == 0 || await Infrastructure.Workspace.HashFileAsync(file) != job.FinalHash) throw new IOException("No validated local audio is available for this narration."); Playback.Open(file, job.Title); StatusMessage = "Playing local audio. Pause, seek or skip with the playback controls."; });
         StopCommand = Command(_ => StopPlaybackAsync(true));
         OpenFolderCommand = Command(parameter =>
         {
@@ -398,7 +401,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
                 : job.ExportCommitted || job.FinalHash.Length > 0 ? "Folder opened. The recorded MP3 is missing or moved." : "Output folder opened.";
             return Task.CompletedTask;
         });
-        InspectCommand = Command(_ => { var job = RequireSelected(); ShowPreparation(job.Prepared, job.Source); return Task.CompletedTask; });
+        InspectCommand = Command(_ => { var job = RequireSelected(); ShowPreparation(job.Prepared, job.Source, job.Settings); return Task.CompletedTask; });
         RetryCommand = Command(_ => ResumeAsync(RequireSelected()));
         ResumeJobCommand = Command(async parameter =>
         {
@@ -716,21 +719,26 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     }
     private async Task AuditionAsync(bool selection)
     {
-        var snapshot = new NarrationSettings(Engine, Voice, Speed, ExcludeCode, Pronunciation, "", CaptureProfile());
+        var snapshot = CapturePreviewSettings();
         var request = selection ? AuditionRequest.Selection(selectionSource, selectionStart, selectionLength, snapshot) : AuditionRequest.Standard(snapshot);
+        await AuditionAsync(request, selection);
+    }
+    private NarrationSettings CapturePreviewSettings() => new(Engine, Voice, Speed, ExcludeCode, Pronunciation, "", CaptureProfile());
+    private async Task AuditionAsync(AuditionRequest request, bool selection)
+    {
         var generation = ++auditionGeneration;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
         activeAudition = cancellation;
         try
         {
-            player.Stop(); player.Close();
+            Playback.Stop();
             await CleanupAuditionAsync();
             StatusMessage = "Preparing a local audition. It waits for current narration before using speech. Use Stop audition to cancel.";
             var audio = await auditions.GenerateAsync(request, cancellation.Token);
             if (generation != auditionGeneration || cancellation.IsCancellationRequested)
             { await auditions.RemoveAsync(audio); return; }
             auditionAudio = audio;
-            player.Open(new Uri(OwnedFileRemoval.Resolve(Workspace.Root, audio.RelativePath))); player.Play();
+            Playback.Open(OwnedFileRemoval.Resolve(Workspace.Root, audio.RelativePath), selection ? "Selected spoken excerpt" : "Standard voice sample");
             StatusMessage = selection ? "Playing the selected excerpt with its captured voice and pronunciation settings." : "Playing the standard voice sample with its captured pronunciation settings.";
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
@@ -741,7 +749,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     {
         ++auditionGeneration;
         var pending = activeAudition is not null;
-        activeAudition?.Cancel(); player.Stop(); player.Close();
+        activeAudition?.Cancel(); Playback.Stop();
         await CleanupAuditionAsync();
         if (showStatus) StatusMessage = pending ? "Playback stopped. Audition cancellation requested." : "Playback stopped.";
     }
@@ -755,6 +763,12 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
             auditionAudio = null;
         }
         finally { auditionCleanup.Release(); }
+    }
+    private async Task CleanupFinishedPlaybackAsync()
+    {
+        try { await operations.RunAsync(CleanupAuditionAsync); }
+        catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
+        catch (Exception error) { AppLogging.Failure("FinishedPlaybackCleanup", error); ReportError("Preview cleanup needs attention. Its ownership record is retained for recovery."); }
     }
     private async Task CheckEncoderAsync()
     {
@@ -770,7 +784,9 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         var dialog = new OpenFolderDialog { Title = "Choose your existing local corporate OneDrive output folder", Multiselect = false };
         return dialog.ShowDialog(Application.Current.MainWindow) == true ? dialog.FolderName : null;
     }
-    private static void ShowPreparation(PreparedText prepared, string source) => new PreparationWindow(prepared, source) { Owner = Application.Current.MainWindow }.ShowDialog();
+    private void ShowPreparation(PreparedText prepared, string source, NarrationSettings snapshot) =>
+        new PreparationWindow(prepared, source, text => operations.RunAsync(() => AuditionAsync(AuditionRequest.ApprovedExcerpt(text, snapshot), true)), () => StopCommand.Execute(null))
+        { Owner = Application.Current.MainWindow }.ShowDialog();
     private async Task DeleteAsync(bool all)
     {
         var ids = all ? Jobs.Select(j => j.Id).ToArray() : [RequireSelected().Id];
@@ -800,9 +816,9 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         progressTimer.Stop();
         syncTimer.Stop();
         var settled = operations.StopAsync();
-        draftSave?.Cancel(); shutdown.Cancel(); player.Close();
+        draftSave?.Cancel(); shutdown.Cancel(); Playback.Stop();
         await settled.WaitAsync(TimeSpan.FromSeconds(20));
-        player.Close(); // An already admitted playback action may have finished after the first close.
+        Playback.Dispose(); // An already admitted playback action may have finished after the first stop.
         await queue.DisposeAsync();
         await draftGate.WaitAsync();
         try { if (!draftLoadFailed || draftDirty) await drafts.SaveAsync(new(DraftTitle, Source)); }

@@ -258,6 +258,10 @@ Launch displays a **Starting CommuteCast** window while local recovery, saved-li
 
 ## Work with Codex
 
+Spoken-text review highlights changed passages, while the original-source tab highlights pronunciation replacements and explicitly excluded code. Both remain selectable. Select up to 900 characters in **Spoken text**, then **Play selected spoken text** to preview the already prepared passage with captured voice/pace and the current installed speech model. Pronunciation transformations are not repeated. Stop or close review cancels its preview; private audition ownership and cleanup remain durable.
+
+Local playback includes pause/continue, a seek timeline, elapsed/remaining audio time and **−15s / +30s**. The playing title stays independent of library selection. Controls become available after media opens and reset on Stop/end/failure. Playback still requires the saved local MP3 and its validated checksum; changing playback position does not change the exported file or its captured generation settings.
+
 **Narration presets** offers Technical reading, Relaxed storytelling and Fast briefing, plus named presets you save with the displayed voice, pace, code handling and pronunciation rules. **Apply preset** changes this draft; **Save / replace named preset** persists that named choice without changing saved defaults. Removing every preset keeps the list empty across relaunch. Applying an unavailable installed voice is refused; refresh the voice library or update the preset.
 
 **Import text…** and dropping one `.txt`/`.md` file load exact Unicode text/line breaks into the draft. UTF-8 (with/without BOM) and UTF-16 with BOM are supported. Invalid, empty, binary or oversized input is refused before replacement. Replacing a nonempty draft requires confirmation; cancelling retains it. Import never submits a narration.

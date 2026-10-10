@@ -9,9 +9,26 @@ public sealed record AuditionRequest
     public int? SelectionStart { get; }
     public NarrationSettings Settings { get; }
     private readonly string? context;
+    private readonly bool approvedExcerpt;
 
-    private AuditionRequest(string source, int? start, string? context, NarrationSettings settings)
-    { Source = source; SelectionStart = start; this.context = context; Settings = settings; }
+    private AuditionRequest(string source, int? start, string? context, NarrationSettings settings, bool approvedExcerpt = false)
+    { Source = source; SelectionStart = start; this.context = context; Settings = settings; this.approvedExcerpt = approvedExcerpt; }
+
+    /// <summary>Preview an already prepared selection exactly once, without repeating dictionary/profile transformations.</summary>
+    public static AuditionRequest ApprovedExcerpt(string text, NarrationSettings settings)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text.Length > MaximumCharacters)
+            throw new ArgumentException($"Select 1–{MaximumCharacters} characters of spoken text. Nothing is truncated.");
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (char.IsHighSurrogate(text[i]))
+            {
+                if (++i == text.Length || !char.IsLowSurrogate(text[i])) throw new ArgumentException("Select complete Unicode characters.");
+            }
+            else if (char.IsLowSurrogate(text[i])) throw new ArgumentException("Select complete Unicode characters.");
+        }
+        return new(text, null, null, Validate(settings), true);
+    }
 
     public static AuditionRequest Standard(NarrationSettings settings) => new(StandardSample, null, null, Validate(settings));
     public static AuditionRequest Selection(string source, int start, int length, NarrationSettings settings)
@@ -49,6 +66,7 @@ public sealed record AuditionRequest
     public PreparedText Prepare(CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        if (approvedExcerpt) return new(Source, [new(0, Source.Length, "approved spoken excerpt", Source, Source)], "audition-script-v1");
         // A cropped code body has lost its opening fence. Do not speak excluded code merely
         // because the fence sits outside the selection. Reuse the source preparer's classification.
         if (context is not null && SelectionStart is { } start)

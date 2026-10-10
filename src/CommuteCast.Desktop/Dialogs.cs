@@ -3,12 +3,13 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
+using System.Windows.Documents;
 
 namespace CommuteCast.Desktop;
 
 public sealed class PreparationWindow : Window
 {
-    public PreparationWindow(PreparedText prepared, string source)
+    public PreparationWindow(PreparedText prepared, string source, Func<string, Task>? audition = null, Action? stopAudition = null)
     {
         Title = "Review narration preparation · CommuteCast"; Width = 1000; Height = 740; MinWidth = 700; MinHeight = 450;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -24,8 +25,39 @@ public sealed class PreparationWindow : Window
         var close = new Button { Content = "Close review", Padding = new(20, 10, 20, 10), HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 16, 0, 0), IsCancel = true };
         DockPanel.SetDock(close, Dock.Bottom); panel.Children.Add(close);
         var tabs = new TabControl();
-        tabs.Items.Add(new TabItem { Header = "Spoken text", Content = TextArea(prepared.Script, "Prepared narration script") });
-        tabs.Items.Add(new TabItem { Header = "Original source", Content = TextArea(source, "Original submitted source") });
+        var spoken = HighlightedText(ReviewHighlights.Spoken(prepared), "Prepared narration script");
+        var spokenPanel = new DockPanel();
+        var previewActions = new StackPanel { Margin = new(0, 0, 0, 12) };
+        previewActions.Children.Add(new TextBlock { Text = "Highlighted passages changed during preparation. Select up to 900 characters here to hear the exact spoken text with the captured voice and pace. Preview uses the current installed speech model.", TextWrapping = TextWrapping.Wrap });
+        var buttons = new WrapPanel { Margin = new(0, 8, 0, 0) };
+        var play = new Button { Content = "Play selected spoken text", Padding = new(12, 8, 12, 8), Margin = new(0, 0, 8, 0), IsEnabled = false };
+        var stop = new Button { Content = "Stop review audition", Padding = new(12, 8, 12, 8), IsEnabled = audition is not null };
+        var previewStatus = new TextBlock { Text = "Select a short passage in Spoken text.", TextWrapping = TextWrapping.Wrap, Margin = new(0, 8, 0, 0) };
+        System.Windows.Automation.AutomationProperties.SetLiveSetting(previewStatus, System.Windows.Automation.AutomationLiveSetting.Polite);
+        var generating = false; var previewStarted = false; var previewAttempt = 0; var closed = false;
+        spoken.SelectionChanged += (_, _) =>
+        {
+            var text = spoken.Selection.Text;
+            play.IsEnabled = audition is not null && !generating && !string.IsNullOrWhiteSpace(text) && text.Length <= AuditionRequest.MaximumCharacters;
+            if (!generating) previewStatus.Text = text.Length > AuditionRequest.MaximumCharacters ? "Select at most 900 characters; nothing will be shortened." : $"{text.Length:N0} characters selected.";
+        };
+        play.Click += async (_, _) =>
+        {
+            var text = spoken.Selection.Text; var attempt = ++previewAttempt; generating = true; previewStarted = true; play.IsEnabled = false;
+            previewStatus.Text = "Preparing review audition; it waits for current narration. Stop cancels it.";
+            try { await audition!(text); if (!closed && previewAttempt == attempt) previewStatus.Text = "Review audition request finished. Stop or close review to end playback."; }
+            catch (Exception error) { if (!closed && previewAttempt == attempt) previewStatus.Text = Infrastructure.QueueCoordinator.FriendlyError(error); }
+            finally { generating = false; play.IsEnabled = !closed && audition is not null && !string.IsNullOrWhiteSpace(spoken.Selection.Text) && spoken.Selection.Text.Length <= AuditionRequest.MaximumCharacters; }
+        };
+        stop.Click += (_, _) => { ++previewAttempt; stopAudition?.Invoke(); previewStatus.Text = "Review audition stopped; cancellation requested for pending speech."; };
+        Closed += (_, _) => { closed = true; ++previewAttempt; if (previewStarted) stopAudition?.Invoke(); };
+        buttons.Children.Add(play); buttons.Children.Add(stop); previewActions.Children.Add(buttons); previewActions.Children.Add(previewStatus);
+        DockPanel.SetDock(previewActions, Dock.Top); spokenPanel.Children.Add(previewActions); spokenPanel.Children.Add(spoken);
+        tabs.Items.Add(new TabItem { Header = "Spoken text", Content = spokenPanel });
+        var originalPanel = new DockPanel();
+        var legend = new TextBlock { Text = "Orange highlights: explicitly excluded source. Yellow highlights: pronunciation replacements. Original text remains unchanged and copyable.", TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 12) };
+        DockPanel.SetDock(legend, Dock.Top); originalPanel.Children.Add(legend); originalPanel.Children.Add(HighlightedText(ReviewHighlights.Original(prepared, source), "Original submitted source with preparation highlights"));
+        tabs.Items.Add(new TabItem { Header = "Original source", Content = originalPanel });
         if (prepared.ProfileReview is { } pronunciation)
         {
             var view = new DataGrid { IsReadOnly = true, AutoGenerateColumns = false, ItemsSource = pronunciation.Changes, CanUserAddRows = false, EnableRowVirtualization = true };
@@ -45,6 +77,24 @@ public sealed class PreparationWindow : Window
         var chunkView = new DataGrid { IsReadOnly = true, AutoGenerateColumns = true, ItemsSource = chunks, CanUserAddRows = false };
         tabs.Items.Add(new TabItem { Header = $"Chunk plan · {chunks.Count(c => c.HardSplit)} fallback splits", Content = chunkView });
         panel.Children.Add(tabs); Content = panel;
+    }
+    internal static RichTextBox HighlightedText(IReadOnlyList<ReviewRun> runs, string name)
+    {
+        var paragraph = new Paragraph { Margin = new(0) };
+        foreach (var segment in runs)
+        {
+            var run = new Run(segment.Text);
+            if (segment.Kind != ReviewHighlightKind.Unchanged)
+            {
+                run.Background = SystemParameters.HighContrast ? SystemColors.HighlightBrush : new SolidColorBrush(segment.Kind == ReviewHighlightKind.Excluded ? Color.FromRgb(255, 199, 159) : Color.FromRgb(255, 232, 159));
+                run.Foreground = SystemParameters.HighContrast ? SystemColors.HighlightTextBrush : Brushes.Black;
+            }
+            paragraph.Inlines.Add(run);
+        }
+        var box = new RichTextBox { IsReadOnly = true, Document = new FlowDocument(paragraph) { PagePadding = new(0) },
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new(18), FontSize = 15,
+            Background = (Brush)Application.Current.Resources["Surface"], Foreground = (Brush)Application.Current.Resources["Ink"] };
+        System.Windows.Automation.AutomationProperties.SetName(box, name); return box;
     }
     private static TextBox TextArea(string text, string name)
     {
