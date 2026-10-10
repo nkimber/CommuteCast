@@ -37,17 +37,17 @@ public sealed class PreparationWindow : Window
         var generating = false; var previewStarted = false; var previewAttempt = 0; var closed = false;
         spoken.SelectionChanged += (_, _) =>
         {
-            var text = spoken.Selection.Text;
+            var text = SelectedSpokenText(spoken);
             play.IsEnabled = audition is not null && !generating && !string.IsNullOrWhiteSpace(text) && text.Length <= AuditionRequest.MaximumCharacters;
             if (!generating) previewStatus.Text = text.Length > AuditionRequest.MaximumCharacters ? "Select at most 900 characters; nothing will be shortened." : $"{text.Length:N0} characters selected.";
         };
         play.Click += async (_, _) =>
         {
-            var text = spoken.Selection.Text; var attempt = ++previewAttempt; generating = true; previewStarted = true; play.IsEnabled = false;
+            var text = SelectedSpokenText(spoken); var attempt = ++previewAttempt; generating = true; previewStarted = true; play.IsEnabled = false;
             previewStatus.Text = "Preparing review audition; it waits for current narration. Stop cancels it.";
             try { await audition!(text); if (!closed && previewAttempt == attempt) previewStatus.Text = "Review audition request finished. Stop or close review to end playback."; }
             catch (Exception error) { if (!closed && previewAttempt == attempt) previewStatus.Text = Infrastructure.QueueCoordinator.FriendlyError(error); }
-            finally { generating = false; play.IsEnabled = !closed && audition is not null && !string.IsNullOrWhiteSpace(spoken.Selection.Text) && spoken.Selection.Text.Length <= AuditionRequest.MaximumCharacters; }
+            finally { generating = false; var selected = SelectedSpokenText(spoken); play.IsEnabled = !closed && audition is not null && !string.IsNullOrWhiteSpace(selected) && selected.Length <= AuditionRequest.MaximumCharacters; }
         };
         stop.Click += (_, _) => { ++previewAttempt; stopAudition?.Invoke(); previewStatus.Text = "Review audition stopped; cancellation requested for pending speech."; };
         Closed += (_, _) => { closed = true; ++previewAttempt; if (previewStarted) stopAudition?.Invoke(); };
@@ -95,6 +95,13 @@ public sealed class PreparationWindow : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new(18), FontSize = 15,
             Background = (Brush)Application.Current.Resources["Surface"], Foreground = (Brush)Application.Current.Resources["Ink"] };
         System.Windows.Automation.AutomationProperties.SetName(box, name); return box;
+    }
+    internal static string SelectedSpokenText(RichTextBox box)
+    {
+        var text = box.Selection.Text;
+        // WPF adds a document paragraph separator when selecting through ContentEnd.
+        // Remove only that synthetic separator; approved content and its whitespace remain intact.
+        return box.Selection.End.CompareTo(box.Document.ContentEnd) == 0 && text.EndsWith("\r\n", StringComparison.Ordinal) ? text[..^2] : text;
     }
     private static TextBox TextArea(string text, string name)
     {

@@ -64,7 +64,7 @@ public sealed partial class MainViewModel
     {
         SelectedPreset = null; Presets.Clear();
         foreach (var preset in presetLibrary.Items) Presets.Add(preset);
-        SelectedPreset = Presets.FirstOrDefault(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        SelectedPreset = Presets.FirstOrDefault(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) ?? Presets.FirstOrDefault();
     }
     internal void ApplyNarrationOptions(NarrationOptions options)
     {
@@ -89,6 +89,7 @@ public sealed partial class MainViewModel
     {
         estimateCancellation?.Cancel(); estimateCancellation?.Dispose();
         if (shutdown.IsCancellationRequested) return;
+        EstimateSummary = string.IsNullOrWhiteSpace(Source) ? "Paste text to see its word count and calibrated estimates." : "Updating spoken-word count and calibrated estimates…";
         estimateCancellation = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
         _ = EstimateAsync(estimateCancellation.Token);
     }

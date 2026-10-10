@@ -44,8 +44,18 @@ public class PlaybackTests
         var box = PreparationWindow.HighlightedText(ReviewHighlights.Spoken(prepared), "Spoken review");
         box.SelectAll();
         Assert.StartsWith(prepared.Script, box.Selection.Text); // WPF appends the document's paragraph separator
+        Assert.Equal(prepared.Script, PreparationWindow.SelectedSpokenText(box));
         Assert.True(box.IsReadOnly);
         Assert.Contains(box.Document.Blocks.OfType<Paragraph>().Single().Inlines.OfType<Run>(), r => r.Background is not null);
+        return Task.CompletedTask;
+    });
+    [Fact]
+    public Task SelectingTheFull900CharacterReviewDoesNotCountAWpfParagraphAsSource() => DesktopHost.Run(() =>
+    {
+        var text = new string('a', 900);
+        var box = PreparationWindow.HighlightedText([new(text, ReviewHighlightKind.Changed)], "Spoken review"); box.SelectAll();
+        Assert.Equal(text, PreparationWindow.SelectedSpokenText(box));
+        Assert.Equal(text, AuditionRequest.ApprovedExcerpt(PreparationWindow.SelectedSpokenText(box), new("kokoro", "af_heart", 1, false, "", "")).Prepare().Script);
         return Task.CompletedTask;
     });
     [Fact]
@@ -57,8 +67,11 @@ public class PlaybackTests
             var window = new MainWindow(model); DesktopHost.Layout(window);
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
             model.Playback.Open("fixture.wav", "Playing item"); model.Playback.PositionSeconds = 40;
+            var timeline = (Slider)window.FindName("PlaybackTimeline");
+            Assert.Equal(100, timeline.Maximum); Assert.Equal(40, timeline.Value);
+            timeline.Value = 55; Assert.Equal(55, output.Position);
             model.RefreshJobs([new() { Title = "A different item", Stage = JobStage.Cancelled }]);
-            Assert.Equal("Playing item", model.Playback.Title); Assert.Equal(40, model.Playback.PositionSeconds);
+            Assert.Equal("Playing item", model.Playback.Title); Assert.Equal(55, model.Playback.PositionSeconds);
         }
         finally { await model.DisposeAsync(); }
     });
