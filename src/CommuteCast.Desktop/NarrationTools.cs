@@ -72,6 +72,7 @@ public sealed partial class MainViewModel
         if (settings.Providers.TryGetValue(options.Engine, out var installed) && installed.State == "ready" && !installed.Voices.Contains(options.Voice))
             throw new ArgumentException("This preset's voice is unavailable. Refresh the voice library or update the preset to an installed voice.");
         options.ApplyTo(settings);
+        ProviderChanged();
         RefreshVoiceChoices(); Raise(nameof(Engine)); Raise(nameof(Speed)); Raise(nameof(SpeedLabel));
         Raise(nameof(ExcludeCode)); Raise(nameof(Pronunciation)); RaiseProfile();
         if (previousEngine != Engine && !loading) _ = RefreshChangedEngineAsync(Engine);
@@ -100,10 +101,16 @@ public sealed partial class MainViewModel
             await Task.Delay(450, ct);
             if (string.IsNullOrWhiteSpace(Source)) { EstimateSummary = "Paste text to see its word count and calibrated estimates."; return; }
             var text = Source; var choices = narrationPreferences.Current;
+            var estimateEpisode = PodcastMode ? CaptureEpisode() : null;
             settings.Providers.TryGetValue(choices.Engine, out var info);
             var history = Jobs.Select(j => j.Job).ToArray();
             var estimate = await Task.Run(() =>
             {
+                if (estimateEpisode is not null)
+                {
+                    var turns = PodcastScript.Parse(text, estimateEpisode);
+                    return NarrationEstimate.Calculate(string.Join("\n", turns.Select(t => t.Text)), choices, null, []);
+                }
                 var prepared = TextPreparation.Prepare(text, choices.ExcludeCode, choices.Pronunciation, choices.Profile, ct);
                 return NarrationEstimate.Calculate(prepared.Script, choices, info, history);
             }, ct);

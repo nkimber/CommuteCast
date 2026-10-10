@@ -32,7 +32,7 @@ public sealed record NarrationBrief
     }
 }
 
-public sealed record NarrationPromptDraft(NarrationBrief Brief, string Prompt, NarrationBrief? GeneratedFor, int TemplateVersion = 0)
+public sealed record NarrationPromptDraft(NarrationBrief Brief, string Prompt, NarrationBrief? GeneratedFor, int TemplateVersion = 0, string? PodcastIdentity = null)
 {
     public void ValidateStorage()
     {

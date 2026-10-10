@@ -61,11 +61,20 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
         var retained = new List<Job>();
         foreach (var job in loaded)
         {
+            if (job.SpeechAttempts is { } attempts)
+                for (var i = 0; i < attempts.Count; i++) if (attempts[i].State == "started") attempts[i] = attempts[i] with { State = "uncertain" };
             try { await PrivateJobFiles.ReconcilePromotionsAsync(job, workspace.JobDirectory(job.Id), () => store.SaveAsync(job, ct), ct); }
             catch (IOException error)
             {
                 job.Stage = job.DeletionRequested ? JobStage.Deleting : JobStage.Failed;
                 job.Error = FriendlyError(error); retained.Add(job); await store.SaveAsync(job, ct); continue;
+            }
+            if (job.Stage is not (JobStage.Exported or JobStage.Failed or JobStage.Cancelled or JobStage.Deleting) &&
+                HasUnresolvedHostedRequest(job))
+            {
+                job.Stage = JobStage.Failed; job.FailedStage = JobStage.Synthesizing; job.FailureCategory = FailureCategory.ServiceConnection;
+                job.Error = "An interrupted hosted request may have been billed. Inspect provider usage, then explicitly Retry / resume to authorize another request. Validated segments will be reused.";
+                await store.SaveAsync(job, ct);
             }
             if (job.DeletionRequested)
             {
@@ -110,12 +119,18 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
     private static void ValidateConfiguration(Job job)
     {
         job.Settings.ValidateProviderImage();
+        job.Settings.Speech?.Validate(job.Settings.Engine);
+        if (SpeechProviders.IsHosted(job.Settings.Engine)) HostedSpeechProvider.ValidateSettings(job.Settings);
+        if (job.Episode is not null) PodcastScript.ValidateManifest(job);
         if (job.Settings.Profile is not { } profile) return;
         profile.Validate(job.Settings.Engine);
-        if (job.Prepared.Version != "prepare-v3" || job.Prepared.ProfileReview is not { } review || review.Profile != profile ||
+        if (job.Prepared.Version != (job.Episode is null ? "prepare-v3" : "podcast-prepare-v1") || job.Prepared.ProfileReview is not { } review || review.Profile != profile ||
             review.DictionaryRevision != TextPreparation.DictionaryRevision(job.Settings.Pronunciation))
             throw new ArgumentException("The captured pronunciation profile and prepared script differ. Submit a new narration after reviewing preparation.");
     }
+    private static bool HasUnresolvedHostedRequest(Job job) => job.SpeechAttempts?.Any(a =>
+        a.StartedUtc > (job.HostedRetryAuthorizedUtc ?? DateTimeOffset.MinValue) && a.State is "started" or "uncertain" or "received" &&
+        (a.UnitIndex is null || !job.Receipts.Any(r => r.Index == a.UnitIndex && r.Fingerprint == job.Fingerprint))) == true;
     private async Task CheckStorageBudgetAsync(IReadOnlyList<Job> snapshots, string? addedScript, CancellationToken ct)
     {
         if (PrivateStorageLimitMiB == 0) return;
@@ -203,6 +218,11 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
                 job.Error = "";
                 job.FailureCategory = job.ExportCommitted || ((lifetime.IsCancellationRequested || interruptedByPower) && !job.CancellationRequested) ? FailureCategory.None : FailureCategory.Cancelled;
                 job.FailedStage = null;
+                if (!job.ExportCommitted && !job.CancellationRequested && HasUnresolvedHostedRequest(job))
+                {
+                    job.Stage = JobStage.Failed; job.FailedStage = JobStage.Synthesizing; job.FailureCategory = FailureCategory.ServiceConnection;
+                    job.Error = "An interrupted hosted request may have been billed. Inspect provider usage, then explicitly Retry / resume to authorize another request. Validated segments will be reused.";
+                }
                 await PersistOutcomeAsync(job);
             }
             catch (Exception error)
@@ -277,8 +297,8 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
         job.Error = "";
         job.FailureCategory = FailureCategory.None; job.FailedStage = null;
         lock (sync) if (job.Chunks.Count == 0) job.Chunks = Chunker.Split(job.Prepared.Script, 450);
-        if (job.ChunkingVersion != "chunk450-v1" || job.AudioContractVersion != AudioPipeline.ContractVersion) throw new IOException("This job uses an unsupported chunk/audio contract. Restore its application version or submit a new narration.");
-        Chunker.ValidateManifest(job.Chunks, job.Prepared.Script);
+        if (job.Episode is null && (job.ChunkingVersion != "chunk450-v1" || job.AudioContractVersion != AudioPipeline.ContractVersion)) throw new IOException("This job uses an unsupported chunk/audio contract. Restore its application version or submit a new narration.");
+        Chunker.ValidateManifest(job.Chunks, job.Prepared.Script, job.Episode is null ? 900 : 1800);
         ValidateConfiguration(job);
         PrivateJobFiles.RetainReceipts(job);
         await StageAsync(job, JobStage.Preparing, ct);
@@ -300,6 +320,8 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
         }
         lock (sync) job.Receipts = valid;
         job.CompletedChunks = valid.Count;
+        if (HasUnresolvedHostedRequest(job))
+            throw new IOException("Previously requested hosted audio is missing or invalid and may have been billed. Inspect provider usage, then explicitly Retry / resume to authorize regeneration.");
         var final = workspace.FinalPath(job);
         var finalValid = valid.Count == job.Chunks.Count && job.FinalHash.Length > 0 && File.Exists(final) && await Workspace.HashFileAsync(final, ct) == job.FinalHash;
         if (!finalValid)
@@ -318,6 +340,7 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
                     job.SpeechReadinessMilliseconds = (job.SpeechReadinessMilliseconds ?? 0) + readinessStarted.ElapsedMilliseconds;
                     if (info.Fingerprint != job.Settings.ProviderFingerprint || job.Settings.ProviderImageId is not null && info.ImageId != job.Settings.ProviderImageId)
                         throw new IOException("The speech model or image changed since submission. Restore it or submit a new job to avoid mixed audio.");
+                    if (job.Episode is { } episode && episode.Speakers.Any(s => !info.Voices.Contains(s.Voice))) throw new IOException("A captured podcast voice is unavailable. Existing segments are preserved. Restore that voice or create a new draft with a revised cast.");
                     foreach (var chunk in job.Chunks)
                     {
                         ct.ThrowIfCancellationRequested();
@@ -327,7 +350,9 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
                         var raw = Path.Combine(directory, "inference.partial.wav");
                         var normalized = Path.Combine(directory, "normalized.partial.wav");
                         await PrivateJobFiles.PrepareOutputAsync(job, directory, Path.GetFileName(raw), ct);
-                        if (provider is IDurableSpeechProvider durable)
+                        if (provider is IRenderUnitSpeechProvider units)
+                            await units.SynthesizeUnitAsync(job, chunk, raw, () => CheckpointAsync(job, CancellationToken.None), ct);
+                        else if (provider is IDurableSpeechProvider durable)
                             await durable.SynthesizeAsync(job, job.Settings, chunk.Text, raw, () => CheckpointAsync(job, ct), ct);
                         else
                         {
@@ -434,6 +459,9 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
             if (job.DeletionRequested) throw new ArgumentException("This narration is pending deletion. Retry its deletion to finish removal.");
         }
         var queued = JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(job))!;
+        if (job.SpeechAttempts?.LastOrDefault()?.RetryAfterUtc is { } retryAfter && retryAfter > DateTimeOffset.UtcNow)
+            throw new IOException($"The speech provider requested backoff until {retryAfter.ToLocalTime():HH:mm:ss}. Retry after that time; retained segments are preserved.");
+        if (SpeechProviders.IsHosted(job.Settings.Engine)) queued.HostedRetryAuthorizedUtc = DateTimeOffset.UtcNow;
         if (destination is not null)
         {
             workspace.GuardLocalDestination(destination);

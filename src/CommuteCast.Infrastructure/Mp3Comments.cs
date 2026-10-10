@@ -26,7 +26,7 @@ internal static class Mp3Comments
             "Voice: " + settings.Voice,
             "Pace: " + settings.Speed.ToString(CultureInfo.InvariantCulture) + "x",
             "Provider/model fingerprint: " + (string.IsNullOrEmpty(settings.ProviderFingerprint) ? "not recorded" : settings.ProviderFingerprint),
-            "Provider image: " + (settings.ProviderImageId ?? "not recorded (legacy job)"),
+            "Provider image: " + (settings.ProviderImageId ?? (SpeechProviders.IsHosted(settings.Engine) ? "not applicable (hosted API)" : "not recorded (legacy job)")),
             "Code blocks excluded: " + (settings.ExcludeCode ? "yes" : "no")
         };
         if (settings.Engine == "kokoro")
@@ -35,6 +35,13 @@ internal static class Mp3Comments
         {
             lines.Add("Speech language: en-US");
             lines.Add("Piper length scale: " + (1 / settings.Speed).ToString(CultureInfo.InvariantCulture));
+        }
+        if (settings.Speech is { } speech) lines.Add("Requested hosted model: " + speech.Model + "; hosted aliases may change; regenerated speech is not byte-identical.");
+        if (job.Episode is { } episode)
+        {
+            lines.Add("Podcast participants: " + episode.Speakers.Count + "; format: " + episode.Format.Name);
+            foreach (var speaker in episode.Speakers.Select((s, i) => (s, i))) lines.Add($"Participant {speaker.i + 1}: {speaker.s.Role}; voice: {speaker.s.Voice}; pace: {speaker.s.Speed.ToString(CultureInfo.InvariantCulture)}x");
+            lines.Add("Podcast units normalized to -19 LUFS with -2 dB true-peak target; provider dialogue timing retained inside blocks.");
         }
         if (profile is not null)
         {
@@ -48,7 +55,9 @@ internal static class Mp3Comments
         if (rules > 0)
             lines.Add("Pronunciation dictionary revision: " + (job.Prepared.ProfileReview?.DictionaryRevision ?? Job.Hash(settings.Pronunciation)));
         lines.Add("Audio: MP3; libmp3lame; 128 kbps; 24000 Hz; mono; one encode from 16-bit PCM");
-        lines.Add(FormattableString.Invariant($"Segments: {job.Chunks.Count}; inserted join pauses: {gaps} at 150 ms; expected audio duration: {job.Receipts.Sum(r => r.Duration) + gaps * .15:0.000} seconds"));
+        if (job.Episode is not null) gaps = job.Chunks.Take(job.Chunks.Count - 1).Count(c => c.Turns![^1].Speaker != job.Chunks[c.Index + 1].Turns![0].Speaker);
+        var pause = job.Episode is null ? .15 : .08;
+        lines.Add(FormattableString.Invariant($"Segments: {job.Chunks.Count}; inserted join pauses: {gaps} at {pause * 1000:0} ms; expected audio duration: {job.Receipts.Sum(r => r.Duration) + gaps * pause:0.000} seconds"));
         lines.Add(FormattableString.Invariant($"Source characters: {job.Source.Length}; spoken text characters: {job.Prepared.Script.Length}"));
         lines.Add($"Preparation: {job.Prepared.Version}; chunking: {job.ChunkingVersion}; audio contract: {job.AudioContractVersion}");
         lines.Add("Queued UTC: " + job.CreatedUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));

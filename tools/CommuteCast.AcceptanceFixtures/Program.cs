@@ -72,14 +72,14 @@ if (args[0] is "legacy-schema-three" or "inspect-schema")
     var version = await SqliteSchema.ValidateDatabaseAsync(database);
     if (args[0] == "legacy-schema-three")
     {
-        if (version != 4) throw new IOException("Use a current synthetic queue for the legacy fixture.");
+        if (version != SqliteSchema.CurrentVersion) throw new IOException("Use a current synthetic queue for the legacy fixture.");
         await using var connection = new Microsoft.Data.Sqlite.SqliteConnection(SqliteSchema.ConnectionString(database, Microsoft.Data.Sqlite.SqliteOpenMode.ReadWrite));
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT count(*) FROM audition_ownership";
         if (Convert.ToInt64(await command.ExecuteScalarAsync()) != 0) throw new IOException("Legacy fixture requires settled preview ownership.");
         using var transaction = connection.BeginTransaction(); command.Transaction = transaction;
-        command.CommandText = "DROP TABLE audition_ownership; DELETE FROM schema_history WHERE version>3; PRAGMA user_version=3;";
+        command.CommandText = "DROP TABLE hosted_auditions; DROP TABLE audition_ownership; DELETE FROM schema_history WHERE version>3; PRAGMA user_version=3;";
         await command.ExecuteNonQueryAsync(); transaction.Commit();
     }
     Console.WriteLine(JsonSerializer.Serialize(new { version = await SqliteSchema.ValidateDatabaseAsync(database) })); return;

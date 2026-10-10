@@ -141,7 +141,10 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
         Raise(nameof(ShowProcessingDetails));
         Raise(nameof(ShowCloudSync));
     }
-    public string TechnicalDetails => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.FailedStage is { } stage ? $"\nStopped during: {stage}" : "");
+    public string TechnicalDetails => $"{Job.Settings.Engine} · {Job.Settings.Voice}\n{Job.Settings.Speed:0.00}× pace · {Job.Source.Length:N0} source characters\n" + (Job.Settings.Profile is { } p ? $"{p.Language} · {p.Numbers} · {p.Acronyms} · {p.Dates}" : "Legacy literal pronunciation") + (Job.FailedStage is { } stage ? $"\nStopped during: {stage}" : "")
+        + (Job.Settings.Speech is { } speech ? $"\nHosted model: {speech.Model}" : "")
+        + (Job.Episode is { } episode ? "\n" + episode.Format.Name + "\n" + string.Join("\n", episode.Speakers.Select(s => $"{s.Name} ({s.Role}): {s.Voice} · {s.Speed:0.00}×")) : "")
+        + (Job.SpeechAttempts is { Count: > 0 } attempts ? $"\nHosted requests: {attempts.Count} · uncertain: {attempts.Count(a => a.State is "uncertain" or "started")}. Provider charges may apply.\n" + string.Join("\n", attempts.TakeLast(10).Select(a => $"{a.StartedUtc:MMM d HH:mm} · block {a.UnitIndex + 1} · {a.State} · request {a.RequestId ?? "ID unavailable"}")) : "");
     public string Details => TechnicalDetails + $"\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks" + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
     public string Error => string.Join(Environment.NewLine, new[] { Job.Error,
         string.IsNullOrWhiteSpace(Job.ExportNotice) || Job.Error.Contains(Job.ExportNotice, StringComparison.Ordinal) ? "" : Job.ExportNotice,
@@ -155,7 +158,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
 {
     public Workspace Workspace { get; }
     private readonly AppSettings settings;
-    private readonly LocalSpeechProvider provider;
+    private readonly SpeechProviderService provider;
     private readonly ISetupRuntime setupRuntime;
     private readonly Action<ProcessStartInfo> openFolder;
     private readonly DispatcherTimer progressTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
@@ -203,7 +206,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public string LibraryResultSummary => $"Showing {LibraryJobs.Count} of {Jobs.Count} narrations";
     public ObservableCollection<SpeechVoiceChoice> Voices { get; private set; } = [];
     private readonly NarrationPreferences narrationPreferences;
-    public string[] Engines { get; } = ["kokoro", "piper"];
+    public string[] Engines { get; } = SpeechProviders.All.Select(p => p.Id).ToArray();
     public event Action? DraftQueued;
     public string PageHeading => page switch { "library" => "Your listening library", "settings" => "Settle in. Set it up.", "codex" => "Write something worth hearing.", "prompt" => "Start with a good question.", _ => "Make time to listen." };
     public bool IsCompose => page == "compose";
@@ -216,7 +219,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         set
         {
             if (!Set(ref source, value)) return;
-            Raise(nameof(CharacterCount));
+            Raise(nameof(CharacterCount)); Raise(nameof(HostedEstimate)); PodcastChanged();
             ScheduleEstimate();
             if (DraftTitle.Length == 0 && source.Length > 0) DraftTitle = TextPreparation.SuggestTitle(source[..Math.Min(source.Length, TextPreparation.MaximumCharacters)]);
             ScheduleDraftSave();
@@ -233,16 +236,16 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         selectionSource = text; selectionStart = start; selectionLength = length;
         Raise(nameof(HasAuditionSelection)); Raise(nameof(AuditionSelectionSummary));
     }
-    public string Engine { get => settings.Engine; set { if (settings.Engine == value || value is null) return; narrationPreferences.SelectEngine(value); RefreshVoiceChoices(); Raise(); Raise(nameof(Voice)); RaiseProfile(); RaiseNarrationChoices(); ServiceStatus = "Refreshing " + value + " voices…"; if (!loading) _ = RefreshChangedEngineAsync(value); } }
+    public string Engine { get => settings.Engine; set { if (settings.Engine == value || value is null) return; narrationPreferences.SelectEngine(value); RefreshVoiceChoices(); Raise(); Raise(nameof(Voice)); RaiseProfile(); RaiseNarrationChoices(); ProviderChanged(); ServiceStatus = "Refreshing " + value + " voices…"; if (!loading) _ = RefreshChangedEngineAsync(value); } }
     public string Voice { get => settings.Voice; set { if (value is not null && settings.Voice != value) { settings.Voice = value; Raise(); RaiseNarrationChoices(); } } }
     public double Speed { get => settings.Speed; set { settings.Speed = Math.Round(value, 2); Raise(); Raise(nameof(SpeedLabel)); RaiseNarrationChoices(); } }
     public string SpeedLabel => $"{Speed:0.00}×";
     public bool UsingNarrationDefaults => narrationPreferences.UsingDefaults;
     public string NarrationChoiceStatus => UsingNarrationDefaults ? "Using your saved defaults" : "Custom choices for this MP3";
     public string NarrationChoiceSummary => $"{SpeechVoiceCatalog.Describe(Engine, Voice).DisplayName} · {Speed:0.00}× pace";
-    public string NarrationDefaultsSummary => $"{(narrationPreferences.Defaults.Engine == "kokoro" ? "Kokoro" : "Piper")} · {SpeechVoiceCatalog.Describe(narrationPreferences.Defaults.Engine, narrationPreferences.Defaults.Voice).DisplayName} · {narrationPreferences.Defaults.Speed:0.00}× pace";
-    public string VoiceLibrarySummary => settings.Providers.TryGetValue(Engine, out var info) && info.State == "ready" ? $"{info.Voices.Length} voices · choose one and play a sample" : "Refresh voices to check this engine's installed library.";
-    private void RaiseNarrationChoices() { Raise(nameof(UsingNarrationDefaults)); Raise(nameof(NarrationChoiceStatus)); Raise(nameof(NarrationChoiceSummary)); Raise(nameof(NarrationDefaultsSummary)); ScheduleEstimate(); }
+    public string NarrationDefaultsSummary => $"{SpeechProviders.Get(narrationPreferences.Defaults.Engine).Name} · {SpeechVoiceCatalog.Describe(narrationPreferences.Defaults.Engine, narrationPreferences.Defaults.Voice).DisplayName} · {narrationPreferences.Defaults.Speed:0.00}× pace";
+    public string VoiceLibrarySummary => settings.Providers.TryGetValue(Engine, out var info) && info.State == "ready" && (!IsHosted || info.Fingerprint == CurrentSpeech.Identity(Engine)) ? $"{info.Voices.Length} voices · choose one and play a sample" : "Refresh voices to check availability for this provider and model.";
+    private void RaiseNarrationChoices() { Raise(nameof(UsingNarrationDefaults)); Raise(nameof(NarrationChoiceStatus)); Raise(nameof(NarrationChoiceSummary)); Raise(nameof(NarrationDefaultsSummary)); ScheduleEstimate(); if (PodcastMode) PodcastChanged(); }
     public bool ExcludeCode { get => settings.ExcludeCode; set { settings.ExcludeCode = value; Raise(); RaiseNarrationChoices(); } }
     public string Pronunciation { get => settings.Pronunciation; set { settings.Pronunciation = value; Raise(); RaiseNarrationChoices(); } }
     public PronunciationOption<NumberReading>[] NumberOptions { get; } = [new(NumberReading.AsWritten, "Keep numbers as written"), new(NumberReading.LiteralDigits, "Read each digit and symbol"), new(NumberReading.NumberWords, "Read integer and decimal values"), new(NumberReading.ScientificWords, "Read values and scientific exponents")];
@@ -255,7 +258,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public bool PronunciationSupported { get { try { Profile.Validate(Engine); return true; } catch (ArgumentException) { return false; } } }
     public bool PronunciationUnsupported => !PronunciationSupported;
     public string PronunciationCapability => PronunciationSupported
-        ? "English preparation for Kokoro and Piper. Dictionary entries take priority. No acronym meanings are guessed. Preview the complete script and exact changes before queueing."
+        ? "English preparation for the selected provider. Dictionary entries take priority. No acronym meanings are guessed. Preview the complete script and exact changes before queueing."
         : "This engine, language or saved profile version is unsupported. Choose Kokoro or Piper and reset to the supported English profile for a new narration.";
     public string ProfileSummary => PronunciationSupported ? $"English · {NumberOptions.First(o => o.Value == NumberStyle).Label}\n{AcronymOptions.First(o => o.Value == AcronymStyle).Label} · {DateOptions.First(o => o.Value == DateStyle).Label}" : PronunciationCapability;
     private void RaiseProfile() { Raise(nameof(NumberStyle)); Raise(nameof(AcronymStyle)); Raise(nameof(DateStyle)); Raise(nameof(PronunciationSupported)); Raise(nameof(PronunciationUnsupported)); Raise(nameof(PronunciationCapability)); Raise(nameof(ProfileSummary)); RaiseNarrationChoices(); }
@@ -339,7 +342,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         Playback.Finished += () => { _ = CleanupFinishedPlaybackAsync(); };
         drafts = new(Workspace);
         store = new SqliteJobStore(Workspace);
-        provider = speechProvider ?? new(Workspace); publisher = new(Workspace, store);
+        provider = new(Workspace, settings, speechProvider, speechSecrets); publisher = new(Workspace, store);
         setupRuntime = setupInspection ?? new SetupRuntime(Workspace.Root);
         this.openFolder = openFolder ?? (info => { Process.Start(info); });
         queue = new(Workspace, store, provider, new(settings), publisher) { Paused = settings.QueuePaused, CacheQuotaMiB = settings.CacheQuotaMiB, ScratchRetentionDays = settings.ScratchRetentionDays, PrivateStorageLimitMiB = settings.PrivateStorageLimitMiB };
@@ -368,7 +371,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         });
         RepairSpeechCommand = Command(_ => RepairSpeechAsync());
         QueueCommand = Command(_ => SubmitAsync());
-        ReviewCommand = Command(async _ => { var text = Source; var snapshot = CapturePreviewSettings(); var prepared = await Task.Run(() => TextPreparation.Prepare(text, snapshot.ExcludeCode, snapshot.Pronunciation, snapshot.Profile, shutdown.Token), shutdown.Token); ShowPreparation(prepared, text, snapshot); });
+        ReviewCommand = Command(async _ => { var text = Source; var snapshot = CapturePreviewSettings(); var episode = PodcastMode ? CaptureEpisode() : null; var prepared = await Task.Run(() => episode is null ? TextPreparation.Prepare(text, snapshot.ExcludeCode, snapshot.Pronunciation, snapshot.Profile, shutdown.Token) : PodcastScript.Prepare(text, episode, snapshot).Prepared, shutdown.Token); ShowPreparation(prepared, text, snapshot, episode); });
         ChooseFolderCommand = Command(async _ => { var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); settings.Destination = path; Raise(nameof(DestinationDisplay)); await SaveSettingsAsync(); StatusMessage = "Output folder saved. Only completed MP3s will be exported here."; } });
         TestFolderCommand = Command(async _ => { await publisher.TestDestinationAsync(settings.Destination); StatusMessage = "Local write access passed. OneDrive cloud upload is still unknown."; });
         ReadinessCommand = Command(_ => CheckReadinessAsync(true));
@@ -401,7 +404,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
                 : job.ExportCommitted || job.FinalHash.Length > 0 ? "Folder opened. The recorded MP3 is missing or moved." : "Output folder opened.";
             return Task.CompletedTask;
         });
-        InspectCommand = Command(_ => { var job = RequireSelected(); ShowPreparation(job.Prepared, job.Source, job.Settings); return Task.CompletedTask; });
+        InspectCommand = Command(_ => { var job = RequireSelected(); ShowPreparation(job.Prepared, job.Source, job.Settings, job.Episode); return Task.CompletedTask; });
         RetryCommand = Command(_ => ResumeAsync(RequireSelected()));
         ResumeJobCommand = Command(async parameter =>
         {
@@ -413,13 +416,14 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         });
         ReplaceDestinationCommand = Command(async _ => { var job = RequireSelected(); var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); await queue.RetryAsync(job.Id, path); StatusMessage = queue.Snapshot().Single(j => j.Id == job.Id).ExportNotice is { Length: > 0 } notice ? notice : "Narration queued in the selected output folder."; } });
         CancelCommand = Command(async _ => { var id = RequireSelected().Id; await queue.CancelAsync(id); StatusMessage = "Cancellation settled. Exported files remain exported; validated chunks are retained for retry."; });
-        ReuseCommand = Command(_ => { var job = RequireSelected(); DraftTitle = job.Title; Source = job.Source; Engine = job.Settings.Engine; Voice = job.Settings.Voice; Speed = job.Settings.Speed; ExcludeCode = job.Settings.ExcludeCode; Pronunciation = job.Settings.Pronunciation; settings.PronunciationProfile = job.Settings.Profile ?? new(); RaiseProfile(); Navigate("compose"); return Task.CompletedTask; });
+        ReuseCommand = Command(_ => { var job = RequireSelected(); DraftTitle = job.Title; Source = job.Source; Engine = job.Settings.Engine; Voice = job.Settings.Voice; Speed = job.Settings.Speed; ExcludeCode = job.Settings.ExcludeCode; Pronunciation = job.Settings.Pronunciation; settings.PronunciationProfile = job.Settings.Profile ?? new(); RaiseProfile(); if (job.Settings.Speech is { } speech) settings.SpeechDefaults[job.Settings.Engine] = speech; PodcastMode = job.Episode is not null; if (job.Episode is { } episode) LoadEpisode(episode); ProviderChanged(); Navigate("compose"); return Task.CompletedTask; });
         DeleteCommand = Command(_ => DeleteAsync(false));
         DeleteAllCommand = Command(_ => DeleteAsync(true));
         DiagnosticsCommand = Command(_ => DiagnosticsAsync());
         MeasureStorageCommand = Command(_ => RefreshStorageAsync());
         CleanCacheCommand = Command(async _ => { ValidateRetention(); queue.CacheQuotaMiB = CacheQuotaMiB; queue.ScratchRetentionDays = ScratchRetentionDays; var result = await queue.CleanCacheAsync(shutdown.Token); await RefreshStorageAsync(); StatusMessage = $"Cleanup removed {result.FilesRemoved} files ({result.BytesRemoved / 1048576.0:0.0} MiB). {result.Failures} files could not be removed. Protected data and exports are retained."; });
         InitializeNarrationTools();
+        InitializePodcast();
         InitializePromptBuilder();
         InitializeLifecycle(powerEvents, notifications);
     }
@@ -505,7 +509,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public Task InitializeAsync() => operations.RunAsync(InitializeCoreAsync);
     private async Task InitializeCoreAsync()
     {
-        try { using var trace = new StartupStepTrace(StartupPhase.DraftLoad); var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; RestorePromptDraft(saved.PromptDraft); trace.Complete(); }
+        try { using var trace = new StartupStepTrace(StartupPhase.DraftLoad); var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; RestorePromptDraft(saved.PromptDraft); RestorePodcastDraft(saved.Podcast); trace.Complete(); }
         catch (IOException error) { AppLogging.Failure("DraftLoad", error); draftLoadFailed = true; ReportError(error.Message); }
         loading = false;
         string? previewNotice = null;
@@ -548,15 +552,15 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private void RefreshVoiceChoices()
     {
         var selected = Voice;
-        var installed = settings.Providers.TryGetValue(Engine, out var info) && info.State == "ready" ? info.Voices : [];
-        var choices = SpeechVoiceCatalog.Choices(Engine, installed, selected);
+        var installed = settings.Providers.TryGetValue(Engine, out var info) && info.State == "ready" && (!IsHosted || info.Fingerprint == CurrentSpeech.Identity(Engine)) ? info.Voices : [];
+        var choices = SpeechVoiceCatalog.Choices(Engine, installed, selected).Select(v => provider.VoiceNames.TryGetValue(Engine + ":" + v.Id, out var name) ? v with { DisplayName = name } : v).ToArray();
         if (!Voices.SequenceEqual(choices)) { Voices = new(choices); Raise(nameof(Voices)); }
         Raise(nameof(Voice)); Raise(nameof(VoiceLibrarySummary)); RaiseNarrationChoices();
     }
     private void RestoreNarrationDefaults()
     {
         var previousEngine = Engine;
-        narrationPreferences.UseDefaults(); RefreshVoiceChoices();
+        narrationPreferences.UseDefaults(); RefreshVoiceChoices(); ProviderChanged();
         Raise(nameof(Engine)); Raise(nameof(Voice)); Raise(nameof(Speed)); Raise(nameof(SpeedLabel));
         Raise(nameof(ExcludeCode)); Raise(nameof(Pronunciation)); RaiseProfile();
         if (Engine != previousEngine && !loading) _ = RefreshChangedEngineAsync(Engine);
@@ -598,13 +602,13 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         var info = await provider.ProbeAsync(engine, shutdown.Token);
         if (info.State != "ready") throw new IOException("The speech engine is still loading or needs repair. Check speech readiness to refresh its voices.");
         settings.Providers[engine] = info;
-        if (engine == Engine) { RefreshVoiceChoices(); ServiceStatus = engine + " · ready on this laptop"; }
+        if (engine == Engine) { RefreshVoiceChoices(); ServiceStatus = engine + (SpeechProviders.IsHosted(engine) ? " · hosted account ready" : " · ready on this laptop"); }
         await SaveSettingsAsync();
     }
     private async Task RefreshVoiceLibraryAsync()
     {
         var results = new List<string>();
-        foreach (var engine in Engines)
+        foreach (var engine in IsHosted ? new[] { Engine } : new[] { "kokoro", "piper" })
         {
             try { await RefreshVoiceEngineAsync(engine); results.Add($"{engine}: {settings.Providers[engine].Voices.Length} voices"); }
             catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { throw; }
@@ -627,7 +631,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private async Task<ProviderInfo> CheckReadinessAsync(bool explicitRetry = false, string? savedEngine = null, CancellationToken? operationToken = null)
     {
         var engine = savedEngine ?? Engine;
-        ServiceStatus = "Checking " + engine + " locally…";
+        ServiceStatus = "Checking " + engine + "…";
         ProviderInfo info;
         try { info = await provider.ReadyAsync(engine, operationToken ?? shutdown.Token, explicitRetry); }
         catch (Exception error)
@@ -645,15 +649,16 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         if (engine == Engine)
         {
             RefreshVoiceChoices();
-            ServiceStatus = engine + " · ready on this laptop";
+            ServiceStatus = engine + (SpeechProviders.IsHosted(engine) ? " · hosted account ready" : " · ready on this laptop");
             ProviderDetails = $"Contract v1 · {info.Engine}\nModel: {info.Fingerprint}\nEncoder: {encoderVersion}";
         }
-        else if (savedEngine is not null) ServiceStatus = engine + " · ready on this laptop";
+        else if (savedEngine is not null) ServiceStatus = engine + (SpeechProviders.IsHosted(engine) ? " · hosted account ready" : " · ready on this laptop");
         if (speechErrorEngine == engine) { speechError = ""; speechErrorEngine = ""; RaiseAttention(); }
         return info;
     }
     private async Task RefreshSetupAsync()
     {
+        if (IsHosted) { await CheckEncoderAsync(); SetupDetails = ProviderHelp + "\n" + HostedKeyStatus + "\n" + encoderVersion; return; }
         SetupDetails = "Checking setup without starting or changing services…";
         var report = await new SetupDiagnostics(setupRuntime).CheckAsync(settings, shutdown.Token);
         SetupDetails = report.Display;
@@ -663,7 +668,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         SetSelectedSpeechResult(job.Id, $"Checking / starting {job.Settings.Engine} for this saved narration…");
         try
         {
-            var info = await CheckReadinessAsync(true, job.Settings.Engine);
+            var info = await provider.ReadyForJobAsync(job, shutdown.Token);
             if (info.Fingerprint != job.Settings.ProviderFingerprint || (job.Settings.ProviderImageId is not null && info.ImageId != job.Settings.ProviderImageId))
                 throw new IOException("The speech model or image changed since submission. Restore the original compatible service for this saved narration, or use Use as a new draft to narrate with the new model. Existing chunks cannot be mixed with another model.");
             StatusMessage = $"{job.Settings.Engine} is ready for this saved narration. Choose Retry / resume to continue it; choose Resume queue if paused.";
@@ -674,7 +679,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private async Task RepairSpeechAsync()
     {
         var results = new List<string>(); var failures = new List<string>();
-        foreach (var engine in Engines)
+        foreach (var engine in IsHosted ? new[] { Engine } : new[] { "kokoro", "piper" })
         {
             SpeechRepairDetails = string.Join("\n\n", results.Append($"Checking / starting {engine}… Readiness allows up to two minutes per engine."));
             try
@@ -691,15 +696,24 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         SpeechRepairDetails = string.Join("\n\n", results) + "\n\nSaved failed narrations remain in Your library. Use Repair speech & resume on the existing item to continue it.";
         await RefreshSetupAsync();
         if (failures.Count > 0) throw new IOException("Some speech services still need attention. " + string.Join("\n", failures));
-        StatusMessage = "Both speech services are ready. Setup has been refreshed. Resume the existing saved narration in Your library.";
+        StatusMessage = "Selected speech services are ready. Setup has been refreshed. Resume the existing saved narration in Your library.";
     }
     private async Task SubmitAsync()
     {
         if (!queueLoaded) throw new IOException("Local queue records have not loaded. Repair storage or restore a verified compatible backup before submitting. Your draft is retained.");
         var text = Source; var title = DraftTitle.Trim(); var choices = narrationPreferences.Current;
         var engine = Engine; var voice = Voice; var speed = Speed; var exclusion = ExcludeCode; var dictionary = Pronunciation; var destination = settings.Destination;
-        var profile = CaptureProfile();
-        var prepared = await Task.Run(() => TextPreparation.Prepare(text, exclusion, dictionary, profile, shutdown.Token), shutdown.Token);
+        var profile = CaptureProfile(); var speech = IsHosted ? CurrentSpeech : null;
+        var episode = PodcastMode ? CaptureEpisode() : null;
+        if (episode is not null && validatedPodcastIdentity != PodcastValidationIdentity(episode)) throw new ArgumentException("Validate the current podcast dialogue and cast before creating an MP3.");
+        if (episode is not null)
+        {
+            voice = episode.Speakers[0].Voice; speed = episode.Speakers[0].Speed;
+            if (speech is not null) speech = speech with { Delivery = episode.Speakers[0].Delivery, Emotion = episode.Speakers[0].Emotion };
+        }
+        var snapshot = new NarrationSettings(engine, voice, speed, exclusion, dictionary, "", profile, Speech: speech);
+        var rendered = episode is null ? default : PodcastScript.Prepare(text, episode, snapshot);
+        var prepared = episode is null ? await Task.Run(() => TextPreparation.Prepare(text, exclusion, dictionary, profile, shutdown.Token), shutdown.Token) : rendered.Prepared;
         ValidateRetention();
         await queue.CleanCacheAsync(shutdown.Token);
         var usage = await queue.MeasureStorageAsync(shutdown.Token);
@@ -709,24 +723,27 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         await publisher.TestDestinationAsync(destination, shutdown.Token);
         settings.Providers.TryGetValue(engine, out var cached);
         var info = await provider.CaptureForSubmissionAsync(engine, cached, shutdown.Token);
-        if (!info.Voices.Contains(voice)) throw new ArgumentException("Select an installed voice after checking readiness.");
+        if (episode is null ? !info.Voices.Contains(voice) : episode.Speakers.Any(s => !info.Voices.Contains(s.Voice))) throw new ArgumentException("Select an available voice for every speaker after checking readiness.");
+        if (speech is not null && info.Fingerprint != speech.Identity(engine)) throw new IOException("Speech model changed during submission. Check the current model and submit again.");
         settings.Providers[engine] = info;
-        var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint, profile, info.ImageId), Destination = destination };
+        var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint, profile, info.ImageId, speech), Destination = destination, Episode = episode };
+        if (episode is not null) { job.Chunks = rendered.Units; job.ChunkingVersion = PodcastScript.ChunkVersion; job.AudioContractVersion = PodcastScript.AudioVersion; }
         await queue.AddAsync(job, shutdown.Token);
         RefreshJobs(queue.Snapshot());
         RevealJob(Jobs.Single(j => j.Id == job.Id));
-        if (Source == text) { Source = ""; DraftTitle = ""; if (narrationPreferences.Current == choices) RestoreNarrationDefaults(); }
+        if (Source == text && (episode is null ? !PodcastMode : PodcastMode && episode.Identity == CaptureEpisode().Identity)) { Source = ""; DraftTitle = ""; if (narrationPreferences.Current == choices) RestoreNarrationDefaults(); }
         StatusMessage = "Narration saved. Its progress is shown here. You do not need to queue it again.";
         DraftQueued?.Invoke();
         await SaveSettingsAsync();
     }
     private async Task AuditionAsync(bool selection)
     {
+        if (PodcastMode && selection) throw new ArgumentException("Open Review spoken text to audition an excerpt with its podcast speaker. Select text within one speaker's turn; labels are excluded.");
         var snapshot = CapturePreviewSettings();
         var request = selection ? AuditionRequest.Selection(selectionSource, selectionStart, selectionLength, snapshot) : AuditionRequest.Standard(snapshot);
         await AuditionAsync(request, selection);
     }
-    private NarrationSettings CapturePreviewSettings() => new(Engine, Voice, Speed, ExcludeCode, Pronunciation, "", CaptureProfile());
+    private NarrationSettings CapturePreviewSettings() => new(Engine, Voice, Speed, ExcludeCode, Pronunciation, "", CaptureProfile(), Speech: IsHosted ? CurrentSpeech : null);
     private async Task AuditionAsync(AuditionRequest request, bool selection)
     {
         if (queue.PowerSuspended) throw new IOException("Local speech is held after suspend. Recheck wake recovery before auditioning.");
@@ -737,7 +754,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         {
             Playback.Stop();
             await CleanupAuditionAsync();
-            StatusMessage = "Preparing a local audition. It waits for current narration before using speech. Use Stop audition to cancel.";
+            StatusMessage = SpeechProviders.IsHosted(request.Settings.Engine) ? "Preparing a hosted audition; provider charges may apply. It waits for current generation. Stop cancels local waiting, but a posted request may still be billed." : "Preparing a local audition. It waits for current narration before using speech. Use Stop audition to cancel.";
             var audio = await auditions.GenerateAsync(request, cancellation.Token);
             if (generation != auditionGeneration || cancellation.IsCancellationRequested)
             { await auditions.RemoveAsync(audio); return; }
@@ -788,8 +805,17 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         var dialog = new OpenFolderDialog { Title = "Choose your existing local corporate OneDrive output folder", Multiselect = false };
         return dialog.ShowDialog(Application.Current.MainWindow) == true ? dialog.FolderName : null;
     }
-    private void ShowPreparation(PreparedText prepared, string source, NarrationSettings snapshot) =>
-        new PreparationWindow(prepared, source, text => operations.RunAsync(() => AuditionAsync(AuditionRequest.ApprovedExcerpt(text, snapshot), true)), () => StopCommand.Execute(null))
+    private void ShowPreparation(PreparedText prepared, string source, NarrationSettings snapshot, PodcastEpisode? episode = null) =>
+        new PreparationWindow(prepared, source, text => operations.RunAsync(() => AuditionAsync(AuditionRequest.ApprovedExcerpt(text, snapshot), true)), () => StopCommand.Execute(null),
+            episode is null ? null : (text, offset) => operations.RunAsync(() =>
+            {
+                var position = 0; SourceSpan? selected = null;
+                foreach (var span in prepared.Spans) { if (offset >= position && offset + text.Length <= position + span.Narration.Length && span.Kind.StartsWith("podcast dialogue · ", StringComparison.Ordinal)) selected = span; position += span.Narration.Length; }
+                if (selected is null) throw new ArgumentException("Select spoken text within one podcast turn to audition its captured voice.");
+                var speaker = episode.Speakers.Single(s => selected.Kind == "podcast dialogue · " + s.Name);
+                var voice = snapshot with { Voice = speaker.Voice, Speed = speaker.Speed, Speech = snapshot.Speech is { } speech ? speech with { Delivery = speaker.Delivery, Emotion = speaker.Emotion } : null };
+                return AuditionAsync(AuditionRequest.ApprovedExcerpt(text, voice), true);
+            }))
         { Owner = Application.Current.MainWindow }.ShowDialog();
     private async Task DeleteAsync(bool all)
     {

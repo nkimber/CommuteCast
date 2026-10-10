@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -54,6 +54,11 @@ public partial class MainWindow : Window
     private void VoiceSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!syncingVoiceSelection && VoiceInput.SelectedItem is Core.SpeechVoiceChoice choice && model.Voices.Any(v => v.Id == choice.Id)) model.Voice = choice.Id;
+    }
+    private async void SaveHostedKey(object sender, RoutedEventArgs e)
+    {
+        try { var key = HostedKeyInput.Password; HostedKeyInput.Clear(); await model.SaveHostedKeyAsync(key); }
+        catch (Exception error) { MessageBox.Show(this, QueueCoordinator.FriendlyError(error), "Speech provider settings"); }
     }
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {

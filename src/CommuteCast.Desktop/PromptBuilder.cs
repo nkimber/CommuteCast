@@ -36,7 +36,7 @@ public sealed partial class MainViewModel
         new(NarrativeStyle.PracticalGuide, "Practical guide"), new(NarrativeStyle.BalancedComparison, "Balanced comparison")];
     public PronunciationOption<PromptEvidenceMode>[] PromptEvidenceModes { get; } =
     [new(PromptEvidenceMode.Research, "Research reliable sources"), new(PromptEvidenceMode.SuppliedOnly, "Use supplied material only")];
-    public bool PromptIsStale => !string.IsNullOrWhiteSpace(promptText) && (promptGeneratedFor != promptBrief || promptTemplateVersion != NarrationPrompt.TemplateVersion);
+    public bool PromptIsStale => !string.IsNullOrWhiteSpace(promptText) && (promptGeneratedFor != promptBrief || promptTemplateVersion != NarrationPrompt.TemplateVersion || promptPodcastIdentity != (PodcastMode ? CaptureEpisode().Identity : null));
     public bool CanCopyPrompt => !string.IsNullOrWhiteSpace(promptText) && !PromptIsStale;
     public string PromptStatus => !string.IsNullOrWhiteSpace(promptText) && promptTemplateVersion != NarrationPrompt.TemplateVersion
         ? "Rebuild this prompt using the current narration-only instructions before copying. Rebuilding replaces edits in the prompt."
@@ -58,7 +58,8 @@ public sealed partial class MainViewModel
     {
         BuildPromptCommand = Command(_ =>
         {
-            var generated = NarrationPrompt.Build(promptBrief, DateOnly.FromDateTime(DateTime.Today));
+            var generated = PodcastMode ? PodcastScript.Prompt(promptBrief, CaptureEpisode(), DateOnly.FromDateTime(DateTime.Today)) : NarrationPrompt.Build(promptBrief, DateOnly.FromDateTime(DateTime.Today));
+            promptPodcastIdentity = PodcastMode ? CaptureEpisode().Identity : null;
             promptGeneratedFor = promptBrief; promptTemplateVersion = NarrationPrompt.TemplateVersion; PromptText = generated; RaisePromptState(); ScheduleDraftSave();
             StatusMessage = "Writing prompt built. Review it, then copy it into your preferred GAI tool.";
             return Task.CompletedTask;
@@ -82,11 +83,11 @@ public sealed partial class MainViewModel
         if (!CanCopyPrompt) throw new ArgumentException("Build a prompt for the current brief before copying it.");
         return PromptText;
     }
-    internal Draft CaptureDraft() => new(DraftTitle, Source, promptDraftTouched ? new(promptBrief, promptText, promptGeneratedFor, promptTemplateVersion) : null);
+    internal Draft CaptureDraft() => new(DraftTitle, Source, promptDraftTouched ? new(promptBrief, promptText, promptGeneratedFor, promptTemplateVersion, promptPodcastIdentity) : null, podcastTouched ? new PodcastDraft(PodcastMode, CaptureEpisode()) : null);
     internal void RestorePromptDraft(NarrationPromptDraft? saved)
     {
         if (saved is null) return;
-        saved.ValidateStorage(); promptBrief = saved.Brief; promptText = saved.Prompt; promptGeneratedFor = saved.GeneratedFor; promptTemplateVersion = saved.TemplateVersion;
+        saved.ValidateStorage(); promptBrief = saved.Brief; promptText = saved.Prompt; promptGeneratedFor = saved.GeneratedFor; promptTemplateVersion = saved.TemplateVersion; promptPodcastIdentity = saved.PodcastIdentity;
         promptDraftTouched = true; Raise(null);
     }
 }

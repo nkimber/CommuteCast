@@ -38,7 +38,7 @@ internal static class ActivationBoundary
     {
         public Task BeforeCommitAsync(int fromVersion, int toVersion, CancellationToken ct)
         {
-            if (fromVersion != 3 || toVersion != 4) throw new IOException("Use this fixture's schema 3-to-4 migration.");
+            if (fromVersion != 3 || toVersion != SqliteSchema.CurrentVersion) throw new IOException("Use this fixture's migration from schema 3 to the current schema.");
             return barrier(fromVersion, fromVersion, toVersion);
         }
     }

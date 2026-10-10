@@ -58,9 +58,9 @@ public sealed record AuditionRequest
     private static NarrationSettings Validate(NarrationSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        if (settings.Engine is not ("kokoro" or "piper") || string.IsNullOrWhiteSpace(settings.Voice) || !double.IsFinite(settings.Speed) || settings.Speed is < .7 or > 1.4)
+        if (!SpeechProviders.IsKnown(settings.Engine) || string.IsNullOrWhiteSpace(settings.Voice) || !double.IsFinite(settings.Speed) || settings.Speed is < .7 or > 1.4)
             throw new ArgumentException("Choose an installed speech engine, voice and supported pace before auditioning.");
-        settings.Profile?.Validate(settings.Engine); TextPreparation.ValidateDictionary(settings.Pronunciation);
+        settings.Speech?.Validate(settings.Engine); settings.Profile?.Validate(settings.Engine); TextPreparation.ValidateDictionary(settings.Pronunciation);
         return settings with { ProviderFingerprint = "", ProviderImageId = null };
     }
     public PreparedText Prepare(CancellationToken ct = default)

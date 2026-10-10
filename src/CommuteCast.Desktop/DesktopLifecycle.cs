@@ -61,6 +61,15 @@ public sealed partial class MainViewModel
             {
                 cancellation.Token.ThrowIfCancellationRequested();
                 PowerRecoveryMessage = $"Laptop awake. Checking {engine} and its captured model before resuming saved segments…";
+                if (readiness is null && SpeechProviders.IsHosted(engine))
+                {
+                    foreach (var job in pending.Where(j => j.Settings.Engine == engine))
+                    {
+                        var captured = await provider.ReadyForJobAsync(job, cancellation.Token);
+                        if (captured.Fingerprint != job.Settings.ProviderFingerprint) throw new System.IO.IOException("The captured hosted speech model is unavailable.");
+                    }
+                    continue;
+                }
                 var info = await (readiness is null ? CheckReadinessAsync(false, engine, cancellation.Token) : readiness(engine, cancellation.Token));
                 if (info.Engine != engine || info.State != "ready") throw new System.IO.IOException("The saved speech service is not ready.");
                 if (pending.Where(j => j.Settings.Engine == engine).Any(j => j.Settings.ProviderFingerprint != info.Fingerprint || j.Settings.ProviderImageId is not null && j.Settings.ProviderImageId != info.ImageId))

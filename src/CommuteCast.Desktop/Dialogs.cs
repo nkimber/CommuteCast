@@ -9,7 +9,7 @@ namespace CommuteCast.Desktop;
 
 public sealed class PreparationWindow : Window
 {
-    public PreparationWindow(PreparedText prepared, string source, Func<string, Task>? audition = null, Action? stopAudition = null)
+    public PreparationWindow(PreparedText prepared, string source, Func<string, Task>? audition = null, Action? stopAudition = null, Func<string, int, Task>? auditionAt = null)
     {
         Title = "Review narration preparation · CommuteCast"; Width = 1000; Height = 740; MinWidth = 700; MinHeight = 450;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -45,7 +45,7 @@ public sealed class PreparationWindow : Window
         {
             var text = SelectedSpokenText(spoken); var attempt = ++previewAttempt; generating = true; previewStarted = true; play.IsEnabled = false;
             previewStatus.Text = "Preparing review audition; it waits for current narration. Stop cancels it.";
-            try { await audition!(text); if (!closed && previewAttempt == attempt) previewStatus.Text = "Review audition request finished. Stop or close review to end playback."; }
+            try { if (auditionAt is not null) await auditionAt(text, new TextRange(spoken.Document.ContentStart, spoken.Selection.Start).Text.Length); else await audition!(text); if (!closed && previewAttempt == attempt) previewStatus.Text = "Review audition request finished. Stop or close review to end playback."; }
             catch (Exception error) { if (!closed && previewAttempt == attempt) previewStatus.Text = Infrastructure.QueueCoordinator.FriendlyError(error); }
             finally { generating = false; var selected = SelectedSpokenText(spoken); play.IsEnabled = !closed && audition is not null && !string.IsNullOrWhiteSpace(selected) && selected.Length <= AuditionRequest.MaximumCharacters; }
         };

@@ -10,8 +10,8 @@ public interface ISchemaMigrationObserver
 }
 public static class SqliteSchema
 {
-    // Version 4 adds source-free preview ownership; older runtimes must refuse it.
-    public const int CurrentVersion = 4;
+    // Version 5 fences immutable podcast casts and hosted request journals from older runtimes.
+    public const int CurrentVersion = 5;
     public const int ApplicationId = 0x434D4354;
     public const string AppVersion = "0.1.0";
     public static string ConnectionString(string path, SqliteOpenMode mode = SqliteOpenMode.ReadWriteCreate) =>
@@ -52,11 +52,12 @@ public static class SqliteSchema
             throw new IOException("The database identity is incompatible. Local files were preserved; choose a verified CommuteCast backup.");
         var tables = await TablesAsync(connection, ct);
         if (tables.Count == 0 && version == 0 && applicationId == 0 && allowEmpty) return 0;
-        var expected = version == 0 ? new[] { "jobs", "events" } : version < 4 ? new[] { "jobs", "events", "schema_history" } : new[] { "jobs", "events", "schema_history", "audition_ownership" };
+        var expected = version == 0 ? new[] { "jobs", "events" } : version < 4 ? new[] { "jobs", "events", "schema_history" } : version == 4 ? new[] { "jobs", "events", "schema_history", "audition_ownership" } : new[] { "jobs", "events", "schema_history", "audition_ownership", "hosted_auditions" };
         if (!tables.SetEquals(expected)) throw new IOException("The database is not a recognized CommuteCast queue. No reset was performed.");
         await ValidateColumnsAsync(connection, "jobs", ["id", "created", "payload"], ct);
         await ValidateColumnsAsync(connection, "events", ["sequence", "job_id", "stage", "timestamp"], ct);
         if (version >= 4) await ValidateColumnsAsync(connection, "audition_ownership", ["id", "created", "payload"], ct);
+        if (version >= 5) await ValidateColumnsAsync(connection, "hosted_auditions", ["id", "created", "payload"], ct);
         if (version != 0)
         {
             await ValidateColumnsAsync(connection, "schema_history", ["version", "app_version", "applied_utc"], ct);
@@ -96,6 +97,7 @@ public static class SqliteSchema
             while (await items.ReadAsync(ct)) ValidateRecord(items.GetString(0), items.GetString(1), items.GetString(2));
         }
         if (version >= 4) await AuditionOwnershipStore.ValidateRowsAsync(connection, ct);
+        if (version >= 5) await HostedAuditionHistory.ValidateRowsAsync(connection, ct);
         return version;
     }
     internal static Job ValidateRecord(string id, string created, string payload)
@@ -107,9 +109,12 @@ public static class SqliteSchema
                 !Enum.IsDefined(job.Stage) || !Enum.IsDefined(job.FailureCategory) || job.Settings is null || job.Prepared is null || job.Prepared.Spans is null ||
                 job.Source is null || job.Prepared.Script is null || job.Chunks is null || job.Receipts is null || job.PrivateArtifacts is null || job.Title is null || job.Destination is null)
                 throw new IOException("A queue record is incompatible. Original records were preserved; restore a verified backup.");
+            if (job.Episode is not null) { job.Episode.ValidateStorage(); if (job.Chunks.Count > 0) PodcastScript.ValidateManifest(job); }
+            if (job.SpeechAttempts is { } attempts) foreach (var attempt in attempts) HostedAuditionHistory.Validate(attempt);
             return job;
         }
         catch (JsonException error) { throw new IOException("A queue record is unreadable. Original records were preserved; restore a verified backup.", error); }
+        catch (ArgumentException error) { throw new IOException("A saved podcast contract is incompatible. Original records were preserved.", error); }
     }
     internal static void RejectLink(string path)
     {
@@ -134,6 +139,8 @@ public static class SqliteSchema
         command.CommandText = "CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, created TEXT NOT NULL, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, stage TEXT NOT NULL, timestamp TEXT NOT NULL); CREATE TABLE IF NOT EXISTS schema_history(version INTEGER PRIMARY KEY,app_version TEXT NOT NULL,applied_utc TEXT NOT NULL); CREATE INDEX IF NOT EXISTS events_by_job ON events(job_id,sequence);";
         await command.ExecuteNonQueryAsync(ct);
         command.CommandText = "CREATE TABLE IF NOT EXISTS audition_ownership(id TEXT PRIMARY KEY,created TEXT NOT NULL,payload TEXT NOT NULL)";
+        await command.ExecuteNonQueryAsync(ct);
+        command.CommandText = "CREATE TABLE IF NOT EXISTS hosted_auditions(id TEXT PRIMARY KEY,created TEXT NOT NULL,payload TEXT NOT NULL)";
         await command.ExecuteNonQueryAsync(ct);
         for (var next = version + 1; next <= CurrentVersion; next++)
         {

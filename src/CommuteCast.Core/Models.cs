@@ -11,7 +11,8 @@ public enum FailureCategory { None, Cancelled, Timeout, Prerequisite, ServiceCon
 public record DiagnosticEvent(string JobId, JobStage Stage, DateTimeOffset Timestamp, double? ElapsedSincePreviousMs);
 public record SourceSpan(int Start, int Length, string Kind, string Original, string Narration);
 public record PreparedText(string Script, IReadOnlyList<SourceSpan> Spans, string Version = "prepare-v1", PronunciationReview? ProfileReview = null);
-public record TextChunk(int Index, int Start, int Length, string Text, bool HardSplit);
+public record TextChunk(int Index, int Start, int Length, string Text, bool HardSplit,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<PodcastTurn>? Turns = null);
 public record NarrationSettings(string Engine, string Voice, double Speed, bool ExcludeCode, string Pronunciation, string ProviderFingerprint, PronunciationProfile? Profile = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProviderImageId = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SpeechConfiguration? Speech = null)
@@ -38,6 +39,9 @@ public sealed class Job
     public List<TextChunk> Chunks { get; set; } = [];
     public List<ChunkReceipt> Receipts { get; set; } = [];
     public List<PrivateArtifactReceipt> PrivateArtifacts { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public PodcastEpisode? Episode { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<SpeechAttempt>? SpeechAttempts { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public DateTimeOffset? HostedRetryAuthorizedUtc { get; set; }
     public string PrivateStorageNotice { get; set; } = "";
     public int CompletedChunks { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public JobRunTiming? RunTiming { get; set; }
@@ -59,7 +63,9 @@ public sealed class Job
     public bool CancellationRequested { get => cancellationRequested; set => cancellationRequested = value; }
     public bool DeletionRequested { get; set; }
     public bool DeleteExportRequested { get; set; }
-    public string Fingerprint => Hash(JsonSerializer.Serialize(new { Settings = FingerprintSettings(), Prepared.Version, Prepared.Script, AudioContractVersion, ChunkingVersion }));
+    public string Fingerprint => Episode is null
+        ? Hash(JsonSerializer.Serialize(new { Settings = FingerprintSettings(), Prepared.Version, Prepared.Script, AudioContractVersion, ChunkingVersion }))
+        : Hash(JsonSerializer.Serialize(new { Settings = FingerprintSettings(), Prepared.Version, Prepared.Script, AudioContractVersion, ChunkingVersion, Episode, Chunks }));
     // Preserve the exact six-field legacy and seven-field pronunciation snapshots when no image was captured.
     private object FingerprintSettings() => Settings.Profile is null && Settings.ProviderImageId is null && Settings.Speech is null
         ? new { Settings.Engine, Settings.Voice, Settings.Speed, Settings.ExcludeCode, Settings.Pronunciation, Settings.ProviderFingerprint }
@@ -96,6 +102,10 @@ public sealed class AppSettings
     public int PrivateStorageLimitMiB { get; set; } = 10240;
     public Dictionary<string, ProviderInfo> Providers { get; set; } = [];
     public Dictionary<string, HostedConnection> HostedConnections { get; set; } = [];
+    public Dictionary<string, SpeechConfiguration> SpeechDefaults { get; set; } = [];
+    public List<SpeakerPersonality> SpeakerLibrary { get; set; } = PodcastDefaults.Personalities.ToList();
+    public List<SpeakerVoiceBinding> SpeakerVoiceBindings { get; set; } = [];
+    public List<PodcastFormat> PodcastFormats { get; set; } = PodcastDefaults.Formats.ToList();
 }
 public interface IJobStore
 {
@@ -117,6 +127,11 @@ public interface IDurableSpeechProvider : ISpeechProvider
 public interface IJobSpeechStatusProvider : ISpeechProvider
 {
     Task<ProviderInfo> ReadyForJobAsync(Job job, CancellationToken ct);
+}
+public interface IRenderUnitSpeechProvider : ISpeechProvider
+{
+    Task SynthesizeUnitAsync(Job job, TextChunk unit, string output, Func<Task> checkpoint, CancellationToken ct);
+    Task<ProviderInfo> ReadyForSettingsAsync(NarrationSettings settings, CancellationToken ct);
 }
 public sealed record AuditionWriteJournal(string Id, DateTimeOffset CreatedUtc, List<PrivateArtifactReceipt> Artifacts);
 public interface IDurableAuditionSpeechProvider : ISpeechProvider

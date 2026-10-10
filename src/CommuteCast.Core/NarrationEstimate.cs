@@ -14,7 +14,7 @@ public sealed record NarrationEstimate(int WordCount, int SampleCount, EstimateR
         if (words == 0 || provider is null) return new(words, 0, null, null);
         // Model/image and voice are exact. Normalize pace rather than mixing raw durations.
         // Technical material remains uncertain: ranges are widened and are never a validation threshold.
-        var samples = history.Where(j => j.Stage == JobStage.Exported && j.ExportCommitted && j.Attempts <= 1 &&
+        var samples = history.Where(j => j.Episode is null && j.Stage == JobStage.Exported && j.ExportCommitted && j.Attempts <= 1 &&
                 j.Settings.Engine == options.Engine && j.Settings.Voice == options.Voice &&
                 j.Settings.ProviderFingerprint == provider.Fingerprint && j.Settings.ProviderImageId == provider.ImageId &&
                 double.IsFinite(j.DurationSeconds) && j.DurationSeconds > 0 && double.IsFinite(j.Settings.Speed) && j.Settings.Speed is >= .7 and <= 1.4)

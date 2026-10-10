@@ -3,7 +3,8 @@ using CommuteCast.Core;
 
 namespace CommuteCast.Infrastructure;
 
-public record Draft(string Title, string Source, NarrationPromptDraft? PromptDraft = null);
+public record PodcastDraft(bool Enabled, PodcastEpisode Episode);
+public record Draft(string Title, string Source, NarrationPromptDraft? PromptDraft = null, PodcastDraft? Podcast = null);
 public sealed class DraftStore(Workspace workspace)
 {
     private readonly SemaphoreSlim gate = new(1);
@@ -16,20 +17,25 @@ public sealed class DraftStore(Workspace workspace)
         try
         {
             var saved = JsonSerializer.Deserialize<string[]>(await File.ReadAllTextAsync(PathForDraft, ct));
-            if (saved?.Length is not (2 or 3) || saved.Any(value => value is null)) throw new JsonException();
+            if (saved?.Length is not (2 or 3 or 4) || saved.Any(value => value is null)) throw new JsonException();
             NarrationPromptDraft? prompt = null;
-            if (saved.Length == 3)
+            if (saved.Length == 3 && saved[2] == "null") throw new JsonException();
+            if (saved.Length >= 3 && saved[2] != "null")
             {
                 prompt = JsonSerializer.Deserialize<NarrationPromptDraft>(saved[2]) ?? throw new JsonException();
                 prompt.ValidateStorage();
             }
-            return new(saved[0], saved[1], prompt);
+            var podcast = saved.Length == 4 ? JsonSerializer.Deserialize<PodcastDraft>(saved[3]) ?? throw new JsonException() : null;
+            if (podcast is not null && podcast.Episode is null) throw new JsonException();
+            podcast?.Episode.ValidateStorage();
+            return new(saved[0], saved[1], prompt, podcast);
         }
         catch (Exception error) when (error is JsonException or ArgumentException) { throw new IOException("The saved draft is unreadable. Its original file was preserved. New edits will first preserve it in local recovery storage.", error); }
     }
     public async Task<string?> SaveAsync(Draft draft, CancellationToken ct = default)
     {
         draft.PromptDraft?.ValidateStorage();
+        draft.Podcast?.Episode.ValidateStorage();
         await gate.WaitAsync(ct);
         try
         {
@@ -45,7 +51,8 @@ public sealed class DraftStore(Workspace workspace)
                 { await input.CopyToAsync(output, ct); output.Flush(true); }
             }
             ct.ThrowIfCancellationRequested();
-            var values = draft.PromptDraft is null ? new[] { draft.Title, draft.Source }
+            var values = draft.Podcast is not null ? new[] { draft.Title, draft.Source, JsonSerializer.Serialize(draft.PromptDraft), JsonSerializer.Serialize(draft.Podcast) }
+                : draft.PromptDraft is null ? new[] { draft.Title, draft.Source }
                 : new[] { draft.Title, draft.Source, JsonSerializer.Serialize(draft.PromptDraft) };
             await Workspace.AtomicWriteAsync(PathForDraft, JsonSerializer.Serialize(values));
             return preserved;

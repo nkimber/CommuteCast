@@ -2,11 +2,11 @@
 
 **Recorded:** October 10, 2026
 
-**Status:** Agreed product direction; implementation and listening acceptance pending
+**Status:** Application implementation delivered; live cloud-provider and listening acceptance pending
 
 **Scope:** Extend the native CommuteCast application with local and hosted speech providers, single-voice narration and podcasts with two to five speakers.
 
-This is a development plan, not a description of available features. The current application supports local Kokoro and Piper with one captured voice per narration. Its topic prompt builder produces narration-only writing prompts. Hosted TTS, podcast parsing, speaker libraries and podcast formats are not implemented.
+This records the agreed design. The implementation now includes local and hosted providers, podcast prompts/parsing, libraries and rendering. See [implementation and operating notes](Podcast-and-Hosted-Speech.md) for the delivered contract and acceptance limits.
 
 ## Product decisions
 
@@ -47,7 +47,7 @@ An episode captures its topic, audience, duration, chosen format, cast, exact la
 
 1. Choose **Narration** or **Podcast**, and paste existing text or build a topic prompt. For a podcast, choose format, cast and provider, then bind and audition each voice.
 2. Build a prompt from the captured brief and expected cast. Copy it to the chosen LLM; text generation remains manual.
-3. Paste the result into the episode editor. Podcast parsing produces an ordered list of turns with source locations, speaker IDs and spoken text. Each new turn starts with an exact configured `Speaker: dialogue` label; continuation lines belong to that turn. Reject text before the first label, unknown or ambiguous labels, empty turns, invalid Unicode and exceeded application/provider bounds.
+3. Paste the result into the episode editor. Podcast parsing produces an ordered list of turns with source locations, speaker IDs and spoken text. Every nonblank line starts with an exact configured `Speaker: dialogue` label; use one complete turn per line. Reject text before the first label, unknown or ambiguous labels, empty turns, invalid Unicode and exceeded application/provider bounds.
 4. Report structural errors with line locations. Check required participation from the format, flag suspected references, headings and production notes, and show approximate length and speaker balance. These are editorial warnings, not proof of factual accuracy or exact spoken fidelity.
 5. Review the actual spoken text, voice assignments and supported delivery settings. Strip speaker labels from the speech payload. Changing text, cast, format or speech settings invalidates the preceding validation/render preview.
 6. Freeze the validated episode and deterministic render plan when queued. Generate, validate and assemble in order, then publish one completed MP3 through the existing export pipeline.

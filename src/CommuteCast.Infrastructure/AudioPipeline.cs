@@ -11,8 +11,9 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
     private static void ValidateManifest(Job job)
     {
         if (job.PrivateArtifacts.Any(r => r.PromotionIdentity is not null || r.CreationIdentity is not null)) throw new IOException("An interrupted private audio write or rename must be reconciled before assembly or validation.");
-        if (job.AudioContractVersion != ContractVersion || job.ChunkingVersion != "chunk450-v1") throw new IOException("Unsupported audio/chunk contract. Publication is blocked.");
-        Chunker.ValidateManifest(job.Chunks, job.Prepared.Script);
+        if (job.Episode is not null) PodcastScript.ValidateManifest(job);
+        else if (job.AudioContractVersion != ContractVersion || job.ChunkingVersion != "chunk450-v1") throw new IOException("Unsupported audio/chunk contract. Publication is blocked.");
+        Chunker.ValidateManifest(job.Chunks, job.Prepared.Script, job.Episode is null ? 900 : 1800);
         if (job.Receipts.Count != job.Chunks.Count || !job.Receipts.OrderBy(r => r.Index).Select(r => r.Index).SequenceEqual(Enumerable.Range(0, job.Chunks.Count)) ||
             job.Receipts.Any(r => r.Fingerprint != job.Fingerprint || !double.IsFinite(r.Duration) || r.Duration <= 0)) throw new IOException("Validated receipt sequence or contract is incompatible. Publication is blocked.");
     }
@@ -24,7 +25,10 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
         WaveAudio.DataRegion(input, false);
         await PrivateJobFiles.WriteRecordedAsync(job, Path.GetDirectoryName(Path.GetFullPath(output))!, Path.GetFileName(output), async stream =>
         {
-            var result = await ProcessRunner.RunToFileAsync(settings.Ffmpeg, ["-v", "error", "-nostdin", "-n", "-protocol_whitelist", "file,pipe,fd", "-i", input, "-map", "0:a:0", "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", "-fd", "1", "fd:"], (FileStream)stream, 192L * 1024 * 1024, TimeSpan.FromMinutes(2), ct);
+            var arguments = new List<string> { "-v", "error", "-nostdin", "-n", "-protocol_whitelist", "file,pipe,fd", "-i", input, "-map", "0:a:0" };
+            if (job.Episode is not null) arguments.AddRange(["-af", "loudnorm=I=-19:TP=-2:LRA=7"]);
+            arguments.AddRange(["-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", "-fd", "1", "fd:"]);
+            var result = await ProcessRunner.RunToFileAsync(settings.Ffmpeg, arguments, (FileStream)stream, 192L * 1024 * 1024, TimeSpan.FromMinutes(2), ct);
             if (result.ExitCode != 0) throw new IOException("The speech audio could not be decoded to PCM. This chunk will be regenerated on retry.");
             WaveAudio.DataRegion(stream);
         }, checkpoint, ct);
@@ -57,7 +61,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
         var assembled = Path.Combine(directory, "assembled.wav");
         var samples = job.Receipts.Sum(r => (long)Math.Round(r.Duration * 24000));
         // Add 150ms between chunks ending a sentence/paragraph. Hard splits have no inserted gap.
-        var gaps = job.Chunks.Take(job.Chunks.Count - 1).Select(c => c.Text.TrimEnd().EndsWith('.') || c.Text.EndsWith('\n') ? 3600 : 0).ToArray();
+        var gaps = job.Chunks.Take(job.Chunks.Count - 1).Select(c => GapSamples(job, c)).ToArray();
         var total = samples + gaps.Sum(g => (long)g);
         if (total * 2 > uint.MaxValue - 36) throw new IOException("This narration exceeds the supported WAV size. Split it into separate submissions.");
         var comment = Mp3Comments.CreateFrame(Mp3Comments.Describe(job));
@@ -105,13 +109,16 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
         var stream = json.RootElement.GetProperty("streams")[0];
         var duration = double.Parse(stream.GetProperty("duration").GetString()!, CultureInfo.InvariantCulture);
         if (stream.GetProperty("codec_name").GetString() != "mp3" || stream.GetProperty("sample_rate").GetString() != "24000" || stream.GetProperty("channels").GetInt32() != 1) throw new IOException("Finished MP3 has an unexpected format.");
-        var gaps = job.Chunks.Take(job.Chunks.Count - 1).Count(c => c.Text.TrimEnd().EndsWith('.') || c.Text.EndsWith('\n')) * .15;
+        var gaps = job.Chunks.Take(job.Chunks.Count - 1).Sum(c => GapSamples(job, c)) / 24000.0;
         var expected = job.Receipts.Sum(r => r.Duration) + gaps;
         if (Math.Abs(expected - duration) > .3) throw new IOException("Finished MP3 duration does not match the complete ordered chunk sequence.");
         var decode = await ProcessRunner.RunAsync(settings.Ffmpeg, ["-v", "error", "-xerror", "-nostdin", "-protocol_whitelist", "file,pipe", "-f", "mp3", "-i", path, "-f", "null", "-"], TimeSpan.FromMinutes(10), ct);
         if (decode.ExitCode != 0) throw new IOException("Finished MP3 failed full decoding. Export is blocked.");
         return new(duration, 24000, 1, (long)(duration * 24000), 0, 0);
     }
+    private static int GapSamples(Job job, TextChunk unit) => job.Episode is null
+        ? unit.Text.TrimEnd().EndsWith('.') || unit.Text.EndsWith('\n') ? 3600 : 0
+        : unit.Index + 1 < job.Chunks.Count && unit.Turns![^1].Speaker != job.Chunks[unit.Index + 1].Turns![0].Speaker ? 1920 : 0;
 }
 
 public static class WaveAudio

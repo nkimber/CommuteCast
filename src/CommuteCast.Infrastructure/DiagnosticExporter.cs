@@ -21,8 +21,10 @@ public sealed class DiagnosticExporter(Workspace workspace, SqliteJobStore store
                 jobId = j.Id.Length == 32 && j.Id.All(Uri.IsHexDigit) ? j.Id : "invalid",
                 stage = j.Stage.ToString(), j.CompletedChunks, chunks = j.Chunks.Count, j.DurationSeconds, j.Attempts,
                 failedStage = j.FailedStage?.ToString(), failureCategory = j.FailureCategory.ToString(),
-                engine = j.Settings.Engine is "kokoro" or "piper" ? j.Settings.Engine : "unrecognized",
-                provider = Regex.IsMatch(j.Settings.ProviderFingerprint, "^(kokoro|piper):contract-v1:[a-fA-F0-9]{64}$", RegexOptions.CultureInvariant) ? j.Settings.ProviderFingerprint : "unverified",
+                engine = SpeechProviders.IsKnown(j.Settings.Engine) ? j.Settings.Engine : "unrecognized",
+                provider = Regex.IsMatch(j.Settings.ProviderFingerprint, "^((kokoro|piper):contract-v1|(openai|elevenlabs|cartesia|gemini):hosted-v1):[a-fA-F0-9]{64}$", RegexOptions.CultureInvariant) ? j.Settings.ProviderFingerprint : "unverified",
+                podcastSpeakers = j.Episode?.Speakers.Count,
+                hostedAttempts = j.SpeechAttempts?.Select(a => new { state = a.State is "started" or "received" or "uncertain" or "rejected" ? a.State : "unverified", a.StartedUtc, a.UnitIndex, a.BilledCharacters }),
                 generatedLocally = j.FinalHash.Length > 0 && File.Exists(workspace.FinalPath(j)), exportedLocally = j.ExportCommitted,
                 cloudUpload = "unknown"
             }),

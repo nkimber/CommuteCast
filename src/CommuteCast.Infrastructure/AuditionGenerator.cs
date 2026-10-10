@@ -15,7 +15,7 @@ public sealed class AuditionGenerator(Workspace workspace, ISpeechProvider provi
         await inferenceGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var info = await (readiness is null ? provider.ReadyAsync(request.Settings.Engine, ct) : readiness(request.Settings.Engine, ct)).ConfigureAwait(false);
+            var info = await (provider is IRenderUnitSpeechProvider units && SpeechProviders.IsHosted(request.Settings.Engine) ? units.ReadyForSettingsAsync(request.Settings, ct) : readiness is null ? provider.ReadyAsync(request.Settings.Engine, ct) : readiness(request.Settings.Engine, ct)).ConfigureAwait(false);
             if (info.Engine != request.Settings.Engine || info.State != "ready" || info.Active != 0 || !info.Voices.Contains(request.Settings.Voice))
                 throw new IOException("The selected audition engine or voice is unavailable. Check speech readiness, then select an installed voice.");
             var snapshot = request.Settings with { ProviderFingerprint = info.Fingerprint, ProviderImageId = info.ImageId };

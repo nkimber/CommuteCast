@@ -62,4 +62,4 @@ public sealed record HostedConnection(string Model, decimal? CostPerMillionChara
 }
 
 public sealed record SpeechAttempt(string Id, DateTimeOffset StartedUtc, string Provider, string Model, string TextHash,
-    string State, string? RequestId = null, long? BilledCharacters = null, string? Usage = null);
+    string State, string? RequestId = null, long? BilledCharacters = null, string? Usage = null, int? UnitIndex = null, DateTimeOffset? RetryAfterUtc = null);
