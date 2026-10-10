@@ -7,6 +7,8 @@
 **Intended deployment:** One user's Windows work laptop, local Docker speech services, and a user-selected corporate OneDrive output folder  
 **Deliverable scope:** Documentation only. Examples in this document are design proposals, not implemented interfaces, installation instructions to execute now, or evidence of a working application.
 
+**October 10, 2026 scope extension:** The user has chosen to retain local TTS and add ElevenLabs, OpenAI and further qualifying speech providers, alongside podcasts with two to five participants and reusable speaker/format libraries. The [multi-provider TTS and podcast plan](Multi-Provider-TTS-and-Podcast-Plan.md) governs this planned extension and supersedes the local-only synthesis scope and cloud-TTS exclusion below for that future work. The original baseline remains here for traceability; this extension does not claim those features are implemented. Text generation continues through copied prompts and manually pasted LLM responses.
+
 ## Contents
 
 1. [Product intent and governing decisions](#product-intent)

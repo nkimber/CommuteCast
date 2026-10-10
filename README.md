@@ -2,6 +2,8 @@
 
 A native Windows WPF utility that turns pasted text into a single MP3 using local Docker speech. Source, preparation, queue, chunks, and diagnostics stay under `%LOCALAPPDATA%\CommuteCast`. Only a completed, validated MP3 is published to your chosen local folder. OneDrive handles synchronization separately; the application reports **cloud upload unknown**.
 
+Planned expansion: retain local TTS and add ElevenLabs and OpenAI, followed by Cartesia, Google Gemini and other providers that pass listening and operational acceptance. The [multi-provider TTS and podcast plan](documents/Multi-Provider-TTS-and-Podcast-Plan.md) covers provider capabilities, two-to-five-speaker episodes, speaker/format libraries, clean copied prompts, dialogue validation and resumable audio rendering. These are planned features; the current application still uses local Kokoro/Piper with one voice per narration.
+
 ## Build in Visual Studio
 
 Open **CommuteCast.sln** in Visual Studio 2026 with the **.NET desktop development** workload and .NET 10 SDK. The checked-in `.vsconfig` identifies that workload. The solution contains all nine projects and lists **CommuteCast.Desktop** first. Select it as the startup project if Visual Studio has saved a different choice, build the solution, then press F5 to run the native WPF client. **CommuteCast.slnx** contains the same projects for tools that use the XML solution format. Microsoft documents this WPF/.NET 10 setup in its [Visual Studio tutorial](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/getting-started).
