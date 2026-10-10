@@ -129,6 +129,15 @@ public class SetupDiagnosticsTests
         Assert.Equal(supported ? SetupStatus.Available : SetupStatus.NeedsAttention, Find(report, "ffmpeg-held-output").Status);
         Assert.DoesNotContain("Private echo", JsonSerializer.Serialize(report));
     }
+    [Fact] public async Task SetupReportShowsApplicationAuthoredRepairCauseAndConcreteSteps()
+    {
+        var runtime = new Runtime { SpeechFailure = new SpeechSetupException("The installed speech image differs from the image saved in this workspace.", "Choose Start / repair speech services.", true) };
+        var report = await new SetupDiagnostics(runtime).CheckAsync(new());
+        Assert.Contains("installed speech image differs", Find(report, "speech-selected").Detail);
+        Assert.Contains("PowerShell", Find(report, "speech-selected").NextStep);
+        Assert.Contains("Provision-Speech.ps1 -Build", Find(report, "speech-selected").NextStep);
+        Assert.False(report.SelectedSpeechAvailable);
+    }
     private sealed class Runtime : ISetupRuntime
     {
         public static SetupHost GoodHost => new(true, "X64", new(10, 0, 26100), "10.0.12", 8, 16UL * 1024 * 1024 * 1024, "4.62.0", true);

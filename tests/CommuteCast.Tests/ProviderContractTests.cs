@@ -20,7 +20,7 @@ public partial class ProviderContractTests
     {
         using var fixture = new Fixture(); fixture.Runtime.Container["State"]!["Running"] = false;
         if (foreign) fixture.Runtime.Container["Name"] = "/foreign";
-        using var provider = fixture.Provider(); await Assert.ThrowsAsync<IOException>(() => provider.ProbeAsync("kokoro"));
+        using var provider = fixture.Provider(); await Assert.ThrowsAnyAsync<IOException>(() => provider.ProbeAsync("kokoro"));
         Assert.Equal(0, fixture.Runtime.Starts); Assert.Equal(0, fixture.Runtime.Launches); Assert.Empty(fixture.Http.Uris);
         Assert.False(File.Exists(Path.Combine(fixture.Test.Workspace.Root, "recovery-kokoro.json")));
     }
@@ -104,8 +104,9 @@ public partial class ProviderContractTests
             case "restarting": node["State"]!["Restarting"] = true; break;
         }
         node["State"]!["Running"] = false; using var provider = fixture.Provider();
-        await Assert.ThrowsAsync<IOException>(() => provider.ReadyAsync("kokoro", default));
-        await Assert.ThrowsAsync<IOException>(() => provider.SynthesizeAsync(fixture.Settings, "Sensitive source", fixture.Output, default));
+        var error = await Assert.ThrowsAsync<SpeechSetupException>(() => provider.ReadyAsync("kokoro", default));
+        Assert.Contains("Manual setup:", error.Message);
+        await Assert.ThrowsAsync<SpeechSetupException>(() => provider.SynthesizeAsync(fixture.Settings, "Sensitive source", fixture.Output, default));
         Assert.Equal(0, fixture.Runtime.Starts); Assert.Equal(0, fixture.Runtime.Launches); Assert.Empty(fixture.Http.Uris); Assert.False(File.Exists(fixture.Output));
     }
     [Fact] public async Task RemoteContextBlocksDesktopAndContainerMutationBeforeHttp()
@@ -117,7 +118,7 @@ public partial class ProviderContractTests
     [Fact] public async Task MissingContainerIsDiagnosedWithoutPullBuildOrCreation()
     {
         using var fixture = new Fixture(); fixture.Runtime.Missing = true; using var provider = fixture.Provider();
-        var error = await Assert.ThrowsAsync<IOException>(() => provider.ReadyAsync("kokoro", default)); Assert.Contains("missing", error.Message);
+        var error = await Assert.ThrowsAsync<SpeechSetupException>(() => provider.ReadyAsync("kokoro", default)); Assert.Contains("missing", error.Message);
         Assert.Equal(0, fixture.Runtime.Starts); Assert.Empty(fixture.Http.Uris); Assert.DoesNotContain(fixture.Runtime.Calls, args => args[0] is "pull" or "build" or "compose" or "run");
     }
     [Fact] public async Task StoppedOwnedContainerStartsOnceAndIsReinspected()
@@ -131,7 +132,7 @@ public partial class ProviderContractTests
     {
         using var fixture = new Fixture(); fixture.Runtime.Container["State"]!["Running"] = false;
         fixture.Runtime.OnStart = () => fixture.Runtime.Container["Config"]!["Labels"]!["com.commutecast.owner"] = "foreign";
-        using var provider = fixture.Provider(); await Assert.ThrowsAsync<IOException>(() => provider.ReadyAsync("kokoro", default));
+        using var provider = fixture.Provider(); await Assert.ThrowsAsync<SpeechSetupException>(() => provider.ReadyAsync("kokoro", default));
         Assert.Equal(1, fixture.Runtime.Starts); Assert.Empty(fixture.Http.Uris);
     }
     [Fact] public async Task StoppedContainerCannotRestartDuringSynthesis()
@@ -384,6 +385,7 @@ public partial class ProviderContractTests
         public int Gets { get; private set; } public int Posts { get; private set; } public List<Uri> Uris { get; } = []; public List<string> Bodies { get; } = [];
         public Func<int, string>? Health { get; set; } public Func<int, CancellationToken, Task<HttpResponseMessage>>? Speech { get; set; }
         public Func<CancellationToken, Task>? BeforeHealth { get; set; }
+        public string? PeerHealth { get; set; }
         public string Instance { get; set; } = new('d', 32); public long Sequence { get; set; }
         public Func<string, JsonElement, CancellationToken, Task<HttpResponseMessage>>? Control { get; set; }
         public int Settles { get; private set; } public int Reserves { get; private set; }
@@ -391,7 +393,7 @@ public partial class ProviderContractTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Uris.Add(request.RequestUri!);
-            if (request.Method == HttpMethod.Get) { Gets++; if (BeforeHealth is not null) await BeforeHealth(ct); return new(HttpStatusCode.OK) { Content = new StringContent(Health?.Invoke(Gets) ?? fixture.Health(), System.Text.Encoding.UTF8, "application/json") }; }
+            if (request.Method == HttpMethod.Get) { Gets++; if (BeforeHealth is not null) await BeforeHealth(ct); return new(HttpStatusCode.OK) { Content = new StringContent(Health?.Invoke(Gets) ?? (request.RequestUri!.Port == (fixture.Engine == "kokoro" ? 8765 : 8766) ? fixture.Health() : PeerHealth ?? fixture.Health()), System.Text.Encoding.UTF8, "application/json") }; }
             if (request.RequestUri!.AbsolutePath is "/reserve" or "/settle")
             {
                 using var document = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct)); var body = document.RootElement;
@@ -408,11 +410,13 @@ public partial class ProviderContractTests
         public const string Image = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         public JsonNode Container { get; } public List<string[]> Calls { get; } = []; public string Context { get; set; } = "npipe:////./pipe/dockerDesktopLinuxEngine";
         public int Starts { get; private set; } public int Launches { get; private set; } public int DaemonFailures { get; set; } public bool Missing { get; set; } public Action? OnStart { get; set; } public string? MetadataOverride { get; set; }
+        public JsonNode? PeerContainer { get; set; } public int Creates { get; private set; }
+        public bool CreateFails { get; set; } public string ListedContainers { get; set; } = "";
         public FakeRuntime(string engine)
         {
             Container = JsonSerializer.SerializeToNode(new
             {
-                Name = "/commutecast-" + engine, Image,
+                Id = new string(engine == "kokoro" ? 'e' : 'f', 64), Name = "/commutecast-" + engine, Image,
                 Config = new { Labels = new Dictionary<string, string> { ["com.commutecast.owner"] = "CommuteCast", ["com.docker.compose.project"] = "commutecast", ["com.commutecast.contract"] = "1" }, Cmd = new[] { "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8765", "--no-access-log" }, Entrypoint = (string[]?)null, Env = new[] { "COMMUTECAST_ENGINE=" + engine } },
                 HostConfig = new { PortBindings = new Dictionary<string, object> { ["8765/tcp"] = new[] { new { HostIp = "127.0.0.1", HostPort = engine == "kokoro" ? "8765" : "8766" } } }, Privileged = false, NetworkMode = "bridge", NanoCpus = 2_000_000_000L, Memory = (engine == "kokoro" ? 2L : 1L) * 1024 * 1024 * 1024, SecurityOpt = new[] { "no-new-privileges:true" } },
                 Mounts = Array.Empty<object>(), State = new { Running = true, OOMKilled = false, Paused = false, Restarting = false }
@@ -426,6 +430,13 @@ public partial class ProviderContractTests
             if (arguments[0] == "context") return new ProcessResult(0, Context, "");
             if (arguments[0] == "version") return DaemonFailures-- > 0 ? new ProcessResult(1, "", "daemon unavailable") : new ProcessResult(0, "29.2.1", "");
             if (arguments[0] == "start") { Starts++; Container["State"]!["Running"] = true; OnStart?.Invoke(); return new ProcessResult(0, arguments[1], ""); }
+            if (arguments[0] == "container") return new(0, ListedContainers, "");
+            if (arguments[0] == "create")
+            {
+                Creates++; if (CreateFails) return new(1, "", "private daemon error");
+                Missing = false; Container["State"]!["Running"] = false; return new(0, Container["Id"]!.GetValue<string>(), "");
+            }
+            if (PeerContainer is not null && arguments[1] != Container["Name"]!.GetValue<string>().TrimStart('/')) return new(0, "[" + PeerContainer.ToJsonString() + "]", "");
             return Missing ? new ProcessResult(1, "", "missing") : new ProcessResult(0, MetadataOverride ?? "[" + Container.ToJsonString() + "]", "");
         }
         public void LaunchInstalledDesktop() => Launches++;

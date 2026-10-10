@@ -128,7 +128,7 @@ public partial class ProviderContractTests
     {
         using var fixture = new Fixture();
         if (remote) fixture.Runtime.Context = "tcp://foreign-host:2375"; else fixture.Runtime.Container["Config"]!["Labels"]!["com.commutecast.owner"] = "foreign";
-        using var provider = fixture.Provider(); await Assert.ThrowsAsync<IOException>(() => provider.CaptureForSubmissionAsync("kokoro", null));
+        using var provider = fixture.Provider(); await Assert.ThrowsAnyAsync<IOException>(() => provider.CaptureForSubmissionAsync("kokoro", null));
         Assert.Equal(0, fixture.Runtime.Starts); Assert.Equal(0, fixture.Runtime.Launches); Assert.Empty(fixture.Http.Uris);
         Assert.False(File.Exists(Path.Combine(fixture.Test.Workspace.Root, "recovery-kokoro.json")));
     }
@@ -141,7 +141,7 @@ public partial class ProviderContractTests
         if (defect == "missing") File.Delete(path); else if (defect == "contract") WritePin(fixture, FakeRuntime.Image, 2);
         else if (defect == "invalid") File.WriteAllText(path, "private invalid pin content"); else File.WriteAllText(path, new string('x', 65537));
         fixture.Runtime.Calls.Clear(); fixture.Http.Uris.Clear();
-        var error = await Assert.ThrowsAsync<IOException>(() => provider.CaptureForSubmissionAsync("kokoro", cached));
+        var error = await Assert.ThrowsAnyAsync<IOException>(() => provider.CaptureForSubmissionAsync("kokoro", cached));
         Assert.DoesNotContain("private invalid pin content", error.Message); Assert.Empty(fixture.Runtime.Calls); Assert.Empty(fixture.Http.Uris);
     }
 

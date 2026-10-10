@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace CommuteCast.Infrastructure;
 
-public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditionSpeechProvider, IJobSpeechStatusProvider, IDisposable
+public sealed partial class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditionSpeechProvider, IJobSpeechStatusProvider, IDisposable
 {
     private readonly Workspace workspace;
     private readonly ILocalSpeechRuntime runtime;
@@ -75,7 +75,7 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
     }
     public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct, bool explicitRetry) => ReadyCoreAsync(engine, ct, explicitRetry, null);
     public Task<ProviderInfo> ReadyForJobAsync(Job job, CancellationToken ct) => ReadyCoreAsync(job.Settings.Engine, ct, false, job.Activity);
-    private async Task<ProviderInfo> ReadyCoreAsync(string engine, CancellationToken ct, bool explicitRetry, JobActivity? activity)
+    private async Task<ProviderInfo> ReadyCoreAsync(string engine, CancellationToken ct, bool explicitRetry, JobActivity? activity, bool desktopAlreadyChecked = false)
     {
         DockerContainerPolicy.Name(engine);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.Readiness);
@@ -90,7 +90,7 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
             if (explicitRetry) await budget.ResetAsync(engine);
             await budget.BeginAsync(engine, deadline.Token);
             activity?.Update("Checking the local speech service");
-            var image = await VerifyContainerAsync(engine, true, deadline.Token);
+            var image = await VerifyContainerAsync(engine, true, deadline.Token, !desktopAlreadyChecked);
             while (true)
             {
                 deadline.Token.ThrowIfCancellationRequested();
@@ -116,7 +116,7 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
     {
         var lockPath = Path.Combine(workspace.Root, "provider-lock.local.json");
         SqliteSchema.RejectLink(lockPath);
-        if (!File.Exists(lockPath)) throw new IOException("Speech services are not provisioned. Run scripts/Provision-Speech.ps1 -Build once, then check readiness.");
+        if (!File.Exists(lockPath)) throw new SpeechSetupException("Speech services are not provisioned in this workspace.", "Choose Start / repair speech services to recover configuration from verified installed services, or follow the manual setup steps below.");
         if (new FileInfo(lockPath).Length > 65536) throw new IOException("The local provider pin exceeds its safe size. Reprovision explicitly; no text has been sent.");
         string image;
         try
@@ -128,9 +128,25 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
         catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException) { throw new IOException("The local provider pin is unreadable. Reprovision explicitly; no text has been sent.", error); }
         return image;
     }
-    private async Task<string> VerifyContainerAsync(string engine, bool startIfStopped, CancellationToken ct)
+    private async Task<string> VerifyContainerAsync(string engine, bool startIfStopped, CancellationToken ct, bool allowDesktopLaunch = true)
     {
         var image = await ReadPinnedImageAsync(ct);
+        await VerifyDaemonAsync(startIfStopped && allowDesktopLaunch, ct);
+        var result = await runtime.DockerAsync(["inspect", DockerContainerPolicy.Name(engine)], TimeSpan.FromSeconds(30), ct);
+        if (result.ExitCode != 0) throw new SpeechSetupException("The configured CommuteCast container is missing or could not be inspected.", "Choose Start / repair speech services to recreate a missing service from the pinned local image, or follow the manual setup steps below.");
+        if (!DockerContainerPolicy.Evaluate(result.Output, engine, image))
+        {
+            if (!startIfStopped) { await RequireUnchangedPinAsync(image, ct); throw new OwnedServiceStoppedException(); }
+            var start = await runtime.DockerAsync(["start", DockerContainerPolicy.Name(engine)], TimeSpan.FromSeconds(20), ct);
+            if (start.ExitCode != 0) throw new IOException("The owned speech service could not start. Check for a port conflict or insufficient resources.");
+            var started = await runtime.DockerAsync(["inspect", DockerContainerPolicy.Name(engine)], TimeSpan.FromSeconds(30), ct);
+            if (started.ExitCode != 0 || !DockerContainerPolicy.Evaluate(started.Output, engine, image)) throw new IOException("The owned speech service did not remain running. Repair it, then retry.");
+        }
+        await RequireUnchangedPinAsync(image, ct);
+        return image;
+    }
+    private async Task VerifyDaemonAsync(bool startIfStopped, CancellationToken ct)
+    {
         var context = await runtime.DockerAsync(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], TimeSpan.FromSeconds(30), ct);
         if (context.ExitCode != 0 || !IsLocalContext(context.Output.Trim())) throw new IOException("Select the local Docker Desktop Linux context. Remote Docker engines are not permitted.");
         var daemon = await runtime.DockerAsync(["version", "--format", "{{.Server.Version}}"], TimeSpan.FromSeconds(15), ct);
@@ -149,18 +165,6 @@ public sealed class LocalSpeechProvider : IDurableSpeechProvider, IDurableAuditi
             if (!startIfStopped) throw new ServiceUnavailableException(message);
             throw new IOException(message);
         }
-        var result = await runtime.DockerAsync(["inspect", DockerContainerPolicy.Name(engine)], TimeSpan.FromSeconds(30), ct);
-        if (result.ExitCode != 0) throw new IOException("The configured CommuteCast container is missing. Re-run the provisioning script; no other containers were changed.");
-        if (!DockerContainerPolicy.Evaluate(result.Output, engine, image))
-        {
-            if (!startIfStopped) { await RequireUnchangedPinAsync(image, ct); throw new OwnedServiceStoppedException(); }
-            var start = await runtime.DockerAsync(["start", DockerContainerPolicy.Name(engine)], TimeSpan.FromSeconds(20), ct);
-            if (start.ExitCode != 0) throw new IOException("The owned speech service could not start. Check for a port conflict or insufficient resources.");
-            var started = await runtime.DockerAsync(["inspect", DockerContainerPolicy.Name(engine)], TimeSpan.FromSeconds(30), ct);
-            if (started.ExitCode != 0 || !DockerContainerPolicy.Evaluate(started.Output, engine, image)) throw new IOException("The owned speech service did not remain running. Repair it, then retry.");
-        }
-        await RequireUnchangedPinAsync(image, ct);
-        return image;
     }
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {

@@ -153,7 +153,7 @@ public sealed class SetupDiagnostics(ISetupRuntime runtime)
                     "Use Start / repair speech services for the longer readiness check, then refresh Check setup.");
             }
             catch (Exception error) when (error is IOException or System.Net.Http.HttpRequestException or TimeoutException or Win32Exception)
-            { var failure = SpeechFailure(error); return Result(failure.Status, failure.Detail + " No speech was requested and no service was started.", "Use Start / repair speech services to start verified stopped services. Missing or unverified containers require the approved provisioning/repair process. Raw errors are withheld."); }
+            { var failure = SpeechFailure(error); return Result(failure.Status, failure.Detail + " No speech was requested and no service was started.", error is SpeechSetupException setup ? setup.NextStep : "Use Start / repair speech services. If repair cannot finish: " + SpeechRepairGuidance.Provisioning); }
         }
         checks.AddRange(await Task.WhenAll(new[] { "kokoro", "piper" }.Select(InspectSpeech)));
         ct.ThrowIfCancellationRequested(); return new(DateTimeOffset.UtcNow, host, checks);
@@ -162,6 +162,7 @@ public sealed class SetupDiagnostics(ISetupRuntime runtime)
     {
         IOException when error.Message.Contains("not provisioned", StringComparison.Ordinal) => (SetupStatus.Missing, "Speech provisioning has not been recorded."),
         IOException when error.Message.Contains("container is missing", StringComparison.Ordinal) => (SetupStatus.Missing, "The configured owned speech container is missing."),
+        SpeechSetupException setup => (SetupStatus.NeedsAttention, setup.Explanation),
         IOException when error.Message.Contains("container stopped", StringComparison.Ordinal) => (SetupStatus.Unavailable, "The verified owned speech container is stopped."),
         IOException when error.Message.Contains("ran out of memory", StringComparison.Ordinal) => (SetupStatus.NeedsAttention, "The speech container exhausted its memory allocation."),
         IOException when error.Message.Contains("paused or restarting", StringComparison.Ordinal) => (SetupStatus.NeedsAttention, "The owned speech container is paused or restarting."),

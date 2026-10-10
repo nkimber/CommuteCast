@@ -187,7 +187,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private string operationError = "", speechError = "", speechErrorEngine = "";
     private string checkedJobId = "", selectedSpeechResult = "";
     private string setupDetails = "Setup has not been checked. This inspection does not start or change speech services.";
-    private string speechRepairDetails = "Start / repair checks both installed engines, starts verified stopped CommuteCast containers and refreshes setup. It keeps saved narrations for explicit resume.";
+    private string speechRepairDetails = "Start / repair checks both engines, starts stopped services, recreates missing services from the pinned local image and reconciles stale image references from verified idle services. Results explain any remaining setup steps. Saved narrations remain available for explicit resume.";
     private string storageSummary = "Usage has not been measured.";
     private bool loading = true, queueLoaded, draftLoadFailed, draftDirty;
     private JobView? selectedJob;
@@ -280,6 +280,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private JobView? AttentionJob => Jobs.Where(j => j.NeedsAttention).MaxBy(j => j.Job.CreatedUtc);
     public bool HasAttention => AttentionMessage.Length > 0;
     public string AttentionHeading => queue.PersistenceError.Length > 0 ? "Queue stopped · storage needs attention"
+        : operationError.StartsWith("Speech repair needs attention.", StringComparison.Ordinal) ? "Speech repair needs attention"
         : operationError.Length > 0 ? "Action could not finish"
         : speechError.Length > 0 ? "Speech unavailable · setup needs attention" : "A saved narration needs attention";
     public string AttentionMessage => queue.PersistenceError.Length > 0 ? queue.PersistenceError
@@ -362,6 +363,9 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         RepairSelectedCommand = Command(async _ =>
         {
             var job = RequireSelected();
+            SetSelectedSpeechResult(job.Id, "Repairing speech for this saved narration…");
+            try { await CheckReadinessAsync(true, job.Settings.Engine, repair: true); }
+            catch (Exception error) { SetSelectedSpeechResult(job.Id, QueueCoordinator.FriendlyError(error)); throw; }
             await CheckSavedSpeechAsync(job);
             try { await queue.RetryAsync(job.Id); }
             catch (Exception error) { SetSelectedSpeechResult(job.Id, "Speech is ready, but resume failed: " + QueueCoordinator.FriendlyError(error)); throw; }
@@ -629,12 +633,20 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         if (queue.MaintenanceError.Length > 0) storageSummary += "\nAutomatic cleanup needs attention: " + queue.MaintenanceError;
         Raise(nameof(StorageDetails));
     }
-    private async Task<ProviderInfo> CheckReadinessAsync(bool explicitRetry = false, string? savedEngine = null, CancellationToken? operationToken = null)
+    private async Task<ProviderInfo> CheckReadinessAsync(bool explicitRetry = false, string? savedEngine = null, CancellationToken? operationToken = null, bool repair = false)
     {
         var engine = savedEngine ?? Engine;
         ServiceStatus = "Checking " + engine + "…";
         ProviderInfo info;
-        try { info = await provider.ReadyAsync(engine, operationToken ?? shutdown.Token, explicitRetry); }
+        try
+        {
+            if (repair)
+            {
+                var result = await provider.RepairAsync(engine, operationToken ?? shutdown.Token);
+                info = result.Provider; SpeechRepairDetails = result.Detail;
+            }
+            else info = await provider.ReadyAsync(engine, operationToken ?? shutdown.Token, explicitRetry);
+        }
         catch (Exception error)
         {
             if (engine == Engine || savedEngine is not null)
@@ -679,24 +691,29 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     }
     private async Task RepairSpeechAsync()
     {
-        var results = new List<string>(); var failures = new List<string>();
+        var results = new List<string>(); var failures = new List<string>(); var selectedReady = false;
         foreach (var engine in IsHosted ? new[] { Engine } : new[] { "kokoro", "piper" })
         {
             SpeechRepairDetails = string.Join("\n\n", results.Append($"Checking / starting {engine}… Readiness allows up to two minutes per engine."));
             try
             {
-                await CheckReadinessAsync(true, engine);
-                results.Add($"{engine}: ready. Installed service identity and health verified.");
+                await CheckReadinessAsync(true, engine, repair: true);
+                results.Add($"{engine}: ready. " + SpeechRepairDetails);
+                if (engine == Engine) selectedReady = true;
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
-                var failure = $"{engine}: {QueueCoordinator.FriendlyError(error)}";
+                var failure = engine + ": " + (error is SpeechSetupException setup ? setup.Explanation + "\n" + setup.ImmediateStep : QueueCoordinator.FriendlyError(error));
                 results.Add(failure); failures.Add(failure);
             }
         }
-        SpeechRepairDetails = string.Join("\n\n", results) + "\n\nSaved failed narrations remain in Your library. Use Repair speech & resume on the existing item to continue it.";
+        SpeechRepairDetails = string.Join("\n\n", results) + (failures.Count > 0 && !IsHosted ? "\n\n" + SpeechRepairGuidance.Provisioning : "") + "\n\nSaved failed narrations remain in Your library. Use Repair speech & resume on the existing item to continue it.";
         await RefreshSetupAsync();
-        if (failures.Count > 0) throw new IOException("Some speech services still need attention. " + string.Join("\n", failures));
+        if (failures.Count > 0)
+        {
+            if (selectedReady) ServiceStatus = Engine + " · ready; another speech service needs attention";
+            throw new IOException("Speech repair needs attention.\n" + string.Join("\n\n", failures) + (!IsHosted ? "\n\n" + SpeechRepairGuidance.Provisioning : ""));
+        }
         StatusMessage = "Selected speech services are ready. Setup has been refreshed. Resume the existing saved narration in Your library.";
     }
     private async Task SubmitAsync()
