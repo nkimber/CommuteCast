@@ -20,10 +20,27 @@ public class NarrationPromptTests
         Assert.Contains("Never invent quotations", prompt);
         Assert.Contains("listening alone", prompt);
         Assert.Contains("REVISE BEFORE DELIVERING", prompt);
-        Assert.Contains("no title, Markdown headings, bullets, URLs", prompt);
-        Assert.Contains("NARRATION and SOURCE NOTES", prompt);
-        Assert.Contains("do not present a shortened draft as complete", prompt);
+        Assert.EndsWith(NarrationPrompt.OutputInstructions, prompt);
+        Assert.Contains("Your entire response will be converted directly to text-to-speech", prompt);
+        Assert.Contains("Do not report those checks", prompt);
+        Assert.DoesNotContain("NARRATION and SOURCE NOTES", prompt);
+        Assert.DoesNotContain("say so in the notes", prompt);
         Assert.DoesNotContain("$commute-narrative", prompt);
+    }
+
+    [Theory]
+    [InlineData(PromptEvidenceMode.Research)]
+    [InlineData(PromptEvidenceMode.SuppliedOnly)]
+    public void BothEvidenceModesKeepResearchAndLengthWorkOutOfTheOutput(PromptEvidenceMode evidence)
+    {
+        var prompt = NarrationPrompt.Build(new() { Topic = "A topic", Evidence = evidence, SourceMaterial = "Supplied facts" }, AsOf);
+        Assert.EndsWith(NarrationPrompt.OutputInstructions, prompt);
+        Assert.Contains("Privately check the word count", prompt);
+        Assert.Contains("do not include formal document references or append a source list", prompt);
+        Assert.DoesNotContain("in the source notes", prompt);
+        Assert.DoesNotContain("separate source notes", prompt);
+        Assert.DoesNotContain("Inside SOURCE NOTES", prompt);
+        Assert.DoesNotContain("offer a continuation", prompt);
     }
 
     [Theory]
@@ -85,7 +102,7 @@ public class NarrationPromptTests
         var legacy = new Draft("Existing title", "Unchanged narration 😀");
         await store.SaveAsync(legacy); Assert.Equal(legacy, await store.LoadAsync());
         var brief = new NarrationBrief { Topic = "Café history", SourceMaterial = "My reference notes" };
-        var saved = legacy with { PromptDraft = new(brief, NarrationPrompt.Build(brief, AsOf) + "\nMy manual edit", brief) };
+        var saved = legacy with { PromptDraft = new(brief, NarrationPrompt.Build(brief, AsOf) + "\nMy manual edit", brief, NarrationPrompt.TemplateVersion) };
         await store.SaveAsync(saved); Assert.Equal(saved, await new DraftStore(test.Workspace).LoadAsync());
         var incomplete = saved with { PromptDraft = saved.PromptDraft with { Brief = brief with { Minutes = "" } } };
         await store.SaveAsync(incomplete); Assert.Equal(incomplete, await store.LoadAsync());

@@ -1,4 +1,5 @@
 using System.IO;
+using CommuteCast.Core;
 
 namespace CommuteCast.Desktop;
 
@@ -18,18 +19,16 @@ public static class CodexGuideContent
     public static string GeneratePrompt { get; } = """
         $commute-narrative Write a 30-minute explanation of [your topic] for a curious beginner.
         Use a warm, engaging tone and concrete examples. Verify current or uncertain facts.
-        Aim for about 4,200 to 4,800 words, then check the word count and estimated listening time.
-        Give me the narration as plain text, with no Markdown headings, bullets, URLs, citations,
-        or production notes inside it. Put sources, word count, and estimated duration separately
-        after the narration so I can copy only the spoken text into CommuteCast.
-        """;
+        Aim for about 4,200 to 4,800 words, then privately check the word count and estimated listening time.
+        Do not report those checks.
+        """ + "\n" + NarrationPrompt.OutputInstructions;
 
     public static string BillsExample { get; } = """
         $commute-narrative Write a 30-minute narrative about the Buffalo Bills for a curious beginner.
         Explain their history, major players, football style, and fan culture. Verify current details.
-        Aim for about 4,200 to 4,800 words and check the word count before delivering.
-        Keep the narration in plain text and put sources and estimated duration separately afterward.
-        """;
+        Aim for about 4,200 to 4,800 words and privately check the word count before delivering.
+        Do not report that check.
+        """ + "\n" + NarrationPrompt.OutputInstructions;
 
     private static string ReadSkill()
     {

@@ -144,7 +144,7 @@
                     <TextBox x:Name="GeneratedPromptInput" Grid.Row="2" Text="{Binding PromptText, UpdateSourceTrigger=PropertyChanged}" MaxLength="100000" AcceptsReturn="True" AcceptsTab="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontSize="14" AutomationProperties.Name="Editable generated writing prompt"/>
                     <StackPanel Grid.Row="3" Margin="0,16,0,0">
                         <Button x:Name="CopyPromptButton" Content="Copy prompt" Command="{Binding CopyPromptCommand}" IsEnabled="{Binding CanCopyPrompt}" HorizontalAlignment="Left" AutomationProperties.Name="Copy writing prompt to clipboard"/>
-                        <TextBlock Text="3. When the narration is ready, paste only the spoken prose into New narration. Keep source notes and word counts outside the text you turn into audio." Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,16,0,10"/>
+                        <TextBlock Text="3. Paste the GAI response into New narration, review the spoken text, then create your MP3. The prompt requests narration only, ready for text-to-speech." Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,16,0,10"/>
                         <Button x:Name="PromptToNarrationButton" Content="Open narration editor →" Command="{Binding NavigateCommand}" CommandParameter="compose" HorizontalAlignment="Left" FontSize="12" Padding="10,8" ToolTip="Open the text editor to paste the narration returned by your GAI tool"/>
                     </StackPanel>
                 </Grid>
@@ -224,7 +224,7 @@
                     <Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Padding="24" Margin="0,0,0,18">
                         <StackPanel>
                             <TextBlock Text="3. Bring the narration into CommuteCast" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                            <TextBlock Text="Copy only the narration from Codex, leaving out its introduction, source links, duration estimate, and production notes. Choose New narration, paste it into Your text, and edit the title. Choose your voice and pace, use Review spoken text to check what will be read, then choose Create MP3." TextWrapping="Wrap" Margin="0,12,0,16"/>
+                            <TextBlock Text="The writing prompts request only the spoken narration, with no preamble, references or extra notes. Choose New narration, paste the response into Your text, and edit the title. Choose your voice and pace, use Review spoken text to check what will be read, then choose Create MP3." TextWrapping="Wrap" Margin="0,12,0,16"/>
                             <Button Content="Open New narration →" Command="{Binding NavigateCommand}" CommandParameter="compose" HorizontalAlignment="Left"/>
                         </StackPanel>
                     </Border>

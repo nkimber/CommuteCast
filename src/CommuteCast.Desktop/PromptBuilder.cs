@@ -10,6 +10,7 @@ public sealed partial class MainViewModel
 {
     private NarrationBrief promptBrief = new();
     private NarrationBrief? promptGeneratedFor;
+    private int promptTemplateVersion;
     private string promptText = "";
     private bool promptDraftTouched;
 
@@ -35,9 +36,11 @@ public sealed partial class MainViewModel
         new(NarrativeStyle.PracticalGuide, "Practical guide"), new(NarrativeStyle.BalancedComparison, "Balanced comparison")];
     public PronunciationOption<PromptEvidenceMode>[] PromptEvidenceModes { get; } =
     [new(PromptEvidenceMode.Research, "Research reliable sources"), new(PromptEvidenceMode.SuppliedOnly, "Use supplied material only")];
-    public bool PromptIsStale => !string.IsNullOrWhiteSpace(promptText) && promptGeneratedFor != promptBrief;
+    public bool PromptIsStale => !string.IsNullOrWhiteSpace(promptText) && (promptGeneratedFor != promptBrief || promptTemplateVersion != NarrationPrompt.TemplateVersion);
     public bool CanCopyPrompt => !string.IsNullOrWhiteSpace(promptText) && !PromptIsStale;
-    public string PromptStatus => PromptIsStale ? "Your brief has changed. Build the prompt again before copying; rebuilding replaces edits in the prompt."
+    public string PromptStatus => !string.IsNullOrWhiteSpace(promptText) && promptTemplateVersion != NarrationPrompt.TemplateVersion
+        ? "Rebuild this prompt using the current narration-only instructions before copying. Rebuilding replaces edits in the prompt."
+        : PromptIsStale ? "Your brief has changed. Build the prompt again before copying; rebuilding replaces edits in the prompt."
         : !string.IsNullOrWhiteSpace(promptText) ? "Ready to edit or copy. Paste this prompt into your preferred GAI tool."
         : "Fill in a topic, then build a prompt. A clear listening goal and key questions help give the narration depth.";
     public string PromptLengthEstimate
@@ -56,14 +59,14 @@ public sealed partial class MainViewModel
         BuildPromptCommand = Command(_ =>
         {
             var generated = NarrationPrompt.Build(promptBrief, DateOnly.FromDateTime(DateTime.Today));
-            promptGeneratedFor = promptBrief; PromptText = generated; RaisePromptState(); ScheduleDraftSave();
+            promptGeneratedFor = promptBrief; promptTemplateVersion = NarrationPrompt.TemplateVersion; PromptText = generated; RaisePromptState(); ScheduleDraftSave();
             StatusMessage = "Writing prompt built. Review it, then copy it into your preferred GAI tool.";
             return Task.CompletedTask;
         });
         CopyPromptCommand = Command(_ =>
         {
             Clipboard.SetText(PromptForCopy());
-            StatusMessage = "Prompt copied. Ask your GAI tool to write the narration, then paste only its spoken prose into New narration.";
+            StatusMessage = "Prompt copied. Ask your GAI tool to write the narration, then paste its response into New narration and review the spoken text.";
             return Task.CompletedTask;
         }, false);
     }
@@ -79,11 +82,11 @@ public sealed partial class MainViewModel
         if (!CanCopyPrompt) throw new ArgumentException("Build a prompt for the current brief before copying it.");
         return PromptText;
     }
-    internal Draft CaptureDraft() => new(DraftTitle, Source, promptDraftTouched ? new(promptBrief, promptText, promptGeneratedFor) : null);
+    internal Draft CaptureDraft() => new(DraftTitle, Source, promptDraftTouched ? new(promptBrief, promptText, promptGeneratedFor, promptTemplateVersion) : null);
     internal void RestorePromptDraft(NarrationPromptDraft? saved)
     {
         if (saved is null) return;
-        saved.ValidateStorage(); promptBrief = saved.Brief; promptText = saved.Prompt; promptGeneratedFor = saved.GeneratedFor;
+        saved.ValidateStorage(); promptBrief = saved.Brief; promptText = saved.Prompt; promptGeneratedFor = saved.GeneratedFor; promptTemplateVersion = saved.TemplateVersion;
         promptDraftTouched = true; Raise(null);
     }
 }

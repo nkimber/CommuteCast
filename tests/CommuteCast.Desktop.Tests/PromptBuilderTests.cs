@@ -42,25 +42,65 @@ public class PromptBuilderTests
         finally { await model.DisposeAsync(); }
     });
 
-    [Fact]
-    public Task EditedPromptAndStaleBriefSurviveClosingAndReopening() => DesktopHost.Run(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task EditedPromptAndBriefSurviveClosingAndReopening(bool changeBrief) => DesktopHost.Run(async () =>
     {
         var workspace = DesktopHost.Workspace(); var model = Model(workspace);
         model.Source = "Existing narration"; model.DraftTitle = "Keep this title";
         model.PromptTopic = "Café history 😀";
         await DesktopHost.Execute(model.BuildPromptCommand); model.PromptText += "\nMy custom wording.";
-        model.PromptAudience = "A local historian";
+        if (changeBrief) model.PromptAudience = "A local historian";
         var expected = model.CaptureDraft(); await model.DisposeAsync();
         var saved = await new DraftStore(workspace).LoadAsync(); Assert.Equal(expected, saved);
         var reopened = Model(workspace);
         try
         {
             reopened.RestorePromptDraft(saved.PromptDraft);
-            Assert.Equal("Café history 😀", reopened.PromptTopic); Assert.Equal("A local historian", reopened.PromptAudience);
-            Assert.Contains("My custom wording", reopened.PromptText); Assert.True(reopened.PromptIsStale); Assert.False(reopened.CanCopyPrompt);
+            Assert.Equal("Café history 😀", reopened.PromptTopic); Assert.Equal(saved.PromptDraft!.Brief.Audience, reopened.PromptAudience);
+            Assert.Contains("My custom wording", reopened.PromptText); Assert.Equal(changeBrief, reopened.PromptIsStale); Assert.Equal(!changeBrief, reopened.CanCopyPrompt);
+            Assert.Equal(NarrationPrompt.TemplateVersion, reopened.CaptureDraft().PromptDraft!.TemplateVersion);
         }
         finally { reopened.Source = saved.Source; reopened.DraftTitle = saved.Title; await reopened.DisposeAsync(); }
     });
+
+    [Fact]
+    public Task PreviouslySavedPromptKeepsEditsButRequiresCurrentNarrationOnlyInstructions() => DesktopHost.Run(async () =>
+    {
+        var workspace = DesktopHost.Workspace(); var brief = new NarrationBrief { Topic = "Café history" };
+        const string oldPrompt = "Return NARRATION and SOURCE NOTES.\nMy manual edit.";
+        var oldState = System.Text.Json.JsonSerializer.Serialize(new { Brief = brief, Prompt = oldPrompt, GeneratedFor = brief });
+        await System.IO.File.WriteAllTextAsync(System.IO.Path.Combine(workspace.Root, "draft.json"),
+            System.Text.Json.JsonSerializer.Serialize(new[] { "Existing title", "Existing narration", oldState }));
+        var saved = await new DraftStore(workspace).LoadAsync(); Assert.Equal(0, saved.PromptDraft!.TemplateVersion);
+        var model = Model(workspace);
+        try
+        {
+            model.Source = saved.Source; model.DraftTitle = saved.Title; model.RestorePromptDraft(saved.PromptDraft);
+            Assert.Equal(oldPrompt, model.PromptText); Assert.True(model.PromptIsStale); Assert.False(model.CanCopyPrompt);
+            Assert.Contains("narration-only instructions", model.PromptStatus);
+            Assert.Throws<ArgumentException>(() => model.PromptForCopy());
+            await DesktopHost.Execute(model.BuildPromptCommand);
+            Assert.True(model.CanCopyPrompt); Assert.EndsWith(NarrationPrompt.OutputInstructions, model.PromptForCopy());
+            Assert.DoesNotContain("SOURCE NOTES", model.PromptText); Assert.DoesNotContain("My manual edit", model.PromptText);
+            Assert.Equal("Existing narration", model.Source); Assert.Equal("Existing title", model.DraftTitle); Assert.Empty(model.Jobs);
+        }
+        finally { await model.DisposeAsync(); }
+        Assert.Equal(NarrationPrompt.TemplateVersion, (await new DraftStore(workspace).LoadAsync()).PromptDraft!.TemplateVersion);
+    });
+
+    [Fact]
+    public void CodexGuideWritingPromptsAlsoRequestOnlyNarration()
+    {
+        foreach (var prompt in new[] { CodexGuideContent.GeneratePrompt, CodexGuideContent.BillsExample })
+        {
+            Assert.EndsWith(NarrationPrompt.OutputInstructions, prompt);
+            Assert.Contains("privately check the word count", prompt);
+            Assert.DoesNotContain("after the narration", prompt);
+            Assert.DoesNotContain("separately afterward", prompt);
+        }
+    }
 
     [Fact]
     public Task NativeBindingsGenerateAndReflectStaleCopyState() => DesktopHost.Run(async () =>
