@@ -36,6 +36,8 @@ To update a separate installation, close the app after current work settles, the
 .\scripts\Start-CommuteCast.ps1
 ```
 
+The development machine already has this update installed. Both services report ready with recipe contract 1, 28 Kokoro voices and eight Piper voices, and their running image IDs match the new local pin. Provisioning occurred with the app closed, an empty live queue and no pending speech admission. The previous image is retained as `commutecast-speech:before-voice-quality-20261010`; its pin is retained in ignored `artifacts/voice-quality-provision-before.json`. The primary desktop Release build is stamped `10c8376`. Existing saved defaults still need the checkbox enabled explicitly. Comparison clips are available in the main checkout's `artifacts/voice-quality-kokoro-20261010` and `artifacts/voice-quality-piper-20261010` folders.
+
 ## Repeatable Kokoro/Piper comparison
 
 Build a separate image and use isolated loopback services so existing narration pins stay intact. The harness requires a new output directory and verifies the local recipe contract. It generates baseline, natural, natural-repeat and tuned samples; `--long` adds eight alternating speaker turns. The same text and voice remain fixed for the short comparisons. Tuning uses Heart + 25% Bella for Kokoro and Lessac with noise 0.55/0.65 for Piper.
