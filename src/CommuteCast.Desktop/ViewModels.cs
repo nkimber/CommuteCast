@@ -106,9 +106,19 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
     public bool NeedsSpeechCheck => Job.Stage == JobStage.Failed && (Job.FailedStage is JobStage.WaitingForService or JobStage.Synthesizing || Job.FailureCategory is FailureCategory.ServiceConnection or FailureCategory.ServiceContract or FailureCategory.Prerequisite);
     public string CopyableDetails => string.Join("\n\n", new[] { Title, $"Job ID: {Id}\nSubmitted: {Submitted}", Status, AudioSummary, ActivityNotice, TimingSummary, Guidance, Details, Delivery,
         Error.Length > 0 ? "Error\n" + Error : "", HasRecoveryInstructions ? "How to fix\n" + RecoveryInstructions : "" }.Where(s => s.Length > 0));
-    public double Progress => Job.CompletedChunks;
+    private JobRunTiming? CurrentTiming
+    {
+        get
+        {
+            var live = Job.Activity.Read();
+            return live.Running || live.Timing.ProcessingMilliseconds > 0 || live.Timing.AssemblyMilliseconds is not null ? live.Timing : Job.RunTiming;
+        }
+    }
+    public double Progress => Job.Stage == JobStage.Assembling ? CurrentTiming?.JoinedSegments ?? 0 : Job.CompletedChunks;
     public double ChunkTotal => Math.Max(1, Job.Chunks.Count);
-    public string ProgressSummary => $"{Job.CompletedChunks} of {Job.Chunks.Count} segments completed and validated";
+    public string ProgressSummary => Job.Stage == JobStage.Assembling
+        ? $"{CurrentTiming?.JoinedSegments ?? 0} of {Job.Chunks.Count} segments joined · MP3 assembly"
+        : $"{Job.CompletedChunks} of {Job.Chunks.Count} segments completed and validated";
     public string ActivityNotice => IsWorking && Job.Activity.Read().Notice is { Length: > 0 } notice ? notice : Job.Stage switch
     {
         JobStage.Failed => "Stopped. Completed segments are retained for retry.",
@@ -129,7 +139,8 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
                     ? $" · Estimated narration remaining {Clock(estimate)}"
                     : " · Estimating remaining time after the first segment"
                 : "";
-            return $"Processing time {Clock(timing.ProcessingMilliseconds)}" + remaining + (timing.SegmentNumber is { } segment ? $" · Segment {segment}: {Clock(timing.SegmentMilliseconds)}" : "");
+            var assembly = timing.AssemblyMilliseconds is { } assemblyTime ? $" · MP3 assembly time {Clock(assemblyTime)}" : "";
+            return $"Processing time {Clock(timing.ProcessingMilliseconds)}" + remaining + assembly + (timing.SegmentNumber is { } segment ? $" · Segment {segment}: {Clock(timing.SegmentMilliseconds)}" : "");
         }
     }
     private static string Clock(long milliseconds)
@@ -140,6 +151,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
     public void RefreshActivity()
     {
         Raise(nameof(Status)); Raise(nameof(ActivityNotice)); Raise(nameof(TimingSummary));
+        Raise(nameof(Progress)); Raise(nameof(ProgressSummary)); Raise(nameof(ChunkTotal));
         Raise(nameof(IsWorking)); Raise(nameof(NeedsAttention)); Raise(nameof(FailureSummary));
         Raise(nameof(CanResume));
         Raise(nameof(CanOpenFolder));

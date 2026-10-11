@@ -351,6 +351,7 @@ public class AudioSequenceTests
         var unknown = Path.Combine(directory, "notes.txt"); await File.WriteAllTextAsync(unknown, "Keep this");
         TestWorkspace.WriteWave(chunk, 1);
         await Assert.ThrowsAsync<IOException>(() => new AudioPipeline(new()).AssembleAsync(job, directory, default));
+        Assert.Equal(1, job.Activity.Read().Timing.JoinedSegments);
         Assert.False(File.Exists(Path.Combine(directory, "assembled.wav")));
         Assert.DoesNotContain(job.PrivateArtifacts, r => r.RelativePath == "assembled.wav");
         Assert.Equal("Keep this", await File.ReadAllTextAsync(unknown));

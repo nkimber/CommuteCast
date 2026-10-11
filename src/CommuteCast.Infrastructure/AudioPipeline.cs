@@ -59,6 +59,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
     public async Task AssembleAsync(Job job, string directory, CancellationToken ct, Func<Task>? checkpoint)
     {
         ValidateManifest(job);
+        job.Activity.StartAssembly(job.Chunks.Count);
         var assembled = Path.Combine(directory, "assembled.wav");
         var samples = job.Receipts.Sum(r => (long)Math.Round(r.Duration * 24000));
         // New profiles top up native silence; legacy jobs keep their captured fixed gaps.
@@ -88,9 +89,12 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
                     length -= read;
                 }
                 if (chunk.Index < gaps.Length) await output.WriteAsync(new byte[gaps[chunk.Index] * 2], ct);
+                job.Activity.SegmentJoined();
             }
         }, checkpoint ?? (() => Task.CompletedTask), ct);
+        job.Activity.Update($"All {job.Chunks.Count} segments joined · preparing MP3 encoding");
         var loudness = NaturalChunker.IsNatural(job) ? await NaturalAudio.LoudnessFilterAsync(settings.Ffmpeg, assembled, ct) : null;
+        job.Activity.Update($"All {job.Chunks.Count} segments joined · encoding the MP3");
         await PrivateJobFiles.WriteRecordedAsync(job, directory, "encoded.partial.mp3", async output =>
         {
             var arguments = new List<string> { "-v", "error", "-nostdin", "-n", "-protocol_whitelist", "file,pipe,fd", "-f", "wav", "-i", assembled };
@@ -103,6 +107,7 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
         }, checkpoint ?? (() => Task.CompletedTask), ct);
         ct.ThrowIfCancellationRequested();
         await PrivateJobFiles.MoveRecordedAsync(job, directory, "encoded.partial.mp3", "complete.mp3", checkpoint ?? (() => Task.CompletedTask), ct);
+        job.Activity.FinishAssembly();
     }
 
     public async Task<AudioInfo> ValidateFinalAsync(Job job, string path, CancellationToken ct)

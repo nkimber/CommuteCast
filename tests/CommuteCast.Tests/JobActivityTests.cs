@@ -5,6 +5,33 @@ namespace CommuteCast.Tests;
 
 public class JobActivityTests
 {
+    [Fact] public void AssemblyHasItsOwnClockAndProgressWithoutResettingOverallTime()
+    {
+        var clock = new Clock(); var activity = new JobActivity(clock);
+        activity.Start(null); clock.Advance(10000); activity.StartAssembly(683);
+        Assert.Equal(0, activity.Read().Timing.JoinedSegments);
+        Assert.Equal(683, activity.Read().Timing.AssemblyTotalSegments);
+        clock.Advance(2000); activity.SegmentJoined();
+        Assert.Equal(1, activity.Read().Timing.JoinedSegments);
+        Assert.Equal(12000, activity.Read().Timing.ProcessingMilliseconds);
+        Assert.Equal(2000, activity.Read().Timing.AssemblyMilliseconds);
+        activity.FinishAssembly(); clock.Advance(1000);
+        Assert.Equal(2000, activity.Read().Timing.AssemblyMilliseconds);
+        Assert.Equal(13000, activity.Read().Timing.ProcessingMilliseconds);
+    }
+    [Fact] public void StoppedAssemblyFreezesAndRetryStartsJoiningFromZero()
+    {
+        var clock = new Clock(); var activity = new JobActivity(clock);
+        activity.Start(null); activity.StartAssembly(2); clock.Advance(1000); activity.SegmentJoined(); activity.Stop();
+        var saved = JsonSerializer.Deserialize<JobRunTiming>(JsonSerializer.Serialize(activity.Read().Timing))!;
+        clock.Advance(90000); Assert.Equal(saved, activity.Read().Timing);
+        activity.Start(saved); activity.StartAssembly(2);
+        Assert.Equal(0, activity.Read().Timing.JoinedSegments);
+        Assert.Equal(0, activity.Read().Timing.AssemblyMilliseconds);
+        Assert.Equal(1000, activity.Read().Timing.ProcessingMilliseconds);
+        activity.SegmentJoined(); activity.SegmentJoined(); activity.SegmentJoined();
+        Assert.Equal(2, activity.Read().Timing.JoinedSegments);
+    }
     [Fact] public void RemainingEstimateRecalculatesAtCompletionAndCountsDownBetweenSegments()
     {
         var clock = new Clock(); var activity = new JobActivity(clock);
