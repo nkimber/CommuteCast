@@ -31,6 +31,7 @@ public sealed class Job
     public long QueuePosition { get; set; }
     public string Title { get; set; } = "";
     public string Source { get; set; } = "";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public NarrationVersion? Version { get; set; }
     public PreparedText Prepared { get; set; } = new("", []);
     public NarrationSettings Settings { get; set; } = new("kokoro", "af_heart", 1, false, "", "");
     public string Destination { get; set; } = "";
@@ -74,6 +75,7 @@ public sealed class Job
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 public record ChunkReceipt(int Index, string Hash, string Fingerprint, double Duration);
+public sealed record NarrationVersion(string RootJobId, string ParentJobId, string BaseTitle, int Number, string ParentSourceHash);
 public record PrivateArtifactReceipt(string RelativePath, string Hash,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ExportStagingIdentity? PromotionIdentity = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ExportStagingIdentity? CreationIdentity = null);

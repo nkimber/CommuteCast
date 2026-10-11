@@ -83,7 +83,7 @@ public sealed partial class MainViewModel
         if (!CanCopyPrompt) throw new ArgumentException("Build a prompt for the current brief before copying it.");
         return PromptText;
     }
-    internal Draft CaptureDraft() => new(DraftTitle, Source, promptDraftTouched ? new(promptBrief, promptText, promptGeneratedFor, promptTemplateVersion, promptPodcastIdentity) : null, podcastTouched ? new PodcastDraft(PodcastMode, CaptureEpisode()) : null);
+    internal Draft CaptureDraft() => new(DraftTitle, Source, promptDraftTouched ? new(promptBrief, promptText, promptGeneratedFor, promptTemplateVersion, promptPodcastIdentity) : null, podcastTouched ? new PodcastDraft(PodcastMode, CaptureEpisode()) : null, CaptureVersionDraft());
     internal void RestorePromptDraft(NarrationPromptDraft? saved)
     {
         if (saved is null) return;

@@ -72,6 +72,11 @@ internal static class Mp3Comments
         lines.Add($"Preparation: {job.Prepared.Version}; chunking: {job.ChunkingVersion}; audio contract: {job.AudioContractVersion}");
         lines.Add("Queued UTC: " + job.CreatedUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
         lines.Add("Job ID: " + job.Id);
+        if (job.Version is { } version)
+        {
+            lines.Add($"Narration version: {version.Number}; original job ID: {version.RootJobId}; parent job ID: {version.ParentJobId}");
+            lines.Add("Script compared with parent: " + (Job.Hash(job.Source) == version.ParentSourceHash ? "unchanged" : "edited"));
+        }
         return string.Join("\r\n", lines);
     }
 
