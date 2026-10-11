@@ -8,6 +8,7 @@ public interface ILocalSpeechRuntime
 {
     Task<ProcessResult> DockerAsync(IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken ct);
     void LaunchInstalledDesktop();
+    void RestartUnresponsiveDesktop() => throw new IOException("This runtime cannot restart stalled Docker Desktop processes. Close Docker Desktop through Task Manager and open it again.");
 }
 
 public sealed class LocalSpeechRuntime : ILocalSpeechRuntime
@@ -18,10 +19,38 @@ public sealed class LocalSpeechRuntime : ILocalSpeechRuntime
         var desktop = DockerDesktopLocation.Find() ?? throw new IOException("Docker Desktop is not installed. Install it through your approved IT process.");
         Process.Start(new ProcessStartInfo(desktop) { UseShellExecute = false, WindowStyle = ProcessWindowStyle.Hidden });
     }
+    public void RestartUnresponsiveDesktop()
+    {
+        var desktop = DockerDesktopLocation.Find() ?? throw new IOException("Docker Desktop is not installed.");
+        var processes = Process.GetProcessesByName("com.docker.backend").Concat(Process.GetProcessesByName("Docker Desktop")).ToArray();
+        try
+        {
+            // Retain handles, verify all paths before killing any process, and never
+            // terminate WSL, prune data, or select an unrelated executable by name.
+            var owned = processes.Where(p => !p.HasExited && DockerDesktopLocation.IsManagedProcess(desktop, p.MainModule?.FileName ?? "")).ToArray();
+            foreach (var process in owned)
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) when (process.HasExited) { }
+            var stopped = Stopwatch.StartNew();
+            foreach (var process in owned)
+                if (!process.WaitForExit(Math.Max(0, 5000 - (int)stopped.ElapsedMilliseconds))) throw new IOException("Docker Desktop did not stop. Its runtime folders were preserved.");
+            var preserved = DockerDesktopRecovery.QuarantineInaccessibleRuntime(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+            Serilog.Log.Information("Explicit Docker Desktop recovery preserved {RuntimeFolderCount} inaccessible endpoint folders", preserved.Length);
+            LaunchInstalledDesktop();
+        }
+        finally { foreach (var process in processes) process.Dispose(); }
+    }
 }
 
 public static class DockerDesktopLocation
 {
+    public static bool IsManagedProcess(string desktop, string executable)
+    {
+        if (string.IsNullOrWhiteSpace(executable)) return false;
+        var directory = Path.GetDirectoryName(Path.GetFullPath(desktop))!;
+        var allowed = new[] { Path.GetFullPath(desktop), Path.Combine(directory, "resources", "com.docker.backend.exe"), Path.Combine(directory, "frontend", "Docker Desktop.exe") };
+        return allowed.Contains(Path.GetFullPath(executable), StringComparer.OrdinalIgnoreCase);
+    }
     public static string? Find(string? localApplicationData = null, string? programFiles = null)
     {
         var candidates = new[] {
@@ -36,6 +65,7 @@ public static class DockerDesktopLocation
 public sealed record SpeechProviderLimits
 {
     public TimeSpan Readiness { get; init; } = TimeSpan.FromSeconds(120);
+    public TimeSpan DesktopRecovery { get; init; } = TimeSpan.FromMinutes(3);
     public TimeSpan Health { get; init; } = TimeSpan.FromSeconds(5);
     public TimeSpan Synthesis { get; init; } = TimeSpan.FromMinutes(5);
     public TimeSpan Quiescence { get; init; } = TimeSpan.FromSeconds(8);
@@ -44,7 +74,7 @@ public sealed record SpeechProviderLimits
     public int TransientRetries { get; init; } = 2;
     public void Validate()
     {
-        if (Readiness <= TimeSpan.Zero || Readiness > TimeSpan.FromSeconds(120) || Health <= TimeSpan.Zero || Health > TimeSpan.FromSeconds(5) || Synthesis <= TimeSpan.Zero || Synthesis > TimeSpan.FromMinutes(5) || Quiescence <= TimeSpan.Zero || Quiescence > TimeSpan.FromSeconds(8) || Poll <= TimeSpan.Zero || RetryBackoff <= TimeSpan.Zero || TransientRetries is < 0 or > 2)
+        if (Readiness <= TimeSpan.Zero || Readiness > TimeSpan.FromSeconds(120) || DesktopRecovery <= TimeSpan.Zero || DesktopRecovery > TimeSpan.FromMinutes(3) || Health <= TimeSpan.Zero || Health > TimeSpan.FromSeconds(5) || Synthesis <= TimeSpan.Zero || Synthesis > TimeSpan.FromMinutes(5) || Quiescence <= TimeSpan.Zero || Quiescence > TimeSpan.FromSeconds(8) || Poll <= TimeSpan.Zero || RetryBackoff <= TimeSpan.Zero || TransientRetries is < 0 or > 2)
             throw new ArgumentException("Provider limits must remain within the approved recovery/request budgets.");
     }
 }
@@ -113,5 +143,6 @@ public sealed class SpeechSetupException(string explanation, string nextStep, bo
 
 public static class SpeechRepairGuidance
 {
+    public const string DockerUnresponsive = "Docker Desktop's local Linux engine is not responding. The speech models may still be running, but CommuteCast must verify their containers before using them. In Settings > Speech recovery, choose Restart Docker Desktop / repair (interrupts other Docker containers). It can preserve inaccessible Windows runtime sockets and let Docker recreate them. If that fails, finish current Docker work, end Docker Desktop and com.docker.backend processes in Task Manager and open Docker Desktop. If its error names dockerInference or engine.sock, ask your administrator to inspect Docker's runtime sockets; keep the images and models instead of resetting Docker. When the Linux engine is running, choose Start / repair speech services.";
     public const string Provisioning = "Manual setup:\n1. Pause future jobs and wait for current speech to finish.\n2. Open Docker Desktop and select Linux containers.\n3. In PowerShell, open the CommuteCast source folder. Run .\\scripts\\Provision-Speech.ps1 to use the installed image, or .\\scripts\\Provision-Speech.ps1 -Build if the image is missing or needs updating (downloads required). If you only have the installed app, ask your administrator to provision the matching speech services.\n4. Return to CommuteCast and choose Start / repair speech services.\nFinished MP3s remain available. Unfinished narrations made with another image require the original service or Use as a new draft.";
 }

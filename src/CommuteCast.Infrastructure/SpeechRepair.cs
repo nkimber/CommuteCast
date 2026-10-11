@@ -8,6 +8,55 @@ public sealed record SpeechRepairResult(ProviderInfo Provider, string Detail);
 
 public sealed partial class LocalSpeechProvider
 {
+    /// <summary>User-requested shared Desktop restart, separate from ordinary speech repair.</summary>
+    public async Task<string> RestartDockerDesktopAsync(CancellationToken ct = default)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(limits.DesktopRecovery);
+        var admissionEntered = false; var recoveryEntered = false;
+        try
+        {
+            await admissionGate.WaitAsync(deadline.Token); admissionEntered = true;
+            await recoveryGate.WaitAsync(deadline.Token); recoveryEntered = true;
+            await VerifyLocalContextAsync(deadline.Token);
+            await RequireIdleDesktopRestartAsync(deadline.Token);
+            var restarted = false;
+            try { restarted = (await runtime.DockerAsync(["desktop", "restart", "--timeout", "30"], TimeSpan.FromSeconds(35), deadline.Token)).ExitCode == 0; }
+            catch (TimeoutException) { deadline.Token.ThrowIfCancellationRequested(); }
+            if (!restarted)
+            {
+                // The shared Desktop control API can hang while speech is healthy.
+                // Recheck after the grace period before the explicit process fallback.
+                await RequireIdleDesktopRestartAsync(deadline.Token);
+                deadline.Token.ThrowIfCancellationRequested();
+                runtime.RestartUnresponsiveDesktop();
+            }
+            await VerifyDaemonAsync(true, deadline.Token);
+            return restarted ? "Restarted Docker Desktop. Checking both speech services next."
+                : "Restarted stalled Docker Desktop processes from the verified installation. Models and images were retained. Checking both speech services next.";
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        { throw new TimeoutException(SpeechRepairGuidance.DockerUnresponsive); }
+        finally { if (recoveryEntered) recoveryGate.Release(); if (admissionEntered) admissionGate.Release(); }
+    }
+
+    private async Task RequireIdleDesktopRestartAsync(CancellationToken ct)
+    {
+        await RequireNoPendingRepairAsync(ct);
+        var unavailable = false;
+        foreach (var engine in new[] { "kokoro", "piper" })
+        {
+            ProviderInfo health;
+            try { health = await HealthAsync(engine, ct); RequireAdmission(health); }
+            catch (Exception error) when (error is HttpRequestException || error is OperationCanceledException && !ct.IsCancellationRequested)
+            { unavailable = true; continue; }
+            if (health.State != "ready" || health.Active != 0)
+                throw new IOException(engine + " is busy, loading or failed. Docker Desktop was preserved. Wait for speech to finish before restarting it.");
+        }
+        if (unavailable && await DaemonRespondsAsync(TimeSpan.FromSeconds(15), ct))
+            throw new IOException("Docker is responding but a speech endpoint cannot be checked. Start / repair speech services first; restart was refused because speech activity is unknown.");
+        await RequireNoPendingRepairAsync(ct);
+    }
+
     /// <summary>Explicit repair can recover a pin or create a missing container; ordinary readiness never does.</summary>
     public async Task<SpeechRepairResult> RepairAsync(string engine, CancellationToken ct = default)
     {
@@ -21,8 +70,8 @@ public sealed partial class LocalSpeechProvider
             await recoveryGate.WaitAsync(deadline.Token); recoveryEntered = true;
             detail = await RepairInstallationAsync(engine, deadline.Token);
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        { throw new TimeoutException("Speech repair exceeded its two-minute allowance. Open Docker Desktop, allow models to finish loading, then try Start / repair speech services again."); }
+        catch (OperationCanceledException error) when (!ct.IsCancellationRequested)
+        { throw new TimeoutException(error.Message == SpeechRepairGuidance.DockerUnresponsive ? error.Message : "Speech repair exceeded its two-minute allowance. Open Docker Desktop, allow models to finish loading, then try Start / repair speech services again."); }
         finally
         {
             if (recoveryEntered) recoveryGate.Release();

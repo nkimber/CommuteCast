@@ -106,7 +106,7 @@ public sealed partial class LocalSpeechProvider : IDurableSpeechProvider, IDurab
                 await Task.Delay(limits.Poll, deadline.Token);
             }
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException(settlingAdmission
+        catch (OperationCanceledException error) when (!ct.IsCancellationRequested) { throw new TimeoutException(error.Message == SpeechRepairGuidance.DockerUnresponsive ? error.Message : settlingAdmission
             ? "Processing stopped after the readiness wait limit. The prior speech reservation is not confirmed settled and may still be running locally. Validated segments are retained. Wait for the prior request to finish, then use Repair speech & resume on the existing narration."
             : "Speech readiness exceeded its bounded allowance. Check the local speech service, then retry the existing narration. Saved audio is retained."); }
         catch (TimeoutException error) when (!settlingAdmission) { throw new TimeoutException(error.Message + " Repair Docker Desktop, then check speech readiness or retry. Validated local audio is preserved.", error); }
@@ -147,24 +147,36 @@ public sealed partial class LocalSpeechProvider : IDurableSpeechProvider, IDurab
     }
     private async Task VerifyDaemonAsync(bool startIfStopped, CancellationToken ct)
     {
-        var context = await runtime.DockerAsync(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], TimeSpan.FromSeconds(30), ct);
-        if (context.ExitCode != 0 || !IsLocalContext(context.Output.Trim())) throw new IOException("Select the local Docker Desktop Linux context. Remote Docker engines are not permitted.");
-        var daemon = await runtime.DockerAsync(["version", "--format", "{{.Server.Version}}"], TimeSpan.FromSeconds(15), ct);
-        if (daemon.ExitCode != 0 && startIfStopped)
+        await VerifyLocalContextAsync(ct);
+        if (await DaemonRespondsAsync(TimeSpan.FromSeconds(15), ct)) return;
+        if (!startIfStopped) throw new ServiceUnavailableException(SpeechRepairGuidance.DockerUnresponsive);
+        runtime.LaunchInstalledDesktop();
+        // A timed-out command is an unavailable daemon, not the end of startup.
+        // Wait within the caller's overall readiness allowance, including slow boots.
+        using var startup = CancellationTokenSource.CreateLinkedTokenSource(ct); startup.CancelAfter(limits.Readiness);
+        try
         {
-            runtime.LaunchInstalledDesktop();
-            for (var attempt = 0; attempt < 10 && daemon.ExitCode != 0; attempt++)
+            while (true)
             {
-                await Task.Delay(limits.Poll, ct);
-                daemon = await runtime.DockerAsync(["version", "--format", "{{.Server.Version}}"], TimeSpan.FromSeconds(5), ct);
+                await Task.Delay(limits.Poll, startup.Token);
+                if (await DaemonRespondsAsync(TimeSpan.FromSeconds(5), startup.Token)) return;
             }
         }
-        if (daemon.ExitCode != 0)
+        catch (OperationCanceledException)
         {
-            const string message = "Docker's local daemon is unavailable. Open Docker Desktop and retry.";
-            if (!startIfStopped) throw new ServiceUnavailableException(message);
-            throw new IOException(message);
+            if (ct.IsCancellationRequested) throw new OperationCanceledException(SpeechRepairGuidance.DockerUnresponsive, ct);
+            throw new IOException(SpeechRepairGuidance.DockerUnresponsive);
         }
+    }
+    private async Task VerifyLocalContextAsync(CancellationToken ct)
+    {
+        var context = await runtime.DockerAsync(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], TimeSpan.FromSeconds(30), ct);
+        if (context.ExitCode != 0 || !IsLocalContext(context.Output.Trim())) throw new IOException("Select the local Docker Desktop Linux context. Remote Docker engines are not permitted.");
+    }
+    private async Task<bool> DaemonRespondsAsync(TimeSpan timeout, CancellationToken ct)
+    {
+        try { return (await runtime.DockerAsync(["version", "--format", "{{.Server.Version}}"], timeout, ct)).ExitCode == 0; }
+        catch (TimeoutException) { ct.ThrowIfCancellationRequested(); return false; }
     }
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {

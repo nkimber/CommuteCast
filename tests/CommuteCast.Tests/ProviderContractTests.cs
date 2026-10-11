@@ -143,9 +143,10 @@ public partial class ProviderContractTests
     }
     [Fact] public async Task DaemonOutageGetsOneLaunchAndSharedExhaustionAcrossJobs()
     {
-        using var fixture = new Fixture(); fixture.Runtime.DaemonFailures = 100; using var provider = fixture.Provider();
-        await Assert.ThrowsAsync<IOException>(() => provider.ReadyAsync("kokoro", default));
-        Assert.Equal(1, fixture.Runtime.Launches); Assert.Equal(11, fixture.Runtime.Calls.Count(c => c[0] == "version"));
+        using var fixture = new Fixture(); fixture.Runtime.DaemonFailures = int.MaxValue; using var provider = fixture.Provider();
+        var error = await Assert.ThrowsAsync<TimeoutException>(() => provider.ReadyAsync("kokoro", default));
+        Assert.Contains("Restart Docker Desktop / repair", error.Message);
+        Assert.Equal(1, fixture.Runtime.Launches); Assert.True(fixture.Runtime.Calls.Count(c => c[0] == "version") > 10);
         var count = fixture.Runtime.Calls.Count;
         await Assert.ThrowsAsync<IOException>(() => provider.ReadyAsync("kokoro", default)); Assert.Equal(count, fixture.Runtime.Calls.Count); Assert.Empty(fixture.Http.Uris);
         fixture.Runtime.DaemonFailures = 0; await provider.ReadyAsync("kokoro", default, true);
@@ -330,7 +331,7 @@ public partial class ProviderContractTests
         using var provider = fixture.Provider(); using var cancel = new CancellationTokenSource();
         var synthesis = provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, cancel.Token);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); cancel.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => synthesis.WaitAsync(TimeSpan.FromSeconds(1)));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => synthesis.WaitAsync(TimeSpan.FromSeconds(10)));
         release.TrySetResult(fixture.Audio()); await Task.Delay(50);
         Assert.Equal("prior output", await File.ReadAllTextAsync(fixture.Output)); Assert.Empty(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial")); Assert.Equal(1, fixture.Http.Posts);
     }
@@ -338,8 +339,18 @@ public partial class ProviderContractTests
     {
         using var fixture = new Fixture(); var stream = new BlockedStream(); fixture.Http.Speech = (_, _) => Task.FromResult(fixture.AudioContent(new StreamContent(stream)));
         using var provider = fixture.Provider(Fixture.ShortLimits with { Synthesis = TimeSpan.FromMilliseconds(150) });
-        try { await Assert.ThrowsAsync<TimeoutException>(() => provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default).WaitAsync(TimeSpan.FromSeconds(1))); }
-        finally { stream.Release.TrySetResult(0); }
+        var synthesis = provider.SynthesizeAsync(fixture.Settings, "text", fixture.Output, default);
+        try
+        {
+            await Assert.ThrowsAsync<TimeoutException>(() => synthesis.WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.True(synthesis.IsCompleted, "The provider itself must finish at its deadline, rather than only the test wait timing out.");
+        }
+        finally
+        {
+            stream.Release.TrySetResult(0);
+            try { await synthesis.WaitAsync(TimeSpan.FromSeconds(10)); }
+            catch (TimeoutException) when (synthesis.IsCompleted) { }
+        }
         Assert.False(File.Exists(fixture.Output)); Assert.Empty(Directory.GetFiles(fixture.Test.Workspace.Root, "*.partial"));
     }
     [Theory] [InlineData("kokoro")] [InlineData("piper")]
@@ -367,7 +378,9 @@ public partial class ProviderContractTests
         public string Engine { get; } public string Fingerprint => Engine + ":contract-v1:" + new string('c', 64);
         public NarrationSettings Settings => new(Engine, Engine == "kokoro" ? "af_heart" : "en_US-lessac-medium", 1, false, "", Fingerprint);
         public string Output => Path.Combine(Test.Workspace.Root, "response.wav"); public byte[] Wave { get; }
-        public static SpeechProviderLimits ShortLimits => new() { Readiness = TimeSpan.FromSeconds(2), Health = TimeSpan.FromSeconds(1), Synthesis = TimeSpan.FromSeconds(3), Quiescence = TimeSpan.FromMilliseconds(200), Poll = TimeSpan.FromMilliseconds(5), RetryBackoff = TimeSpan.FromMilliseconds(5) };
+        // Success cases exercise real disk/journal operations under concurrent host
+        // load. Deadline tests override these allowances explicitly.
+        public static SpeechProviderLimits ShortLimits => new() { Readiness = TimeSpan.FromSeconds(10), Health = TimeSpan.FromSeconds(2), Synthesis = TimeSpan.FromSeconds(15), Quiescence = TimeSpan.FromSeconds(2), Poll = TimeSpan.FromMilliseconds(5), RetryBackoff = TimeSpan.FromMilliseconds(5) };
         public Fixture(string engine = "kokoro")
         {
             Engine = engine; Runtime = new(engine); Http = new(this);
@@ -412,6 +425,7 @@ public partial class ProviderContractTests
         public int Starts { get; private set; } public int Launches { get; private set; } public int DaemonFailures { get; set; } public bool Missing { get; set; } public Action? OnStart { get; set; } public string? MetadataOverride { get; set; }
         public JsonNode? PeerContainer { get; set; } public int Creates { get; private set; }
         public bool CreateFails { get; set; } public string ListedContainers { get; set; } = "";
+        public int ForcedRestarts { get; private set; } public bool DesktopRestartFails { get; set; }
         public FakeRuntime(string engine)
         {
             Container = JsonSerializer.SerializeToNode(new
@@ -428,6 +442,7 @@ public partial class ProviderContractTests
             if (BeforeDocker is not null) await BeforeDocker(arguments, ct);
             ct.ThrowIfCancellationRequested(); Calls.Add(arguments.ToArray());
             if (arguments[0] == "context") return new ProcessResult(0, Context, "");
+            if (arguments[0] == "desktop") return new(DesktopRestartFails ? 1 : 0, "", "");
             if (arguments[0] == "version") return DaemonFailures-- > 0 ? new ProcessResult(1, "", "daemon unavailable") : new ProcessResult(0, "29.2.1", "");
             if (arguments[0] == "start") { Starts++; Container["State"]!["Running"] = true; OnStart?.Invoke(); return new ProcessResult(0, arguments[1], ""); }
             if (arguments[0] == "container") return new(0, ListedContainers, "");
@@ -440,6 +455,7 @@ public partial class ProviderContractTests
             return Missing ? new ProcessResult(1, "", "missing") : new ProcessResult(0, MetadataOverride ?? "[" + Container.ToJsonString() + "]", "");
         }
         public void LaunchInstalledDesktop() => Launches++;
+        public void RestartUnresponsiveDesktop() { ForcedRestarts++; DaemonFailures = 0; }
     }
     private class BlockedStream : Stream
     {

@@ -303,6 +303,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public ICommand SelectedReadinessCommand { get; }
     public ICommand RepairSelectedCommand { get; }
     public ICommand RepairSpeechCommand { get; }
+    public ICommand RestartDockerSpeechCommand { get; }
     public ICommand QueueCommand { get; }
     public ICommand ReviewCommand { get; }
     public ICommand ChooseFolderCommand { get; }
@@ -374,6 +375,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
             SetSelectedSpeechResult(job.Id, StatusMessage);
         });
         RepairSpeechCommand = Command(_ => RepairSpeechAsync());
+        RestartDockerSpeechCommand = Command(_ => IsHosted ? throw new IOException("Docker Desktop recovery applies to local speech. Select Kokoro or Piper first.") : RepairSpeechAsync(restartDesktop: true));
         QueueCommand = Command(_ => SubmitAsync());
         ReviewCommand = Command(async _ => { var text = Source; var snapshot = CapturePreviewSettings(); var episode = PodcastMode ? CaptureEpisode() : null; var prepared = await Task.Run(() => episode is null ? TextPreparation.Prepare(text, snapshot.ExcludeCode, snapshot.Pronunciation, snapshot.Profile, shutdown.Token) : PodcastScript.Prepare(text, episode, snapshot).Prepared, shutdown.Token); ShowPreparation(prepared, text, snapshot, episode); });
         ChooseFolderCommand = Command(async _ => { var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); settings.Destination = path; Raise(nameof(DestinationDisplay)); await SaveSettingsAsync(); StatusMessage = "Output folder saved. Only completed MP3s will be exported here."; } });
@@ -689,9 +691,19 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         }
         catch (Exception error) { SetSelectedSpeechResult(job.Id, $"{job.Settings.Engine}: {QueueCoordinator.FriendlyError(error)}"); throw; }
     }
-    private async Task RepairSpeechAsync()
+    private async Task RepairSpeechAsync(bool restartDesktop = false)
     {
-        var results = new List<string>(); var failures = new List<string>(); var selectedReady = false;
+        var results = new List<string>(); var failures = new List<string>(); var selectedReady = false; var needsProvisioning = false;
+        if (restartDesktop)
+        {
+            SpeechRepairDetails = "Checking speech activity and reservations, then restarting Docker Desktop. This interrupts other Docker containers. Restart allows up to three minutes; each engine repair has its own two-minute limit.";
+            try { results.Add(await provider.RestartDockerDesktopAsync(shutdown.Token)); }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                SpeechRepairDetails = "Docker Desktop restart needs attention.\n" + QueueCoordinator.FriendlyError(error);
+                throw new IOException(SpeechRepairDetails, error);
+            }
+        }
         foreach (var engine in IsHosted ? new[] { Engine } : new[] { "kokoro", "piper" })
         {
             SpeechRepairDetails = string.Join("\n\n", results.Append($"Checking / starting {engine}… Readiness allows up to two minutes per engine."));
@@ -703,16 +715,17 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
+                needsProvisioning |= error is SpeechSetupException;
                 var failure = engine + ": " + (error is SpeechSetupException setup ? setup.Explanation + "\n" + setup.ImmediateStep : QueueCoordinator.FriendlyError(error));
                 results.Add(failure); failures.Add(failure);
             }
         }
-        SpeechRepairDetails = string.Join("\n\n", results) + (failures.Count > 0 && !IsHosted ? "\n\n" + SpeechRepairGuidance.Provisioning : "") + "\n\nSaved failed narrations remain in Your library. Use Repair speech & resume on the existing item to continue it.";
+        SpeechRepairDetails = string.Join("\n\n", results) + (needsProvisioning && !IsHosted ? "\n\n" + SpeechRepairGuidance.Provisioning : "") + "\n\nSaved failed narrations remain in Your library. Use Repair speech & resume on the existing item to continue it.";
         await RefreshSetupAsync();
         if (failures.Count > 0)
         {
             if (selectedReady) ServiceStatus = Engine + " · ready; another speech service needs attention";
-            throw new IOException("Speech repair needs attention.\n" + string.Join("\n\n", failures) + (!IsHosted ? "\n\n" + SpeechRepairGuidance.Provisioning : ""));
+            throw new IOException("Speech repair needs attention.\n" + string.Join("\n\n", failures) + (needsProvisioning && !IsHosted ? "\n\n" + SpeechRepairGuidance.Provisioning : ""));
         }
         StatusMessage = "Selected speech services are ready. Setup has been refreshed. Resume the existing saved narration in Your library.";
     }

@@ -150,10 +150,9 @@ public partial class ProviderContractTests
     {
         using var fixture = new Fixture(); var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.Http.BeforeHealth = async ct => { entered.TrySetResult(); await Task.Delay(Timeout.Infinite, ct); };
-        using var provider = fixture.Provider(Fixture.ShortLimits with { Readiness = TimeSpan.FromMilliseconds(500) });
+        using var provider = fixture.Provider(Fixture.ShortLimits with { Readiness = callerCancellation ? TimeSpan.FromSeconds(10) : TimeSpan.FromMilliseconds(500) });
         using var cancellation = new CancellationTokenSource(); var pending = provider.CaptureForSubmissionAsync("kokoro", null, cancellation.Token);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        if (callerCancellation) { cancellation.Cancel(); await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending); }
+        if (callerCancellation) { await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); cancellation.Cancel(); await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending); }
         else await Assert.ThrowsAsync<TimeoutException>(() => pending);
         Assert.Equal(0, fixture.Http.Posts); Assert.Equal(0, fixture.Runtime.Starts);
     }

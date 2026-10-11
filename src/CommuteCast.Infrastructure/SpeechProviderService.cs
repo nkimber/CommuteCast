@@ -13,6 +13,7 @@ public sealed class SpeechProviderService(Workspace workspace, AppSettings setti
     public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct, bool explicitRetry) => SpeechProviders.IsHosted(engine) ? hosted.ReadyAsync(engine, Configuration(engine), ct) : local.ReadyAsync(engine, ct, explicitRetry);
     public async Task<SpeechRepairResult> RepairAsync(string engine, CancellationToken ct = default) => SpeechProviders.IsHosted(engine)
         ? new(await hosted.ReadyAsync(engine, Configuration(engine), ct), "Hosted account and selected model verified.") : await local.RepairAsync(engine, ct);
+    public Task<string> RestartDockerDesktopAsync(CancellationToken ct = default) => local.RestartDockerDesktopAsync(ct);
     public Task<ProviderInfo> ProbeAsync(string engine, CancellationToken ct = default) => SpeechProviders.IsHosted(engine) ? hosted.ReadyAsync(engine, Configuration(engine), ct) : local.ProbeAsync(engine, ct);
     public Task<ProviderInfo> CaptureForSubmissionAsync(string engine, ProviderInfo? cached, CancellationToken ct = default) => SpeechProviders.IsHosted(engine) ? ReadyAsync(engine, ct) : local.CaptureForSubmissionAsync(engine, cached, ct);
     public Task ResetRecoveryBudgetAsync(string engine, CancellationToken ct = default) => SpeechProviders.IsHosted(engine) ? Task.CompletedTask : local.ResetRecoveryBudgetAsync(engine, ct);
