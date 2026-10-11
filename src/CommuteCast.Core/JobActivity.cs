@@ -1,6 +1,12 @@
 namespace CommuteCast.Core;
 
-public sealed record JobRunTiming(long ProcessingMilliseconds, int? SegmentNumber, long SegmentMilliseconds);
+public sealed record JobRunTiming(long ProcessingMilliseconds, int? SegmentNumber, long SegmentMilliseconds)
+{
+    public long? EstimatedNarrationTotalMilliseconds { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public long? EstimatedRemainingMilliseconds => EstimatedNarrationTotalMilliseconds is { } total
+        ? Math.Max(0, total - ProcessingMilliseconds) : null;
+}
 public sealed record JobActivitySnapshot(bool Running, bool Waiting, string Notice, JobRunTiming Timing);
 
 // Monotonic live clocks; only checkpointed totals belong in durable job history.
@@ -12,12 +18,14 @@ public sealed class JobActivity(TimeProvider? clock = null)
     private string notice = "";
     private long started, segmentStarted, processingMilliseconds, segmentMilliseconds;
     private int? segmentNumber;
+    private long? estimatedNarrationTotalMilliseconds;
 
     public void Start(JobRunTiming? saved)
     {
         lock (gate)
         {
             processingMilliseconds = Math.Clamp(saved?.ProcessingMilliseconds ?? 0, 0, TimeSpan.MaxValue.Ticks / TimeSpan.TicksPerMillisecond / 2);
+            estimatedNarrationTotalMilliseconds = saved?.EstimatedNarrationTotalMilliseconds;
             started = time.GetTimestamp(); running = true; waiting = false;
             segmentNumber = null; segmentMilliseconds = 0; notice = "Preparing saved narration";
         }
@@ -29,6 +37,17 @@ public sealed class JobActivity(TimeProvider? clock = null)
     public void EndSegment()
     {
         lock (gate) { segmentNumber = null; segmentMilliseconds = 0; }
+    }
+    public void CompleteSegment(int completed, int total)
+    {
+        lock (gate)
+        {
+            var elapsed = ReadCore().Timing.ProcessingMilliseconds;
+            estimatedNarrationTotalMilliseconds = completed > 0 && total >= completed
+                ? (long)Math.Min(TimeSpan.MaxValue.Ticks / TimeSpan.TicksPerMillisecond / 2,
+                    elapsed * ((double)total / completed)) : null;
+            segmentNumber = null; segmentMilliseconds = 0;
+        }
     }
     public void Update(string message, bool isWaiting = false)
     {
@@ -46,5 +65,6 @@ public sealed class JobActivity(TimeProvider? clock = null)
     public JobActivitySnapshot Read() { lock (gate) return ReadCore(); }
     private JobActivitySnapshot ReadCore() => new(running, waiting, notice, new(
         processingMilliseconds + (running ? (long)time.GetElapsedTime(started).TotalMilliseconds : 0), segmentNumber,
-        running && segmentNumber is not null ? (long)time.GetElapsedTime(segmentStarted).TotalMilliseconds : segmentMilliseconds));
+        running && segmentNumber is not null ? (long)time.GetElapsedTime(segmentStarted).TotalMilliseconds : segmentMilliseconds)
+        { EstimatedNarrationTotalMilliseconds = estimatedNarrationTotalMilliseconds });
 }

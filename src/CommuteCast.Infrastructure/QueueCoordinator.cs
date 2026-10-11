@@ -375,6 +375,7 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
                                 if (!job.Receipts.Any(r => r.Index == chunk.Index)) job.Receipts.Add(new(chunk.Index, hash, job.Fingerprint, checkedAudio.Duration));
                                 job.CompletedChunks = job.Receipts.Count;
                             }
+                            job.Activity.CompleteSegment(job.CompletedChunks, job.Chunks.Count);
                             await CheckpointAsync(job, ct);
                         }, ct, preserveChangedChunk: true);
                         Notify();

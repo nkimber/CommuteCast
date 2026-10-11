@@ -124,7 +124,12 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
             var live = Job.Activity.Read();
             var timing = live.Running || live.Timing.ProcessingMilliseconds > 0 ? live.Timing : Job.RunTiming;
             if (timing is null) return "Processing time starts when this narration begins.";
-            return $"Processing time {Clock(timing.ProcessingMilliseconds)}" + (timing.SegmentNumber is { } segment ? $" · Segment {segment}: {Clock(timing.SegmentMilliseconds)}" : "");
+            var remaining = Job.Stage == JobStage.Synthesizing && live.Running && !Job.CancellationRequested
+                ? timing.EstimatedRemainingMilliseconds is { } estimate
+                    ? $" · Estimated narration remaining {Clock(estimate)}"
+                    : " · Estimating remaining time after the first segment"
+                : "";
+            return $"Processing time {Clock(timing.ProcessingMilliseconds)}" + remaining + (timing.SegmentNumber is { } segment ? $" · Segment {segment}: {Clock(timing.SegmentMilliseconds)}" : "");
         }
     }
     private static string Clock(long milliseconds)

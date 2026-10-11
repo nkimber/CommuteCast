@@ -5,6 +5,34 @@ namespace CommuteCast.Tests;
 
 public class JobActivityTests
 {
+    [Fact] public void RemainingEstimateRecalculatesAtCompletionAndCountsDownBetweenSegments()
+    {
+        var clock = new Clock(); var activity = new JobActivity(clock);
+        activity.Start(null);
+        Assert.Null(activity.Read().Timing.EstimatedRemainingMilliseconds);
+        activity.Segment(1); clock.Advance(10000); activity.CompleteSegment(1, 4);
+        Assert.Equal(30000, activity.Read().Timing.EstimatedRemainingMilliseconds);
+        activity.Segment(2); clock.Advance(5000);
+        Assert.Equal(25000, activity.Read().Timing.EstimatedRemainingMilliseconds);
+        activity.CompleteSegment(2, 4);
+        Assert.Equal(15000, activity.Read().Timing.EstimatedRemainingMilliseconds);
+        clock.Advance(20000);
+        Assert.Equal(0, activity.Read().Timing.EstimatedRemainingMilliseconds);
+        activity.CompleteSegment(3, 4);
+        Assert.Equal(11666, activity.Read().Timing.EstimatedRemainingMilliseconds);
+        activity.CompleteSegment(4, 4);
+        Assert.Equal(0, activity.Read().Timing.EstimatedRemainingMilliseconds);
+    }
+    [Fact] public void RemainingEstimateIsSavedAndDoesNotCountStoppedTime()
+    {
+        var clock = new Clock(); var activity = new JobActivity(clock);
+        activity.Start(null); clock.Advance(10000); activity.CompleteSegment(1, 3); activity.Stop();
+        var saved = JsonSerializer.Deserialize<JobRunTiming>(JsonSerializer.Serialize(activity.Read().Timing))!;
+        clock.Advance(90000);
+        Assert.Equal(20000, activity.Read().Timing.EstimatedRemainingMilliseconds);
+        activity.Start(saved); clock.Advance(5000);
+        Assert.Equal(15000, activity.Read().Timing.EstimatedRemainingMilliseconds);
+    }
     [Fact] public void WaitingKeepsBothClocksRunningAndStopFreezesThem()
     {
         var clock = new Clock(); var activity = new JobActivity(clock);
