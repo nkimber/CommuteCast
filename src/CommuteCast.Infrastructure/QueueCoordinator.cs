@@ -34,7 +34,7 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
     public event Action<IReadOnlyList<Job>>? Changed;
     public IReadOnlyList<Job> Snapshot()
     {
-        lock (sync) return jobs.Select(j => JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(j))!).ToArray();
+        lock (sync) return jobs.Select(j => j.CreateSnapshot()).ToArray();
     }
     private void Notify() => Changed?.Invoke(Snapshot());
     public async Task UpdateGenerationPromptAsync(string id, string? prompt, CancellationToken ct = default)
@@ -50,7 +50,7 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
                 if (activeId == id || current.DeletionRequested || current.Stage == JobStage.Deleting)
                     throw new ArgumentException("Wait for this narration to finish processing before changing its saved prompt.");
             }
-            var updated = JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(current))!;
+            var updated = current.CreateSnapshot();
             updated.GenerationPrompt = string.IsNullOrWhiteSpace(prompt) ? null : prompt;
             await store.SaveAsync(updated, ct);
             lock (sync) jobs[jobs.IndexOf(current)] = updated;

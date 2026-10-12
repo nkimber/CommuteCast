@@ -5,6 +5,21 @@ namespace CommuteCast.Tests;
 
 public class QueueRaceTests
 {
+    [Fact] public async Task QueueSnapshotKeepsLiveActivityForLibraryProgress()
+    {
+        using var test = new TestWorkspace(); var store = new SqliteJobStore(test.Workspace);
+        var provider = new GatedProvider(false); var job = MakeJob(test);
+        await using var queue = new QueueCoordinator(test.Workspace, store, provider, new(new()), new(test.Workspace, store));
+        await queue.InitializeAsync(); await queue.AddAsync(job);
+        await provider.Gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(25));
+        var snapshot = Assert.Single(queue.Snapshot()); Assert.Same(job.Activity, snapshot.Activity);
+        Assert.True(snapshot.Activity.Read().Running);
+        await Assert.ThrowsAsync<ArgumentException>(() => queue.UpdateGenerationPromptAsync(job.Id, "Cannot edit an active job"));
+        Assert.Null(Assert.Single(await store.LoadAsync()).GenerationPrompt);
+        provider.Gate.Release.TrySetResult();
+        await WaitUntilAsync(() => queue.Snapshot().Single() is { Stage: JobStage.Exported } completed && !completed.Activity.Read().Running);
+        Assert.False(snapshot.Activity.Read().Running);
+    }
     [Fact] public async Task PermanentFailureStopsClocksAndRetryReusesValidatedSegments()
     {
         using var test = new TestWorkspace(); var store = new SqliteJobStore(test.Workspace);

@@ -5,6 +5,21 @@ namespace CommuteCast.Tests;
 
 public class JobActivityTests
 {
+    [Fact] public void SnapshotDetachesSavedFieldsButKeepsObservingLiveActivity()
+    {
+        var job = new Job { Title = "Original", Chunks = [new(0, 0, 1, "A", false)] };
+        job.Activity.Start(new(10000, null, 0));
+        var snapshot = job.CreateSnapshot();
+        Assert.Same(job.Activity, snapshot.Activity); Assert.True(snapshot.Activity.Read().Running);
+        snapshot.Title = "Changed"; snapshot.Chunks.Clear();
+        Assert.Equal("Original", job.Title); Assert.Single(job.Chunks);
+        job.Activity.StartAssembly(683); job.Activity.SegmentJoined();
+        Assert.Equal(1, snapshot.Activity.Read().Timing.JoinedSegments);
+        Assert.True(snapshot.Activity.Read().Timing.ProcessingMilliseconds >= 10000);
+        Assert.NotNull(snapshot.Activity.Read().Timing.AssemblyMilliseconds);
+        job.Activity.Stop(); Assert.False(snapshot.Activity.Read().Running);
+        Assert.False(JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(snapshot))!.Activity.Read().Running);
+    }
     [Fact] public void AssemblyHasItsOwnClockAndProgressWithoutResettingOverallTime()
     {
         var clock = new Clock(); var activity = new JobActivity(clock);

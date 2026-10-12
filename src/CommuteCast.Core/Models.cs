@@ -49,7 +49,14 @@ public sealed class Job
     public int CompletedChunks { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public JobRunTiming? RunTiming { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public long? SpeechReadinessMilliseconds { get; set; }
-    [JsonIgnore] public JobActivity Activity { get; } = new();
+    [JsonIgnore] public JobActivity Activity { get; private set; } = new();
+    // Persisted fields are detached; the thread-safe live clocks remain observable by the UI.
+    public Job CreateSnapshot()
+    {
+        var snapshot = JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(this))!;
+        snapshot.Activity = Activity;
+        return snapshot;
+    }
     public string Error { get; set; } = "";
     public FailureCategory FailureCategory { get; set; }
     public JobStage? FailedStage { get; set; }
