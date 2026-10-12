@@ -66,7 +66,7 @@ public sealed partial class MainViewModel
         });
         CopyPromptCommand = Command(_ =>
         {
-            Clipboard.SetText(PromptForCopy());
+            var copied = PromptForCopy(); writeClipboard(copied); GenerationPrompt = copied;
             StatusMessage = "Prompt copied. Ask your GAI tool to write the narration, then paste its response into New narration and review the spoken text.";
             return Task.CompletedTask;
         }, false);
@@ -83,7 +83,7 @@ public sealed partial class MainViewModel
         if (!CanCopyPrompt) throw new ArgumentException("Build a prompt for the current brief before copying it.");
         return PromptText;
     }
-    internal Draft CaptureDraft() => new(DraftTitle, Source, promptDraftTouched ? new(promptBrief, promptText, promptGeneratedFor, promptTemplateVersion, promptPodcastIdentity) : null, podcastTouched ? new PodcastDraft(PodcastMode, CaptureEpisode()) : null, CaptureVersionDraft());
+    internal Draft CaptureDraft() => new(DraftTitle, Source, promptDraftTouched ? new(promptBrief, promptText, promptGeneratedFor, promptTemplateVersion, promptPodcastIdentity) : null, podcastTouched ? new PodcastDraft(PodcastMode, CaptureEpisode()) : null, CaptureVersionDraft(), string.IsNullOrWhiteSpace(GenerationPrompt) ? null : GenerationPrompt);
     internal void RestorePromptDraft(NarrationPromptDraft? saved)
     {
         if (saved is null) return;

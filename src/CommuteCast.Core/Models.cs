@@ -31,6 +31,7 @@ public sealed class Job
     public long QueuePosition { get; set; }
     public string Title { get; set; } = "";
     public string Source { get; set; } = "";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? GenerationPrompt { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public NarrationVersion? Version { get; set; }
     public PreparedText Prepared { get; set; } = new("", []);
     public NarrationSettings Settings { get; set; } = new("kokoro", "af_heart", 1, false, "", "");

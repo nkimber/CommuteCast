@@ -45,15 +45,18 @@ public class WorkspaceBackupTests
     [Fact] public async Task FullBackupAndRestorePreserveSourceSettingsDraftReceiptsAndEveryAudioByte()
     {
         using var source = new TestWorkspace(); using var target = new TestWorkspace(); var original = await SeedAsync(source, "Original source 😀"); var later = await SeedAsync(target, "Later source");
+        original.GenerationPrompt = "Original writing instructions 😀\r\nKeep this exact prompt.";
+        await new SqliteJobStore(source.Workspace).SaveAsync(original);
         var draftStore = new DraftStore(source.Workspace); var draft = await draftStore.LoadAsync();
         var brief = new NarrationBrief { Topic = "The history of railways", SourceMaterial = "Private reference notes 😀" };
-        await draftStore.SaveAsync(draft with { PromptDraft = new(brief, NarrationPrompt.Build(brief, new(2026, 10, 10)) + "\nEdited prompt", brief, NarrationPrompt.TemplateVersion) });
+        await draftStore.SaveAsync(draft with { PromptDraft = new(brief, NarrationPrompt.Build(brief, new(2026, 10, 10)) + "\nEdited prompt", brief, NarrationPrompt.TemplateVersion), GenerationPrompt = original.GenerationPrompt });
         var unrelated = Path.Combine(target.Workspace.Root, "keep-unrelated.txt"); await File.WriteAllTextAsync(unrelated, "Keep unrelated local file");
         var exported = Path.Combine(target.Destination, "keep-exported.mp3"); await File.WriteAllTextAsync(exported, "Keep separate export");
         using var sourceLease = WorkspaceLease.Acquire(source.Workspace); var backup = await WorkspaceBackup.CreateAsync(sourceLease); var manifest = await WorkspaceBackup.ValidateAsync(backup);
         Assert.Contains(manifest.Files, f => f.RelativePath == "draft.json"); Assert.Contains(manifest.Files, f => f.RelativePath == "settings.json"); Assert.Contains(manifest.Files, f => f.RelativePath.EndsWith("complete.mp3"));
         using var targetLease = WorkspaceLease.Acquire(target.Workspace); var result = await WorkspaceBackup.RestoreAsync(targetLease, backup);
         var restored = Assert.Single(await new SqliteJobStore(target.Workspace).LoadAsync()); Assert.Equal(original.Id, restored.Id); Assert.Equal(original.Source, restored.Source); Assert.Equal(original.Settings, restored.Settings); Assert.Equal(original.CreatedUtc, restored.CreatedUtc); Assert.Equal(original.Receipts, restored.Receipts);
+        Assert.Equal(original.GenerationPrompt, restored.GenerationPrompt);
         Assert.Equal(await Workspace.HashFileAsync(source.Workspace.FinalPath(original)), await Workspace.HashFileAsync(target.Workspace.FinalPath(original)));
         Assert.Equal(await new DraftStore(source.Workspace).LoadAsync(), await new DraftStore(target.Workspace).LoadAsync()); Assert.Equal("piper", (await target.Workspace.LoadSettingsAsync()).Engine);
         Assert.True(File.Exists(Path.Combine(result.PreviousState, "queue.db"))); Assert.True(File.Exists(Path.Combine(result.PreviousState, "jobs", later.Id, "complete.mp3")));

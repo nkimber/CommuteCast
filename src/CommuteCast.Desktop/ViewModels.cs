@@ -50,6 +50,8 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
     }
     public string Id => Job.Id;
     public string Title => Job.Title;
+    public bool HasGenerationPrompt => !string.IsNullOrWhiteSpace(Job.GenerationPrompt);
+    public string GenerationPromptStatus => HasGenerationPrompt ? "Saved generation prompt available" : "No generation prompt saved for this narration. Attach the prompt you used to generate its script.";
     public bool HasOriginalVersion => Job.Version is not null;
     public string VersionSummary => Job.Version is { } version
         ? $"Version {version.Number} of {version.BaseTitle} · " + (Job.Hash(Job.Source) == version.ParentSourceHash ? "script unchanged from parent" : "script edited from parent")
@@ -357,9 +359,10 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public ICommand MeasureStorageCommand { get; }
     public ICommand CleanCacheCommand { get; }
 
-    public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null, Action<ProcessStartInfo>? openFolder = null, IPlaybackOutput? playbackOutput = null, IPowerEvents? powerEvents = null, IUserNotifications? notifications = null)
+    public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null, Action<ProcessStartInfo>? openFolder = null, IPlaybackOutput? playbackOutput = null, IPowerEvents? powerEvents = null, IUserNotifications? notifications = null, Action<string>? copyText = null)
     {
         settings = saved; narrationPreferences = new(settings); Workspace = workspace ?? new();
+        writeClipboard = copyText ?? Clipboard.SetText;
         Playback = new(playbackOutput ?? new WpfPlaybackOutput(player));
         Playback.Failed += () => ReportError("Playback failed. Check that the local audio exists and is decodable.");
         Playback.Finished += () => { _ = CleanupFinishedPlaybackAsync(); };
@@ -458,6 +461,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         InitializeNarrationTools();
         InitializePodcast();
         InitializePromptBuilder();
+        InitializeLibraryText();
         InitializeLifecycle(powerEvents, notifications);
     }
     private ICommand Command(Func<object?, Task> action, bool clearsError = true) => new AsyncCommand(async p =>
@@ -542,7 +546,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public Task InitializeAsync() => operations.RunAsync(InitializeCoreAsync);
     private async Task InitializeCoreAsync()
     {
-        try { using var trace = new StartupStepTrace(StartupPhase.DraftLoad); var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; RestorePromptDraft(saved.PromptDraft); RestoreVersionDraft(saved.Version); RestorePodcastDraft(saved.Podcast); trace.Complete(); }
+        try { using var trace = new StartupStepTrace(StartupPhase.DraftLoad); var saved = await drafts.LoadAsync(shutdown.Token); DraftTitle = saved.Title; Source = saved.Source; GenerationPrompt = saved.GenerationPrompt ?? ""; RestorePromptDraft(saved.PromptDraft); RestoreVersionDraft(saved.Version); RestorePodcastDraft(saved.Podcast); trace.Complete(); }
         catch (IOException error) { AppLogging.Failure("DraftLoad", error); draftLoadFailed = true; ReportError(error.Message); }
         loading = false;
         string? previewNotice = null;
@@ -763,6 +767,8 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         var versionDraftSnapshot = draftVersion;
         var suggestedTitle = versionDraftSnapshot is null ? null : SuggestedVersionTitle(versionDraftSnapshot);
         var version = CaptureSubmittedVersion();
+        var generationPromptSnapshot = string.IsNullOrWhiteSpace(GenerationPrompt) ? null : GenerationPrompt;
+        DraftStore.ValidateGenerationPrompt(generationPromptSnapshot);
         var engine = Engine; var voice = Voice; var speed = Speed; var exclusion = ExcludeCode; var dictionary = Pronunciation; var destination = settings.Destination;
         var profile = CaptureProfile(); var speech = IsHosted ? CurrentSpeech : null; var local = choices.LocalVoice;
         if (!PodcastMode) local?.Validate(engine, voice);
@@ -791,14 +797,14 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         if (episode is null) local?.RequireAvailable(info, voice);
         else foreach (var member in episode.Speakers) PodcastScript.LocalDelivery(member, snapshot)?.RequireAvailable(info, member.Voice);
         settings.Providers[engine] = info;
-        var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint, profile, info.ImageId, speech, local), Destination = destination, Episode = episode };
+        var job = new Job { Title = title, Source = text, Prepared = prepared, Settings = new(engine, voice, speed, exclusion, dictionary, info.Fingerprint, profile, info.ImageId, speech, local), Destination = destination, Episode = episode, GenerationPrompt = generationPromptSnapshot };
         AssignSubmittedVersion(job, version, suggestedTitle);
         if (episode is not null) { job.Chunks = rendered.Units; job.ChunkingVersion = PodcastScript.ChunkVersion; job.AudioContractVersion = PodcastScript.AudioVersion; }
         NaturalChunker.ConfigureNew(job);
         await queue.AddAsync(job, shutdown.Token);
         RefreshJobs(queue.Snapshot());
         RevealJob(Jobs.Single(j => j.Id == job.Id));
-        if (Source == text && draftVersion == versionDraftSnapshot && (episode is null ? !PodcastMode : PodcastMode && episode.Identity == CaptureEpisode().Identity)) { ClearVersionDraft(); Source = ""; DraftTitle = ""; if (narrationPreferences.Current == choices) RestoreNarrationDefaults(); }
+        if (Source == text && draftVersion == versionDraftSnapshot && (episode is null ? !PodcastMode : PodcastMode && episode.Identity == CaptureEpisode().Identity)) { ClearVersionDraft(); if (GenerationPrompt == generationPromptSnapshot || generationPromptSnapshot is null && string.IsNullOrWhiteSpace(GenerationPrompt)) GenerationPrompt = ""; Source = ""; DraftTitle = ""; if (narrationPreferences.Current == choices) RestoreNarrationDefaults(); }
         StatusMessage = "Narration saved. Its progress is shown here. You do not need to queue it again.";
         DraftQueued?.Invoke();
         await SaveSettingsAsync();

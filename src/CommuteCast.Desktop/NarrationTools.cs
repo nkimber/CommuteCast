@@ -82,7 +82,7 @@ public sealed partial class MainViewModel
         var text = await TextFileImport.ReadAsync(path, shutdown.Token);
         shutdown.Token.ThrowIfCancellationRequested();
         if ((Source.Length > 0 || DraftTitle.Length > 0) && !confirmReplace()) return false;
-        ClearVersionDraft(); DraftTitle = TextPreparation.SuggestTitle(text); Source = text; Navigate("compose");
+        ClearVersionDraft(); GenerationPrompt = ""; DraftTitle = TextPreparation.SuggestTitle(text); Source = text; Navigate("compose");
         StatusMessage = "Text imported into your local draft. Review the spoken text, then choose Create MP3 when ready.";
         return true;
     }

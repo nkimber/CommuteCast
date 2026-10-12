@@ -37,6 +37,27 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
         lock (sync) return jobs.Select(j => JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(j))!).ToArray();
     }
     private void Notify() => Changed?.Invoke(Snapshot());
+    public async Task UpdateGenerationPromptAsync(string id, string? prompt, CancellationToken ct = default)
+    {
+        DraftStore.ValidateGenerationPrompt(prompt);
+        await dispatchGate.WaitAsync(ct);
+        try
+        {
+            Job current;
+            lock (sync)
+            {
+                current = jobs.FirstOrDefault(j => j.Id == id) ?? throw new ArgumentException("This narration no longer exists.");
+                if (activeId == id || current.DeletionRequested || current.Stage == JobStage.Deleting)
+                    throw new ArgumentException("Wait for this narration to finish processing before changing its saved prompt.");
+            }
+            var updated = JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(current))!;
+            updated.GenerationPrompt = string.IsNullOrWhiteSpace(prompt) ? null : prompt;
+            await store.SaveAsync(updated, ct);
+            lock (sync) jobs[jobs.IndexOf(current)] = updated;
+        }
+        finally { dispatchGate.Release(); }
+        Notify();
+    }
     public Task<StorageUsage> MeasureStorageAsync(CancellationToken ct = default) => Task.Run(async () =>
     {
         string? active;

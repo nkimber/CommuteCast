@@ -21,7 +21,7 @@ public sealed partial class MainViewModel
         if (job.DeletionRequested || job.Stage == JobStage.Deleting) throw new ArgumentException("This narration is pending removal.");
         var root = job.Version?.RootJobId ?? job.Id;
         draftVersion = new(root, job.Id, job.Version?.BaseTitle ?? job.Title, Math.Max(NextVersionNumber(root), (job.Version?.Number ?? 1) + 1), Job.Hash(job.Source));
-        DraftTitle = SuggestedVersionTitle(draftVersion); Source = job.Source;
+        DraftTitle = SuggestedVersionTitle(draftVersion); Source = job.Source; GenerationPrompt = job.GenerationPrompt ?? "";
         ApplyVersionSettings(job.Settings);
         PodcastMode = job.Episode is not null;
         if (job.Episode is { } episode) LoadEpisode(episode);
