@@ -469,7 +469,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         await operations.RunAsync(() => action(p));
         if (clearsError) { operationError = ""; RaiseAttention(); }
     }, e => ReportError(QueueCoordinator.FriendlyError(e)));
-    private void Navigate(string value) { page = value; Raise(nameof(IsCompose)); Raise(nameof(IsLibrary)); Raise(nameof(IsSettings)); Raise(nameof(IsCodex)); Raise(nameof(IsPromptBuilder)); Raise(nameof(PrimaryActionCommand)); Raise(nameof(PageHeading)); }
+    private void Navigate(string value) { if (value != "prompt") CancelGoalRecording(); page = value; Raise(nameof(IsCompose)); Raise(nameof(IsLibrary)); Raise(nameof(IsSettings)); Raise(nameof(IsCodex)); Raise(nameof(IsPromptBuilder)); Raise(nameof(PrimaryActionCommand)); Raise(nameof(PageHeading)); }
     private void SetSelectedSpeechResult(string id, string result) { checkedJobId = id; selectedSpeechResult = result; Raise(nameof(SelectedSpeechResult)); Raise(nameof(SelectedDetailsForCopy)); }
     private Job RequireSelected() => SelectedJob?.Job ?? throw new ArgumentException("Select a narration first.");
     private async Task ResumeAsync(Job job)
@@ -916,6 +916,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public ValueTask DisposeAsync() => new(disposal ??= DisposeCoreAsync());
     private async Task DisposeCoreAsync()
     {
+        CancelGoalRecording();
         progressTimer.Stop();
         syncTimer.Stop();
         powerEvents.Changed -= PowerChanged; powerEvents.Dispose(); notifications.Dispose();
@@ -929,6 +930,6 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         finally { draftGate.Release(); }
         await SaveSettingsAsync();
         try { await CleanupAuditionAsync(); }
-        finally { provider.Dispose(); shutdown.Dispose(); auditionCleanup.Dispose(); }
+        finally { dictationService.Dispose(); provider.Dispose(); shutdown.Dispose(); auditionCleanup.Dispose(); }
     }
 }

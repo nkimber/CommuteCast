@@ -1,5 +1,32 @@
 name: commutecast
 services:
+  whisper:
+    profiles: [dictation]
+    image: commutecast-whisper:1
+    build: ./whisper
+    container_name: commutecast-whisper
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:8767:8767"
+    labels:
+      com.commutecast.owner: "CommuteCast"
+      com.commutecast.contract: "1"
+    cpus: 4
+    mem_limit: 3g
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8767/health',timeout=3))['state']=='ready'"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    restart: unless-stopped
   kokoro:
     image: commutecast-speech:1
     container_name: commutecast-kokoro

@@ -17,7 +17,19 @@ New-Item -ItemType Directory -Force -Path (Join-Path $release 'scripts'), (Join-
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md'), (Join-Path $projectRoot 'THIRD-PARTY-NOTICES.md') -Destination $release
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Start-CommuteCast.ps1'), (Join-Path $projectRoot 'scripts\Provision-Speech.ps1') -Destination (Join-Path $release 'scripts')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'services\compose.yaml') -Destination (Join-Path $release 'services')
-Copy-Item -LiteralPath (Join-Path $projectRoot 'services\speech') -Destination (Join-Path $release 'services') -Recurse -Force
+$speechPackage = Join-Path $release 'services\speech'
+New-Item -ItemType Directory -Force -Path $speechPackage | Out-Null
+foreach ($speechFile in @('app.py', 'diagnostics.py', 'voice_library.py', 'Dockerfile', 'requirements.txt', 'requirements.lock.txt', 'model-sources.json', 'model-checksums.txt', 'test_voice_quality.py', 'test_voice_library.py', 'test_diagnostics.py', 'test_admission.py')) {
+    Copy-Item -LiteralPath (Join-Path $projectRoot "services\speech\$speechFile") -Destination $speechPackage -Force
+}
+Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Provision-Dictation.ps1') -Destination (Join-Path $release 'scripts')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Test-Dictation.ps1') -Destination (Join-Path $release 'scripts')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'documents\Local-Dictation.md') -Destination (Join-Path $release 'documents')
+$dictationPackage = Join-Path $release 'services\whisper'
+New-Item -ItemType Directory -Force -Path $dictationPackage | Out-Null
+foreach ($dictationFile in @('app.py', 'Dockerfile', 'requirements.txt', 'requirements.lock.txt', 'test_app.py')) {
+    Copy-Item -LiteralPath (Join-Path $projectRoot "services\whisper\$dictationFile") -Destination $dictationPackage -Force
+}
 Copy-Item -LiteralPath (Join-Path $projectRoot 'documents\Acceptance.md') -Destination (Join-Path $release 'documents')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'documents\Implementation-Decisions.md'), (Join-Path $projectRoot 'documents\Verification-Matrix.md') -Destination (Join-Path $release 'documents')
 & (Join-Path $application 'CommuteCast.Maintenance.exe') seal-package --package $release

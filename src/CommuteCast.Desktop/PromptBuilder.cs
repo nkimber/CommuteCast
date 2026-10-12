@@ -56,6 +56,7 @@ public sealed partial class MainViewModel
 
     private void InitializePromptBuilder()
     {
+        InitializeDictation();
         BuildPromptCommand = Command(_ =>
         {
             var generated = PodcastMode ? PodcastScript.Prompt(promptBrief, CaptureEpisode(), DateOnly.FromDateTime(DateTime.Today)) : NarrationPrompt.Build(promptBrief, DateOnly.FromDateTime(DateTime.Today));

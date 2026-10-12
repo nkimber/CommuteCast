@@ -26,6 +26,10 @@ The installed English Piper catalog uses the pinned `rhasspy/piper-voices` revis
 | Alba, British English | [Alba model card](https://huggingface.co/rhasspy/piper-voices/blob/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_GB/alba/medium/MODEL_CARD); CC BY 4.0 dataset hosted by University of Edinburgh DataShare |
 | Jenny, British English | [Jenny model card](https://huggingface.co/rhasspy/piper-voices/blob/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_GB/jenny_dioco/medium/MODEL_CARD); points to dioco-group/jenny-tts-dataset for dataset terms |
 | ONNX Runtime | MIT; [onnxruntime](https://github.com/microsoft/onnxruntime) | CPU model execution |
+| NAudio 2.2.1 | MIT; [NAudio](https://github.com/naudio/NAudio) | Windows microphone capture |
+| faster-whisper 1.2.1 / CTranslate2 | MIT; [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [CTranslate2](https://github.com/OpenNMT/CTranslate2) | Local CPU dictation |
+| Whisper small.en | MIT; [OpenAI Whisper](https://github.com/openai/whisper), [converted model](https://huggingface.co/Systran/faster-whisper-small.en) | Pinned English recognition model |
+| PyAV | BSD-3-Clause; [PyAV](https://github.com/PyAV-Org/PyAV) | faster-whisper audio dependency; bundled FFmpeg libraries have their own terms |
 | FastAPI / Uvicorn | MIT / BSD-3-Clause; [FastAPI](https://github.com/fastapi/fastapi), [Uvicorn](https://github.com/encode/uvicorn) | Local HTTP contract |
 | NumPy / SoundFile | BSD-3-Clause; [NumPy](https://numpy.org/doc/stable/license.html), [SoundFile](https://github.com/bastibe/python-soundfile) | PCM generation |
 | eSpeak NG / libsndfile | GPL-3.0 / LGPL-2.1; [eSpeak NG](https://github.com/espeak-ng/espeak-ng), [libsndfile](https://github.com/libsndfile/libsndfile) | Phonemization/audio service dependencies |

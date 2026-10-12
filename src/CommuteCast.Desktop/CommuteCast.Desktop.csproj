@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
     <ProjectReference Include="..\CommuteCast.Core\CommuteCast.Core.csproj" />
     <ProjectReference Include="..\CommuteCast.Infrastructure\CommuteCast.Infrastructure.csproj" />
     <EmbeddedResource Include="Codex\commute-narrative\SKILL.md" LogicalName="CommuteCast.Codex.CommuteNarrative" />

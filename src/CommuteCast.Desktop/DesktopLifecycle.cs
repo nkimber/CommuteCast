@@ -38,6 +38,7 @@ public sealed partial class MainViewModel
     }
     internal async Task SuspendForPowerAsync()
     {
+        CancelGoalRecording();
         ++powerEpoch; wakeCancellation?.Cancel();
         PowerRecoveryMessage = "Laptop suspend detected. Generation is held; validated segments and queued narrations are retained.";
         var settlement = queue.SuspendForPowerAsync(shutdown.Token);

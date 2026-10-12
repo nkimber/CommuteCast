@@ -6,6 +6,8 @@ Local Kokoro/Piper and hosted ElevenLabs, OpenAI, Cartesia and Google Gemini are
 
 Local voices now have saved delivery profiles, Kokoro blends, Piper variation controls, speaker pronunciation overrides, expressive auditions and natural phrasing with final loudness matching. See [Local voice quality](documents/Local-Voice-Quality.md) for controls, service update instructions, measured comparisons and optional expressive-model trials.
 
+The prompt builder supports local microphone dictation for its listening-goal textbox. Use **Record**, then **Stop and transcribe** to append editable text. See [Local dictation](documents/Local-Dictation.md) for Docker setup, microphone access, limits and verification.
+
 ## Build in Visual Studio
 
 Open **CommuteCast.sln** in Visual Studio 2026 with the **.NET desktop development** workload and .NET 10 SDK. The checked-in `.vsconfig` identifies that workload. The solution contains all ten projects and lists **CommuteCast.Desktop** first. Select it as the startup project if Visual Studio has saved a different choice, build the solution, then press F5 to run the native WPF client. **CommuteCast.slnx** contains the same projects for tools that use the XML solution format. Microsoft documents this WPF/.NET 10 setup in its [Visual Studio tutorial](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/getting-started).

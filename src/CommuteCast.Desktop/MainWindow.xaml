@@ -138,6 +138,17 @@
                             <TextBox x:Name="PromptTopicInput" Text="{Binding PromptTopic, UpdateSourceTrigger=PropertyChanged}" MaxLength="500" TextWrapping="Wrap" AutomationProperties.Name="Topic for the writing prompt" ToolTip="For example: How cities changed when railways arrived"/>
                             <Label Content="What should the listener take away?" Target="{Binding ElementName=PromptGoalInput}" Padding="0,16,0,6"/>
                             <TextBox x:Name="PromptGoalInput" Text="{Binding PromptGoal, UpdateSourceTrigger=PropertyChanged}" MaxLength="2000" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="75" MaxHeight="140" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Listening goal" ToolTip="A question to understand, a decision to make, or a skill to learn"/>
+                            <WrapPanel Margin="0,8,0,0">
+                                <Button x:Name="RecordGoalButton" Content="Record" Command="{Binding RecordGoalCommand}" IsEnabled="{Binding CanRecordGoal}" AutomationProperties.Name="Record listening goal" Margin="0,0,8,6"/>
+                                <Button x:Name="StopGoalButton" Content="Stop and transcribe" Command="{Binding StopGoalCommand}" IsEnabled="{Binding CanStopGoal}" Margin="0,0,8,6"/>
+                                <Button x:Name="CancelGoalButton" Content="Cancel" Command="{Binding CancelGoalCommand}" IsEnabled="{Binding CanCancelGoal}" Margin="0,0,8,6"/>
+                                <Button Content="Check / repair dictation" Command="{Binding RepairDictationCommand}" IsEnabled="{Binding CanRecordGoal}" Margin="0,0,0,6"/>
+                            </WrapPanel>
+                            <TextBlock Text="{Binding DictationStatus}" Style="{StaticResource Caption}" TextWrapping="Wrap" AutomationProperties.Name="Listening goal recording status" AutomationProperties.LiveSetting="Polite"/>
+                            <StackPanel Visibility="{Binding HasPendingGoalTranscript, Converter={StaticResource BoolVisible}}" Margin="0,8,0,0">
+                                <TextBox Text="{Binding PendingGoalTranscript, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" MaxHeight="140" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Recorded text awaiting space in the listening goal"/>
+                                <WrapPanel><Button Content="Add recorded text" Command="{Binding AddGoalTranscriptCommand}" IsEnabled="{Binding CanRecordGoal}"/><Button Content="Discard transcript" Command="{Binding DiscardGoalTranscriptCommand}" Margin="8,0,0,0"/></WrapPanel>
+                            </StackPanel>
                             <Label Content="Audience and prior knowledge" Target="{Binding ElementName=PromptAudienceInput}" Padding="0,16,0,6"/>
                             <TextBox x:Name="PromptAudienceInput" Text="{Binding PromptAudience, UpdateSourceTrigger=PropertyChanged}" MaxLength="500" TextWrapping="Wrap" AutomationProperties.Name="Audience and prior knowledge"/>
                             <Grid Margin="0,16,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="100"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
