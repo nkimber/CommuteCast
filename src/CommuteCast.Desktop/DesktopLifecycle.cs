@@ -78,6 +78,7 @@ public sealed partial class MainViewModel
             }
             // Ownership recovery shares inference admission and preserves altered/unrecorded preview files.
             await auditions.RecoverAsync(cancellation.Token);
+            InvalidateComparisonAudio();
             cancellation.Token.ThrowIfCancellationRequested();
             if (epoch != powerEpoch) return;
             queue.ReleasePowerHold(); RefreshJobs(queue.Snapshot());

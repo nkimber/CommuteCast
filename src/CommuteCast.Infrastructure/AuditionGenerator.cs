@@ -5,14 +5,15 @@ namespace CommuteCast.Infrastructure;
 public sealed record AuditionAudio(string RelativePath, string Hash, NarrationSettings Settings, PreparedText Prepared, string? OwnershipId = null);
 
 /// <summary>Short private PCM preview, sharing the queue's inference gate without queue or export records.</summary>
-public sealed class AuditionGenerator(Workspace workspace, ISpeechProvider provider, SemaphoreSlim inferenceGate,
+public sealed partial class AuditionGenerator(Workspace workspace, ISpeechProvider provider, SemaphoreSlim inferenceGate,
     Func<string, CancellationToken, Task<ProviderInfo>>? readiness = null)
 {
     private readonly AuditionOwnershipStore ownership = new(workspace);
-    public async Task<AuditionAudio> GenerateAsync(AuditionRequest request, CancellationToken ct)
+    public Task<AuditionAudio> GenerateAsync(AuditionRequest request, CancellationToken ct) => GenerateCoreAsync(request, ct, false);
+    private async Task<AuditionAudio> GenerateCoreAsync(AuditionRequest request, CancellationToken ct, bool gateHeld)
     {
         var prepared = await Task.Run(() => request.Prepare(ct), ct).ConfigureAwait(false);
-        await inferenceGate.WaitAsync(ct).ConfigureAwait(false);
+        if (!gateHeld) await inferenceGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             var info = await (provider is IRenderUnitSpeechProvider units && SpeechProviders.IsHosted(request.Settings.Engine) ? units.ReadyForSettingsAsync(request.Settings, ct) : readiness is null ? provider.ReadyAsync(request.Settings.Engine, ct) : readiness(request.Settings.Engine, ct)).ConfigureAwait(false);
@@ -39,7 +40,7 @@ public sealed class AuditionGenerator(Workspace workspace, ISpeechProvider provi
             }
             return result;
         }
-        finally { inferenceGate.Release(); }
+        finally { if (!gateHeld) inferenceGate.Release(); }
     }
     private async Task<AuditionAudio> GenerateDurableAsync(IDurableAuditionSpeechProvider durable, NarrationSettings settings, PreparedText prepared, string relative, string path, CancellationToken ct)
     {

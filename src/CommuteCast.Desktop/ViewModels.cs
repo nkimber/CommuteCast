@@ -459,6 +459,8 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         MeasureStorageCommand = Command(_ => RefreshStorageAsync());
         CleanCacheCommand = Command(async _ => { ValidateRetention(); queue.CacheQuotaMiB = CacheQuotaMiB; queue.ScratchRetentionDays = ScratchRetentionDays; var result = await queue.CleanCacheAsync(shutdown.Token); await RefreshStorageAsync(); StatusMessage = $"Cleanup removed {result.FilesRemoved} files ({result.BytesRemoved / 1048576.0:0.0} MiB). {result.Failures} files could not be removed. Protected data and exports are retained."; });
         InitializeNarrationTools();
+        InitializeComparison();
+        InitializeNaturalDelivery();
         InitializePodcast();
         InitializePromptBuilder();
         InitializeLibraryText();
@@ -819,6 +821,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private NarrationSettings CapturePreviewSettings() => new(Engine, Voice, Speed, ExcludeCode, Pronunciation, "", CaptureProfile(), Speech: IsHosted ? CurrentSpeech : null, LocalVoice: narrationPreferences.Current.LocalVoice);
     private async Task AuditionAsync(AuditionRequest request, bool selection)
     {
+        if (ComparisonBusy) throw new IOException("Stop the voice comparison render before starting another audition.");
         if (queue.PowerSuspended) throw new IOException("Local speech is held after suspend. Recheck wake recovery before auditioning.");
         var generation = ++auditionGeneration;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
@@ -839,8 +842,9 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         { if (!shutdown.IsCancellationRequested && generation == auditionGeneration) StatusMessage = "Audition stopped."; }
         finally { if (ReferenceEquals(activeAudition, cancellation)) activeAudition = null; }
     }
-    private async Task StopPlaybackAsync(bool showStatus)
+    private async Task StopPlaybackAsync(bool showStatus, bool cancelComparison = true)
     {
+        if (cancelComparison) comparisonCancellation?.Cancel();
         ++auditionGeneration;
         var pending = activeAudition is not null;
         activeAudition?.Cancel(); Playback.Stop();
@@ -924,6 +928,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         draftSave?.Cancel(); shutdown.Cancel(); Playback.Stop();
         await settled.WaitAsync(TimeSpan.FromSeconds(20));
         Playback.Dispose(); // An already admitted playback action may have finished after the first stop.
+        await ClearComparisonAsync();
         await queue.DisposeAsync();
         await draftGate.WaitAsync();
         try { if (!draftLoadFailed || draftDirty) await drafts.SaveAsync(CaptureDraft()); }

@@ -4,6 +4,22 @@ CommuteCast captures a complete local voice recipe with each narration or podcas
 
 ## Controls
 
+### Compare voices using your own script
+
+In **New narration → Voice & pace**, choose Kokoro or Piper, then **Compare local voices with my script…**. Use an entire short draft, use a selected passage, or paste a passage into the comparison window. The spoken passage is limited to 3,600 characters; oversized input is refused without truncation. Complete selected lines can span multiple segments; an exact partial-line selection uses the existing short-excerpt limit of 900 characters. Excluded code stays excluded. If a selection is stale, select it again in the current script.
+
+Choose a voice and pace and **Add current voice setup**. Add up to four candidates, trying another installed voice, a Kokoro blend or small Piper variation changes. Each candidate captures its recipe independently. The first candidate locks a single prepared passage for all samples; changing pronunciation or preparation requires **Start a new comparison**. Controls in the window also update the narration draft, so the chosen settings remain visible when you return.
+
+Select a candidate and **Render selected sample**, then **Play selected sample**. Rendering waits for the queue's speech admission. Natural previews use the production sentence grouping, resampling, silence-aware joins and final measured loudness filter. They are uncompressed WAV previews, rather than MP3 exports. Legacy profiles retain their old segment/gap policy and native volume so they can be compared with natural profiles. The preview does not add actor-like emotion to a model that lacks that ability.
+
+Completed clips remain available for replay without inference. Add listening notes and save your preferred candidate as a named preset using **Save selected setup and use for this draft**. The preset includes the voice, pace, blend/variation, pauses and pronunciation; saved defaults and queued jobs keep their existing choices. Use **Save as my defaults** explicitly when ready. Notes and clips last for the app session. Closing the comparison window retains them; starting a new comparison or closing the app removes the owned clips. Crash/startup recovery removes completed or interrupted private preview files through their durable ownership records. No comparison is added to the library or exported to OneDrive. Suspend stops an active render; wake recovery clears clip availability and requires an explicit new render.
+
+**Use natural delivery defaults**, in both the comparison window and Local voice delivery, enables natural phrasing and volume, selects pace 1.0, removes blends/custom variation, and restores 220/500 ms boundary pauses. It retains the chosen voice, script and pronunciation. This provides a repeatable starting point for existing installations whose saved choices still use legacy delivery.
+
+Start by comparing voices with normal pace and model-default variation. Include a question, a paragraph transition and any names/numbers from the real script. Prefer a voice that stays pleasant over several minutes, then test a longer MP3 in the normal listening environment before settling on defaults. A technically valid sample is not a listening-quality approval.
+
+### Individual delivery controls
+
 In **New narration → Voice & pace → Local voice delivery**, enable **Natural phrasing and volume**. New installations and the starter presets enable it by default. An existing saved default or preset without a local recipe keeps its previous behavior until you enable it and save your choices.
 
 | Control | Purpose |

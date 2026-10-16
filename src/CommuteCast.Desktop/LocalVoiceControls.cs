@@ -1,9 +1,18 @@
 using CommuteCast.Core;
+using System.Windows.Input;
 
 namespace CommuteCast.Desktop;
 
 public sealed partial class MainViewModel
 {
+    public ICommand ResetNaturalDeliveryCommand { get; private set; } = null!;
+    private void InitializeNaturalDelivery() => ResetNaturalDeliveryCommand = Command(_ =>
+    {
+        if (!IsLocalVoice) throw new ArgumentException("Choose Kokoro or Piper for local delivery.");
+        UpdateLocal(new()); Speed = 1;
+        StatusMessage = "Natural delivery selected: model-default variation, no blend, normal pace and 220/500 ms boundary pauses. Compare a sample, then save your preferred setup.";
+        return Task.CompletedTask;
+    });
     public bool IsLocalVoice => Engine is "kokoro" or "piper";
     public bool IsKokoroVoice => Engine == "kokoro";
     public bool IsPiperVoice => Engine == "piper";
