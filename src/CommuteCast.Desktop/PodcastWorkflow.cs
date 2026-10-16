@@ -166,7 +166,7 @@ public sealed partial class MainViewModel
         validatedPodcastIdentity = null; PodcastValidation = "Cast or text changed. Validate dialogue before creating an MP3."; Raise(nameof(CastSummary)); RaisePromptState(); ScheduleDraftSave();
         Raise(nameof(PodcastValidationHeading)); Raise(nameof(IsKokoroNarrator)); Raise(nameof(IsPiperNarrator));
     }
-    private void HostedChanged() { Raise(null); PodcastChanged(); }
+    private void HostedChanged() { Raise(null); RaiseNarrationChoices(); PodcastChanged(); }
     private void ProviderChanged()
     {
         // A voice ID belongs to its provider. Preserve it visibly as unavailable until explicitly replaced.

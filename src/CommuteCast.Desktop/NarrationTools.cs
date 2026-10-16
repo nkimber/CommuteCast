@@ -38,7 +38,7 @@ public sealed partial class MainViewModel
             presetLibrary.Save(PresetName, narrationPreferences.Current);
             try { await SaveSettingsAsync(); }
             catch { settings.NarrationPresets = previous; throw; }
-            RefreshPresets(PresetName.Trim()); StatusMessage = "Preset saved with the displayed voice, pace and pronunciation choices. Saved defaults and queued narrations are unchanged.";
+            RefreshPresets(PresetName.Trim()); StatusMessage = "Preset saved with this provider, model, voice, delivery, pace and pronunciation. Saved defaults and queued narrations are unchanged.";
         });
         RemovePresetCommand = Command(async _ =>
         {
@@ -69,7 +69,8 @@ public sealed partial class MainViewModel
     internal void ApplyNarrationOptions(NarrationOptions options)
     {
         options.Validate(); var previousEngine = Engine;
-        if (settings.Providers.TryGetValue(options.Engine, out var installed) && installed.State == "ready" && !installed.Voices.Contains(options.Voice))
+        if (settings.Providers.TryGetValue(options.Engine, out var installed) && installed.State == "ready" &&
+            (!SpeechProviders.IsHosted(options.Engine) || options.Speech is null || installed.Fingerprint == options.Speech.Identity(options.Engine)) && !installed.Voices.Contains(options.Voice))
             throw new ArgumentException("This preset's voice is unavailable. Refresh the voice library or update the preset to an installed voice.");
         options.ApplyTo(settings);
         ProviderChanged();

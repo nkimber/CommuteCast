@@ -6,6 +6,62 @@ namespace CommuteCast.Tests;
 
 public class NarrationPreferencesTests
 {
+    [Fact] public async Task HostedRecipesRestoreModelDeliveryAndEmotionAcrossPresetsAndRelaunch()
+    {
+        using var test = new TestWorkspace();
+        var settings = new AppSettings { Engine = "cartesia", Voice = "voice-a" };
+        var first = new SpeechConfiguration("sonic-3", Emotion: "calm", Dialogue: false);
+        settings.SpeechDefaults["cartesia"] = first;
+        var preferences = new NarrationPreferences(settings);
+        var presets = new NarrationPresets(settings);
+        presets.Save("Calm", preferences.Current);
+        settings.SpeechDefaults["cartesia"] = new("sonic-3.5", Emotion: "curious");
+        settings.Voice = "voice-b";
+        presets.Save("Curious", preferences.Current);
+        Assert.False(preferences.UsingDefaults);
+        preferences.UseDefaults();
+        Assert.Equal(first, settings.SpeechDefaults["cartesia"]);
+        Assert.Equal("voice-a", settings.Voice);
+        presets.Items.Single(p => p.Name == "Curious").Options.ApplyTo(settings);
+        Assert.Equal("sonic-3.5", settings.SpeechDefaults["cartesia"].Model);
+        Assert.Equal("curious", settings.SpeechDefaults["cartesia"].Emotion);
+        await test.Workspace.SaveSettingsAsync(preferences.ForPersistence());
+        var reopened = await test.Workspace.LoadSettingsAsync();
+        var restored = new NarrationPreferences(reopened);
+        Assert.True(restored.UsingDefaults);
+        Assert.Equal(first, reopened.SpeechDefaults["cartesia"]);
+        reopened.NarrationPresets!.Single(p => p.Name == "Curious").Options.ApplyTo(reopened);
+        Assert.Equal("voice-b", reopened.Voice);
+        Assert.Equal("curious", reopened.SpeechDefaults["cartesia"].Emotion);
+        Assert.False(restored.UsingDefaults);
+    }
+
+    [Fact] public void HostedDeliveryChangesAffectDefaultComparisonAndAreRestored()
+    {
+        var settings = new AppSettings { Engine = "openai", Voice = "cedar" };
+        settings.SpeechDefaults["openai"] = new("gpt-4o-mini-tts", "Warm conversational explanation.");
+        var preferences = new NarrationPreferences(settings);
+        settings.SpeechDefaults["openai"] = new("gpt-4o-mini-tts", "Quiet documentary narration.");
+        Assert.False(preferences.UsingDefaults);
+        preferences.SaveDefaults();
+        settings.SpeechDefaults["openai"] = new("tts-1");
+        preferences.UseDefaults();
+        Assert.Equal("Quiet documentary narration.", preferences.Current.Speech!.Delivery);
+        Assert.True(preferences.UsingDefaults);
+    }
+
+    [Fact] public void LegacyHostedDefaultsAdoptExistingProviderSettingsOnce()
+    {
+        var settings = new AppSettings { NarrationDefaults = new("openai", "coral", 1, false, "", new()) };
+        settings.SpeechDefaults["openai"] = new("gpt-4o-mini-tts", "Warm.");
+        var preferences = new NarrationPreferences(settings);
+        Assert.Equal("Warm.", preferences.Defaults.Speech!.Delivery);
+        Assert.True(preferences.UsingDefaults);
+        var legacyPreset = JsonSerializer.Deserialize<NarrationOptions>("""{"Engine":"openai","Voice":"coral","Speed":1,"ExcludeCode":false,"Pronunciation":"","Profile":{}}""")!;
+        legacyPreset.ApplyTo(settings);
+        Assert.Equal("Warm.", settings.SpeechDefaults["openai"].Delivery);
+    }
+
     [Fact] public void LegacySettingsBecomeDefaultsWithoutReplacingTheUsersVoiceOrRules()
     {
         var settings = JsonSerializer.Deserialize<AppSettings>("""{"Engine":"piper","Voice":"en_GB-alba-medium","Speed":1.15,"ExcludeCode":true,"Pronunciation":"API=A P I"}""")!;
