@@ -18,6 +18,8 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
     private Task? stopping;
     private readonly SemaphoreSlim gate = new(1), publicationGate = new(1);
     private readonly ConcurrentDictionary<string, PublishingRecord> publications = new();
+    private readonly ConcurrentDictionary<string, ProviderInfo> providerCatalog = new();
+    private volatile NarrationOptions? narrationDefaults;
     private readonly ISpeechSecrets speechSecrets = new WindowsSpeechSecrets();
     private ExportPublisher localPublisher = null!;
     private string ConfigPath => Path.Combine(Workspace.Root, "web", "settings.json");
@@ -32,6 +34,9 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
         try
         {
             Settings = await Workspace.LoadSettingsAsync();
+            narrationDefaults = Settings.NarrationDefaults ?? NarrationOptions.Capture(Settings);
+            Settings.NarrationDefaults = narrationDefaults;
+            foreach (var (engine, info) in Settings.Providers) providerCatalog[engine] = info;
             if (File.Exists(ConfigPath)) WebSettings = JsonSerializer.Deserialize<WebSettings>(await File.ReadAllTextAsync(ConfigPath, ct)) ?? WebSettings.Empty;
             // Server-managed local exports are never in wwwroot and never exposed through HTTP.
             Settings.Destination = Path.GetFullPath(configuration["CommuteCast:Exports"] ?? Workspace.Root.TrimEnd(Path.DirectorySeparatorChar) + "-exports");
@@ -72,12 +77,12 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
             configured = WebSettings.Destination.Configured, WebSettings.AutoPublish, WebSettings.FolderName, WebSettings.FolderUrl,
             destination = WebSettings.Destination, hasSecret = WebSettings.Destination.Configured && WindowsWebSecrets.Get(WindowsWebSecrets.Target(WebSettings.Destination)) is not null
         },
-        defaults = NarrationOptions.Capture(Settings), providers = SpeechProviders.All.Select(p => new
+        defaults = narrationDefaults, providers = SpeechProviders.All.Select(p => new
         {
             p.Id, p.Name, p.DefaultVoice, p.DefaultModel, p.Capabilities,
             hasKey = !p.Capabilities.Hosted || speechSecrets.Get(p.Id) is not null,
-            verified = Settings.Providers.ContainsKey(p.Id),
-            voices = SpeechVoiceCatalog.Choices(p.Id, Settings.Providers.TryGetValue(p.Id, out var info) ? info.Voices : [], SpeechVoiceCatalog.DefaultVoice(p.Id))
+            verified = providerCatalog.ContainsKey(p.Id),
+            voices = SpeechVoiceCatalog.Choices(p.Id, providerCatalog.TryGetValue(p.Id, out var info) ? info.Voices : [], SpeechVoiceCatalog.DefaultVoice(p.Id))
                 .Select(v => new { v.Id, displayName = Speech.VoiceNames.TryGetValue(p.Id + ":" + v.Id, out var name) ? name : v.DisplayName, v.Available })
         }),
         jobs = Queue.Snapshot().OrderByDescending(j => j.CreatedUtc).Select(j => new
@@ -188,6 +193,7 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
             await SavePublicationAsync(new(job.Id, WebSettings.AutoPublish ? "Pending" : "Not requested", WebSettings.Destination, WebSettings.FolderUrl));
             await Queue.AddAsync(job, ct);
             Settings.Providers[o.Engine] = info;
+            providerCatalog[o.Engine] = info;
             await Workspace.SaveSettingsAsync(Settings);
             return job.Id;
         }
@@ -196,7 +202,13 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
     public async Task SaveDefaultsAsync(NarrationOptions options, CancellationToken ct)
     {
         options.Validate(); await gate.WaitAsync(ct);
-        try { options.ApplyTo(Settings); Settings.NarrationDefaults = options; await Workspace.SaveSettingsAsync(Settings); }
+        try
+        {
+            var persisted = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(Settings))!;
+            options.ApplyTo(persisted); persisted.NarrationDefaults = options;
+            await Workspace.SaveSettingsAsync(persisted);
+            options.ApplyTo(Settings); Settings.NarrationDefaults = options; narrationDefaults = options;
+        }
         finally { gate.Release(); }
     }
     public async Task CheckProviderAsync(ProviderRequest request, CancellationToken ct)
@@ -210,7 +222,9 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
                 Settings.SpeechDefaults[request.Engine] = config;
                 if (!string.IsNullOrWhiteSpace(request.ApiKey)) speechSecrets.Set(request.Engine, request.ApiKey);
             }
-            Settings.Providers[request.Engine] = await Speech.ReadyAsync(request.Engine, ct, true);
+            var info = await Speech.ReadyAsync(request.Engine, ct, true);
+            Settings.Providers[request.Engine] = info;
+            providerCatalog[request.Engine] = info;
             await Workspace.SaveSettingsAsync(Settings);
         }
         finally { gate.Release(); }
@@ -235,6 +249,7 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
         {
             var repaired = await Speech.RepairAsync(engine, ct);
             Settings.Providers[engine] = repaired.Provider;
+            providerCatalog[engine] = repaired.Provider;
             await Workspace.SaveSettingsAsync(Settings);
         }
         finally { gate.Release(); }

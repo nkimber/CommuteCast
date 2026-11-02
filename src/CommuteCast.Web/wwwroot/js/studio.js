@@ -628,7 +628,7 @@ function folderLinks() {
 }
 let refreshInFlight = false;
 async function refresh() {
-  if (refreshInFlight) return;
+  if (refreshInFlight) return false;
   refreshInFlight = true;
   try {
     state = await api("state");
@@ -640,13 +640,15 @@ async function refresh() {
       document.createTextNode("Studio connected"),
     );
     if (state.error) message(state.error);
+    return true;
   } catch (error) {
     $("connection").className = "connection offline";
     $("connection").replaceChildren(
       node("span", "status-dot"),
       document.createTextNode("Reconnecting…"),
     );
-    if (!state) message(error.message);
+    if (!ready) message(error.message);
+    return false;
   } finally {
     refreshInFlight = false;
   }
@@ -1044,8 +1046,13 @@ document.addEventListener("keydown", (event) => {
   }
 });
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) refresh();
-  else if (ready) {
+  if (!document.hidden) {
+    if (ready) refresh();
+    else {
+      clearTimeout(initialiseTimer);
+      initialiseStudio();
+    }
+  } else if (ready) {
     clearTimeout(draftTimer);
     saveDraft();
   }
@@ -1056,30 +1063,45 @@ window.addEventListener("beforeunload", (event) => {
     event.returnValue = "";
   }
 });
-(async () => {
-  await refresh();
-  if (!state) return;
-  options($("engine"), state.providers, state.defaults.engine);
-  options($("settings-provider"), state.providers, state.defaults.engine);
-  applyOptions(state.defaults);
-  settingsProvider();
-  const d = state.publishing.destination;
-  $("tenant-id").value = d.tenantId;
-  $("client-id").value = d.clientId;
-  $("drive-id").value = d.driveId;
-  $("folder-id").value = d.folderId;
-  $("auto-publish").checked = state.publishing.autoPublish;
+let initialising = false,
+  initialiseTimer,
+  initialiseDelay = 1000;
+async function initialiseStudio() {
+  if (ready || initialising) return;
+  initialising = true;
   try {
+    if (!(await refresh())) return;
+    options($("engine"), state.providers, state.defaults.engine);
+    options($("settings-provider"), state.providers, state.defaults.engine);
+    applyOptions(state.defaults);
+    settingsProvider();
+    const d = state.publishing.destination;
+    $("tenant-id").value = d.tenantId;
+    $("client-id").value = d.clientId;
+    $("drive-id").value = d.driveId;
+    $("folder-id").value = d.folderId;
+    $("auto-publish").checked = state.publishing.autoPublish;
     const saved = await api("draft");
     draftRevision = saved.revision;
     if (saved.options) applyOptions(saved.options);
     loadDraft(saved.draft);
     $("draft-status").textContent = "Draft saved";
     ready = true;
+    $("studio-content").inert = false;
+    $("main").setAttribute("aria-busy", "false");
+    message(state.error || "");
   } catch (error) {
     message(error.message);
+  } finally {
+    initialising = false;
+    if (!ready) {
+      clearTimeout(initialiseTimer);
+      initialiseTimer = setTimeout(initialiseStudio, initialiseDelay);
+      initialiseDelay = Math.min(initialiseDelay * 2, 10000);
+    }
   }
-  setInterval(() => {
-    if (!document.hidden) refresh();
-  }, 3000);
-})();
+}
+initialiseStudio();
+setInterval(() => {
+  if (ready && !document.hidden) refresh();
+}, 3000);

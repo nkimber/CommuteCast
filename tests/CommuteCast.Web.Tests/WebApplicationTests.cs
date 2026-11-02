@@ -137,6 +137,45 @@ public sealed class WebApplicationTests
         new("kokoro", "af_heart", 1, false, "", new(), LocalVoice: null), SubmissionId: Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task FailedDefaultSaveCannotLeakUnsavedChoicesIntoALaterSettingsWrite()
+    {
+        await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();
+        var runtime = host.Services.GetRequiredService<WebRuntime>();
+        var settingsPath = Path.Combine(runtime.Workspace.Root, "settings.json");
+        Directory.CreateDirectory(settingsPath);
+        var response = await client.PostAsJsonAsync("/api/defaults", Request("text").Options with { Speed = 1.2 });
+        Assert.False(response.IsSuccessStatusCode);
+        Directory.Delete(settingsPath);
+        (await client.PostAsJsonAsync("/api/queue", new QueueRequest(true))).EnsureSuccessStatusCode();
+        var persisted = JsonSerializer.Deserialize<AppSettings>(await File.ReadAllTextAsync(settingsPath))!;
+        Assert.Equal(1, persisted.NarrationDefaults!.Speed);
+        Assert.Equal(1, runtime.Settings.Speed);
+    }
+
+    [Fact]
+    public async Task CheckingAnotherHostedModelPreservesSavedDefaultsAcrossRestart()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), "CommuteCast-Web-tests-" + Guid.NewGuid().ToString("N"));
+        var saved = new NarrationOptions("openai", "coral", 1, false, "", new(), Speech: new("tts-1"));
+        await using (var host = new StudioFactory(parent))
+        {
+            using var client = await host.OwnerClientAsync();
+            (await client.PostAsJsonAsync("/api/defaults", saved)).EnsureSuccessStatusCode();
+            (await client.PostAsJsonAsync("/api/providers/check", new ProviderRequest("openai", "tts-1-hd"))).EnsureSuccessStatusCode();
+            var state = await client.GetFromJsonAsync<JsonElement>("/api/state");
+            Assert.Equal("tts-1", state.GetProperty("defaults").GetProperty("speech").GetProperty("model").GetString());
+        }
+        await using (var restarted = new StudioFactory(parent))
+        {
+            using var client = await restarted.OwnerClientAsync();
+            var state = await client.GetFromJsonAsync<JsonElement>("/api/state");
+            Assert.Equal("tts-1", state.GetProperty("defaults").GetProperty("speech").GetProperty("model").GetString());
+            Assert.Equal("coral", state.GetProperty("defaults").GetProperty("voice").GetString());
+        }
+        Directory.Delete(parent, true);
+    }
+
+    [Fact]
     public async Task SpeechRepairTimeoutPreservesActionableGuidanceAndReleasesSetupGate()
     {
         await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();

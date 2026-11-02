@@ -113,13 +113,14 @@
 <span class="crumb-divider">/</span>
 <span id="page-name">New narration</span>
 </div>
-<span class="connection" id="connection">
+<span class="connection" id="connection" role="status" aria-live="polite">
 <span class="status-dot">
 </span>Connecting</span>
 </header>
-<main id="main" tabindex="-1">
+<main id="main" tabindex="-1" aria-busy="true">
 <div id="global-error" class="notice error" role="alert" hidden>
 </div>
+<div id="studio-content" inert>
 <section id="page-new" class="page">
 <div class="page-heading">
 <div>
@@ -521,6 +522,7 @@
 <span>CommuteCast</span>
 <span>Good ideas travel well.</span>
 </footer>
+</div>
 </main>
 </div>
 <dialog id="detail-dialog" class="detail-dialog">
