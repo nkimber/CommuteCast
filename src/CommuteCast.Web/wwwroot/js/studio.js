@@ -34,8 +34,11 @@ function icon(id) {
   return svg;
 }
 function message(text) {
+  const changed = $("global-error").textContent !== text;
   $("global-error").textContent = text;
   $("global-error").hidden = !text;
+  if (text && changed)
+    $("global-error").scrollIntoView({ block: "start", behavior: "smooth" });
 }
 let toastTimer;
 function toast(text) {
@@ -79,6 +82,9 @@ async function action(button, work) {
   try {
     return await work();
   } catch (error) {
+    if (["check-provider", "repair-provider"].includes(button?.id))
+      $("provider-status").textContent =
+        "Connection needs attention. See the message above.";
     message(error.message || "The operation could not finish.");
     return undefined;
   } finally {

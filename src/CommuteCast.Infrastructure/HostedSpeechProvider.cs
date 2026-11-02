@@ -13,7 +13,7 @@ public sealed class HostedSpeechProvider(ISpeechSecrets secrets, HttpClient? cli
     private static readonly string[] OpenAiVoices = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse", "marin", "cedar"];
     private static readonly string[] OpenAiLegacyVoices = ["alloy", "ash", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer"];
     private static readonly string[] GeminiVoices = ["Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede", "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Despina", "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar", "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird", "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat"];
-    public Dictionary<string, string> VoiceNames { get; } = [];
+    public System.Collections.Concurrent.ConcurrentDictionary<string, string> VoiceNames { get; } = new();
     private HttpRequestMessage Request(string engine, HttpMethod method, string path, object? body = null)
     {
         var key = secrets.Get(engine) ?? throw new IOException($"Save an API key for {engine} in Speech providers before using hosted speech.");

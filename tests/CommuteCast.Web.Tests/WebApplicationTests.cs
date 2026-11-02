@@ -137,6 +137,31 @@ public sealed class WebApplicationTests
         new("kokoro", "af_heart", 1, false, "", new(), LocalVoice: null), SubmissionId: Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task SpeechRepairTimeoutPreservesActionableGuidanceAndReleasesSetupGate()
+    {
+        await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();
+        host.Speech.RepairUnavailable = true;
+        var response = await client.PostAsJsonAsync("/api/providers/repair", new ProviderRequest("piper"));
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Contains("Open Docker Desktop", await response.Content.ReadAsStringAsync());
+        (await client.PostAsJsonAsync("/api/queue", new QueueRequest(true))).EnsureSuccessStatusCode();
+    }
+
+    [Fact]
+    public async Task ConcurrentShutdownCallsBothWaitForWorkspaceLeaseRelease()
+    {
+        await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();
+        var runtime = host.Services.GetRequiredService<WebRuntime>();
+        (await client.PostAsJsonAsync("/api/jobs", Request("A narration can be interrupted by a controlled server shutdown."))).EnsureSuccessStatusCode();
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (host.Speech.Calls == 0 && DateTime.UtcNow < deadline) await Task.Delay(10);
+        Assert.Equal(1, host.Speech.Calls);
+        await Task.WhenAll(runtime.StopAsync(default), runtime.StopAsync(default));
+        using var lease = WorkspaceLease.Acquire(runtime.Workspace);
+        lease.EnsureHeld();
+    }
+
+    [Fact]
     public async Task DraftStoresSourceAndVoiceSettingsTogether()
     {
         await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();
@@ -266,11 +291,16 @@ public sealed class WebApplicationTests
     public sealed class SyntheticSpeech : ISpeechService
     {
         public int Calls;
+        public bool RepairUnavailable;
         public IReadOnlyDictionary<string, string> VoiceNames { get; } = new Dictionary<string, string>();
         public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct) => Task.FromResult(new ProviderInfo(engine, "web-test", ["af_heart"], "ready", 0));
         public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct, bool explicitRetry) => ReadyAsync(engine, ct);
         public Task<ProviderInfo> CaptureForSubmissionAsync(string engine, ProviderInfo? cached, CancellationToken ct = default) => ReadyAsync(engine, ct);
-        public async Task<SpeechRepairResult> RepairAsync(string engine, CancellationToken ct = default) => new(await ReadyAsync(engine, ct), "Synthetic installed services checked.");
+        public async Task<SpeechRepairResult> RepairAsync(string engine, CancellationToken ct = default)
+        {
+            if (RepairUnavailable) throw new TimeoutException("Open Docker Desktop and wait for local services to become available, then retry.");
+            return new(await ReadyAsync(engine, ct), "Synthetic installed services checked.");
+        }
         public Task<ProviderInfo> ReadyForJobAsync(Job job, CancellationToken ct) => ReadyAsync(job.Settings.Engine, ct);
         public Task<ProviderInfo> ReadyForSettingsAsync(NarrationSettings settings, CancellationToken ct) => ReadyAsync(settings.Engine, ct);
         public async Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct)

@@ -14,7 +14,8 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
     public ISpeechService Speech { get; private set; } = null!;
     public DraftStore Drafts { get; private set; } = null!;
     private WorkspaceLease? lease;
-    private int stopped;
+    private readonly object stopSync = new();
+    private Task? stopping;
     private readonly SemaphoreSlim gate = new(1), publicationGate = new(1);
     private readonly ConcurrentDictionary<string, PublishingRecord> publications = new();
     private readonly ISpeechSecrets speechSecrets = new WindowsSpeechSecrets();
@@ -56,7 +57,12 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
             }
             await base.StartAsync(ct);
         }
-        catch { Interlocked.Exchange(ref stopped, 1); if (Queue is not null) await Queue.DisposeAsync(); Speech?.Dispose(); lease.Dispose(); throw; }
+        catch
+        {
+            if (Queue is not null) await Queue.DisposeAsync(); Speech?.Dispose(); lease.Dispose();
+            lock (stopSync) stopping = Task.CompletedTask;
+            throw;
+        }
     }
 
     public object State() => new
@@ -72,7 +78,7 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
             hasKey = !p.Capabilities.Hosted || speechSecrets.Get(p.Id) is not null,
             verified = Settings.Providers.ContainsKey(p.Id),
             voices = SpeechVoiceCatalog.Choices(p.Id, Settings.Providers.TryGetValue(p.Id, out var info) ? info.Voices : [], SpeechVoiceCatalog.DefaultVoice(p.Id))
-                .Select(v => new { v.Id, displayName = Speech.VoiceNames.TryGetValue(v.Id, out var name) ? name : v.DisplayName, v.Available })
+                .Select(v => new { v.Id, displayName = Speech.VoiceNames.TryGetValue(p.Id + ":" + v.Id, out var name) ? name : v.DisplayName, v.Available })
         }),
         jobs = Queue.Snapshot().OrderByDescending(j => j.CreatedUtc).Select(j => new
         {
@@ -313,10 +319,13 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
             try { await Task.Delay(TimeSpan.FromSeconds(3), stoppingToken); } catch (OperationCanceledException) { break; }
         }
     }
-    public static string SafeError(Exception error) => error is ArgumentException or IOException ? error.Message : "The operation could not finish. Check server logs and configuration, then retry.";
-    public override async Task StopAsync(CancellationToken ct)
+    public static string SafeError(Exception error) => error is ArgumentException or IOException or TimeoutException ? error.Message : "The operation could not finish. Check server logs and configuration, then retry.";
+    public override Task StopAsync(CancellationToken ct)
     {
-        if (Interlocked.Exchange(ref stopped, 1) != 0) return;
+        lock (stopSync) return stopping ??= StopCoreAsync(ct);
+    }
+    private async Task StopCoreAsync(CancellationToken ct)
+    {
         try { await base.StopAsync(ct); }
         finally
         {

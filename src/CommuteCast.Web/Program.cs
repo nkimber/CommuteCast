@@ -2,11 +2,13 @@ using System.Text.Json.Serialization;
 using CommuteCast.Web;
 using CommuteCast.Infrastructure;
 using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.DataProtection;
 
 var builder = WebApplication.CreateBuilder(args);
 if (string.IsNullOrWhiteSpace(builder.Configuration["urls"])) builder.WebHost.UseUrls("http://127.0.0.1:5188");
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 2 * 1024 * 1024);
 builder.Services.AddRazorPages();
+builder.Services.AddDataProtection().SetApplicationName("CommuteCast.Web");
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddAntiforgery(options => { options.HeaderName = "X-CSRF-TOKEN"; options.Cookie.Name = "CommuteCast.Csrf"; options.Cookie.SameSite = SameSiteMode.Strict; });
 builder.Services.AddHttpClient("Microsoft365", client => client.Timeout = TimeSpan.FromMinutes(10)).RemoveAllLoggers();
@@ -21,7 +23,7 @@ if (!string.IsNullOrWhiteSpace(app.Configuration["Cloudflare:TeamDomain"]))
 app.UseExceptionHandler(handler => handler.Run(async context =>
 {
     var error = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error ?? new Exception();
-    context.Response.StatusCode = error is ArgumentException or IOException or AntiforgeryValidationException ? 400 : 500;
+    context.Response.StatusCode = error is TimeoutException ? 503 : error is ArgumentException or IOException or AntiforgeryValidationException ? 400 : 500;
     await context.Response.WriteAsJsonAsync(new { error = error is AntiforgeryValidationException
         ? "Your form session expired. Copy any unsaved text, then refresh the page before trying again."
         : WebRuntime.SafeError(error) });
