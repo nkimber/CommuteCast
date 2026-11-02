@@ -2,6 +2,8 @@
 
 CommuteCast captures a complete local voice recipe with each narration or podcast. Saved defaults, named narration presets and speaker personality bindings retain the same choices for future work. Jobs keep independent copies; changing a library entry never changes a queued episode or its validated segments.
 
+See [Local TTS exploration](Local-TTS-Exploration.md) for the November 2, 2026 review of additional local models, an optional Nemotron writing stage, source links and future experiment criteria. That review records candidates and acceptance gaps; the implemented local providers remain Kokoro and Piper.
+
 ## Controls
 
 ### Compare voices using your own script

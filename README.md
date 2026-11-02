@@ -14,6 +14,8 @@ Local Kokoro/Piper and hosted ElevenLabs, OpenAI, Cartesia and Google Gemini are
 
 Local voices now have saved delivery profiles, Kokoro blends, Piper variation controls, speaker pronunciation overrides, expressive auditions and natural phrasing with final loudness matching. See [Local voice quality](documents/Local-Voice-Quality.md) for controls, service update instructions, measured comparisons and optional expressive-model trials.
 
+For future local speech experiments, [Local TTS exploration](documents/Local-TTS-Exploration.md) records Pocket TTS, Chatterbox Nano, Magpie, Kitten, Qwen3-TTS and archived Supertonic options, plus Nemotron Bolt E4B as an optional script-writing stage. It includes source links, hardware/licensing constraints and a proposed comparison plan; these candidates have not been integrated or accepted.
+
 The prompt builder supports local microphone dictation for its listening-goal textbox. Use **Record**, then **Stop and transcribe** to append editable text. See [Local dictation](documents/Local-Dictation.md) for Docker setup, microphone access, limits and verification.
 
 ## Build in Visual Studio
