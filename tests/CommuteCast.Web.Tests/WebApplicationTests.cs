@@ -1,0 +1,221 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using CommuteCast.Core;
+using CommuteCast.Infrastructure;
+using CommuteCast.Web;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Protocols;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+using Microsoft.IdentityModel.Tokens;
+
+namespace CommuteCast.Web.Tests;
+
+public sealed class WebApplicationTests
+{
+    [Fact]
+    public async Task RendersStudioAndNeverExposesAudioOrWorkspaceFiles()
+    {
+        await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();
+        var html = await client.GetStringAsync("/");
+        Assert.Contains("Make the most", html); Assert.Contains("csrf-token", html);
+        Assert.DoesNotContain("<audio", html); Assert.DoesNotContain("<video", html);
+        foreach (var path in new[] { "/complete.mp3", "/jobs/123/complete.mp3", "/api/jobs/123/audio", "/api/jobs/123/download", "/workspace/settings.json", "/queue.db" })
+            Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(path)).StatusCode);
+        var response = await client.GetAsync("/api/state");
+        Assert.Contains("media-src 'none'", response.Headers.GetValues("Content-Security-Policy").Single());
+    }
+
+    [Fact]
+    public async Task LocalModeRejectsRemoteAddressesAndPublicHostEvenWithForgedForwardingHeaders()
+    {
+        await using var host = new StudioFactory(remoteAddress: IPAddress.Parse("192.0.2.5")); using var client = host.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forwarded-For", "127.0.0.1"); client.DefaultRequestHeaders.Add("Cf-Access-Authenticated-User-Email", "owner@example.com");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/state")).StatusCode);
+        await using var loopback = new StudioFactory(); using var publicClient = loopback.CreateClient();
+        publicClient.DefaultRequestHeaders.Host = "commutecast.kimber.dev";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await publicClient.GetAsync("/api/state")).StatusCode);
+    }
+
+    [Fact]
+    public async Task StateChangesRequireAntiforgeryToken()
+    {
+        await using var host = new StudioFactory(); using var client = host.CreateClient();
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/queue", new QueueRequest(true))).StatusCode);
+        var state = await client.GetFromJsonAsync<JsonElement>("/api/state"); Assert.False(state.GetProperty("paused").GetBoolean());
+    }
+
+    [Fact]
+    public async Task DraftRevisionPreventsAnotherBrowserOverwritingNewerText()
+    {
+        await using var host = new StudioFactory(); using var first = await host.OwnerClientAsync(); using var second = await host.OwnerClientAsync();
+        var original = await first.GetFromJsonAsync<JsonElement>("/api/draft"); var revision = original.GetProperty("revision").GetString()!;
+        Assert.True((await first.PostAsJsonAsync("/api/draft", new DraftRequest(new Draft("First", "The latest words."), revision))).IsSuccessStatusCode);
+        var conflict = await second.PostAsJsonAsync("/api/draft", new DraftRequest(new Draft("Stale", "Older words."), revision));
+        Assert.Equal(HttpStatusCode.BadRequest, conflict.StatusCode);
+        var retained = await first.GetFromJsonAsync<JsonElement>("/api/draft");
+        Assert.Equal("The latest words.", retained.GetProperty("draft").GetProperty("source").GetString());
+    }
+
+    [Fact]
+    public async Task PromptAndPreviewUseProductionPreparationWithoutInvokingSpeech()
+    {
+        await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();
+        var prompt = await client.PostAsJsonAsync("/api/prompt", new PromptRequest(new() { Topic = "How cities work", Minutes = "10" }));
+        prompt.EnsureSuccessStatusCode(); Assert.Contains("How cities work", await prompt.Content.ReadAsStringAsync());
+        var preview = await client.PostAsJsonAsync("/api/preview", Request("# A useful idea\n\nA thoughtful explanation.")); preview.EnsureSuccessStatusCode();
+        var content = await preview.Content.ReadFromJsonAsync<JsonElement>(); Assert.DoesNotContain("#", content.GetProperty("script").GetString());
+        Assert.Equal(0, host.Speech.Calls);
+    }
+
+    [Fact]
+    public async Task SubmissionIsIdempotentAndGenerationSurvivesBrowserDisconnect()
+    {
+        await using var host = new StudioFactory(); var client = await host.OwnerClientAsync();
+        (await client.PostAsJsonAsync("/api/queue", new QueueRequest(true))).EnsureSuccessStatusCode();
+        var request = Request("A good idea changes the way we notice the world. A familiar journey becomes time well spent.");
+        (await client.PostAsJsonAsync("/api/jobs", request)).EnsureSuccessStatusCode();
+        (await client.PostAsJsonAsync("/api/jobs", request)).EnsureSuccessStatusCode();
+        Assert.Single(host.Services.GetRequiredService<WebRuntime>().Queue.Snapshot());
+        (await client.PostAsJsonAsync("/api/queue", new QueueRequest(false))).EnsureSuccessStatusCode(); client.Dispose();
+        var runtime = host.Services.GetRequiredService<WebRuntime>();
+        var timeout = DateTime.UtcNow.AddSeconds(45);
+        Job? job;
+        do { await Task.Delay(100); job = runtime.Queue.Snapshot().Single(); } while (job.Stage is not (JobStage.Exported or JobStage.Failed) && DateTime.UtcNow < timeout);
+        Assert.True(job.Stage == JobStage.Exported, job.Error);
+        Assert.True(File.Exists(runtime.Workspace.FinalPath(job)));
+        Assert.Equal(1, host.Speech.Calls);
+        using var reconnect = host.CreateClient(); Assert.Equal(HttpStatusCode.OK, (await reconnect.GetAsync("/api/jobs/" + job.Id)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await reconnect.GetAsync("/api/jobs/" + job.Id + "/download")).StatusCode);
+    }
+
+    [Fact]
+    public async Task QueueAndPublicationIntentSurviveHostRestart()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), "CommuteCast-Web-tests-" + Guid.NewGuid().ToString("N"));
+        string id;
+        await using (var first = new StudioFactory(parent))
+        {
+            using var client = await first.OwnerClientAsync(); (await client.PostAsJsonAsync("/api/queue", new QueueRequest(true))).EnsureSuccessStatusCode();
+            var request = Request("A durable narration waits for its turn."); id = request.SubmissionId!;
+            (await client.PostAsJsonAsync("/api/jobs", request)).EnsureSuccessStatusCode();
+        }
+        await using (var second = new StudioFactory(parent))
+        {
+            using var client = await second.OwnerClientAsync(); var runtime = second.Services.GetRequiredService<WebRuntime>();
+            Assert.True(runtime.Queue.Paused); Assert.Equal(id, Assert.Single(runtime.Queue.Snapshot()).Id);
+            var details = await client.GetFromJsonAsync<JsonElement>("/api/jobs/" + id);
+            Assert.Equal("Pending", details.GetProperty("publication").GetProperty("status").GetString());
+        }
+        Directory.Delete(parent, true);
+    }
+
+    [Theory]
+    [InlineData("owner@example.com", "correct-audience", false, true)]
+    [InlineData("someone@example.com", "correct-audience", false, false)]
+    [InlineData("owner@example.com", "wrong-audience", false, false)]
+    [InlineData("owner@example.com", "correct-audience", true, false)]
+    public async Task CloudflareModeValidatesSignatureAudienceExpiryAndOwner(string email, string audience, bool expired, bool accepted)
+    {
+        await using var host = new StudioFactory(cloudflare: true); using var client = host.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/state")).StatusCode);
+        client.DefaultRequestHeaders.Add("Cf-Access-Jwt-Assertion", host.Token(email, audience, expired));
+        Assert.Equal(accepted ? HttpStatusCode.OK : HttpStatusCode.Unauthorized, (await client.GetAsync("/api/state")).StatusCode);
+    }
+
+    private static ComposeRequest Request(string text) => new("Test narration", text,
+        new("kokoro", "af_heart", 1, false, "", new(), LocalVoice: null), SubmissionId: Guid.NewGuid().ToString("N"));
+
+    private sealed class StudioFactory : WebApplicationFactory<Program>
+    {
+        private readonly string parent;
+        private readonly bool ownsParent, cloudflare;
+        private readonly IPAddress remote;
+        private readonly RSA rsa = RSA.Create(2048);
+        public SyntheticSpeech Speech { get; } = new();
+        public StudioFactory(string? parent = null, IPAddress? remoteAddress = null, bool cloudflare = false)
+        {
+            ownsParent = parent is null; this.parent = parent ?? Path.Combine(Path.GetTempPath(), "CommuteCast-Web-tests-" + Guid.NewGuid().ToString("N"));
+            remote = remoteAddress ?? IPAddress.Loopback; this.cloudflare = cloudflare;
+        }
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CommuteCast:Workspace"] = Path.Combine(parent, "private"), ["CommuteCast:Exports"] = Path.Combine(parent, "exports"),
+                ["CommuteCast:OperationalLogging"] = "false",
+                ["Cloudflare:TeamDomain"] = cloudflare ? "test.cloudflareaccess.com" : "", ["Cloudflare:Audience"] = "correct-audience", ["Cloudflare:AllowedEmail"] = "owner@example.com"
+            }));
+            builder.ConfigureTestServices(services =>
+            {
+                services.AddSingleton<IStartupFilter>(new ConnectionAddress(remote));
+                services.AddSingleton<IWebSpeechFactory>(new SyntheticFactory(Speech));
+                if (cloudflare) services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
+                {
+                    var config = new OpenIdConnectConfiguration { Issuer = "https://test.cloudflareaccess.com" };
+                    config.SigningKeys.Add(new RsaSecurityKey(rsa) { KeyId = "test-key" });
+                    options.ConfigurationManager = new StaticConfigurationManager<OpenIdConnectConfiguration>(config);
+                });
+            });
+        }
+        public string Token(string email, string audience, bool expired) => new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+        {
+            Issuer = "https://test.cloudflareaccess.com", Audience = audience, Subject = new ClaimsIdentity([new Claim("email", email)]),
+            IssuedAt = DateTime.UtcNow.AddHours(-2), NotBefore = DateTime.UtcNow.AddHours(-2), Expires = expired ? DateTime.UtcNow.AddHours(-1) : DateTime.UtcNow.AddHours(1),
+            SigningCredentials = new SigningCredentials(new RsaSecurityKey(rsa) { KeyId = "test-key" }, SecurityAlgorithms.RsaSha256)
+        });
+        public async Task<HttpClient> OwnerClientAsync()
+        {
+            var client = CreateClient(); var html = await client.GetStringAsync("/");
+            client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", Regex.Match(html, "name=\"csrf-token\" content=\"([^\"]+)\"").Groups[1].Value); return client;
+        }
+        public override async ValueTask DisposeAsync()
+        {
+            await base.DisposeAsync(); rsa.Dispose();
+            if (ownsParent && Directory.Exists(parent)) Directory.Delete(parent, true);
+        }
+    }
+    private sealed class ConnectionAddress(IPAddress address) : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            app.Use(async (context, after) => { context.Connection.RemoteIpAddress = address; await after(); }); next(app);
+        };
+    }
+    private sealed class SyntheticFactory(SyntheticSpeech speech) : IWebSpeechFactory
+    {
+        public ISpeechService Create(Workspace workspace, AppSettings settings, ISpeechSecrets secrets) => speech;
+    }
+    public sealed class SyntheticSpeech : ISpeechService
+    {
+        public int Calls;
+        public IReadOnlyDictionary<string, string> VoiceNames { get; } = new Dictionary<string, string>();
+        public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct) => Task.FromResult(new ProviderInfo(engine, "web-test", ["af_heart"], "ready", 0));
+        public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct, bool explicitRetry) => ReadyAsync(engine, ct);
+        public Task<ProviderInfo> CaptureForSubmissionAsync(string engine, ProviderInfo? cached, CancellationToken ct = default) => ReadyAsync(engine, ct);
+        public Task<ProviderInfo> ReadyForJobAsync(Job job, CancellationToken ct) => ReadyAsync(job.Settings.Engine, ct);
+        public Task<ProviderInfo> ReadyForSettingsAsync(NarrationSettings settings, CancellationToken ct) => ReadyAsync(settings.Engine, ct);
+        public async Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls); await Task.Delay(150, ct);
+            using var file = File.Create(output); const int samples = 24000 * 4; WaveAudio.WriteHeader(file, samples);
+            using var writer = new BinaryWriter(file); for (var i = 0; i < samples; i++) writer.Write((short)(Math.Sin(i * 2 * Math.PI * 220 / 24000) * 8000));
+        }
+        public async Task SynthesizeAsync(Job job, NarrationSettings settings, string text, string output, Func<Task> checkpoint, CancellationToken ct)
+        {
+            await SynthesizeAsync(settings, text, output, ct); await PrivateJobFiles.RecordAsync(job, Path.GetDirectoryName(output)!, Path.GetFileName(output), ct); await checkpoint();
+        }
+        public Task SynthesizeUnitAsync(Job job, TextChunk unit, string output, Func<Task> checkpoint, CancellationToken ct) => SynthesizeAsync(job, job.Settings, unit.Text, output, checkpoint, ct);
+        public void Dispose() { }
+    }
+}

@@ -15,7 +15,7 @@ public sealed record M365Destination(string TenantId = "", string ClientId = "",
             !SafeId(DriveId) || !SafeId(FolderId))
             throw new ArgumentException("Enter the tenant ID, application ID, drive ID and folder ID for your Microsoft 365 destination.");
     }
-    private static bool SafeId(string? id) => id is { Length: > 0 and <= 250 } && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '!' or '.');
+    private static bool SafeId(string? id) => id is { Length: > 0 and <= 250 } && id is not ("." or "..") && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '!' or '.');
 }
 
 public sealed record M365Folder(string Name, string PublicUrl);

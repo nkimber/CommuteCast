@@ -59,6 +59,8 @@ jobs:
       - name: Verify desktop interactions
         # WPF controls run on an isolated STA dispatcher; these checks do not require Docker.
         run: dotnet test tests/CommuteCast.Desktop.Tests -c Release --no-build --no-restore --logger 'trx;LogFileName=desktop-regression.trx'
+      - name: Verify web application and access boundaries
+        run: dotnet test tests/CommuteCast.Web.Tests -c Release --no-build --no-restore --logger 'trx;LogFileName=web-regression.trx'
       - name: Publish portable client
         run: ./scripts/Publish-Portable.ps1
       - name: Verify fresh portable extraction
@@ -75,6 +77,7 @@ jobs:
           path: |
             tests/CommuteCast.Tests/TestResults/windows-regression.trx
             tests/CommuteCast.Desktop.Tests/TestResults/desktop-regression.trx
+            tests/CommuteCast.Web.Tests/TestResults/web-regression.trx
           if-no-files-found: warn
           retention-days: 7
       - name: Retain verified portable ZIP

@@ -13,7 +13,7 @@ public static class AppLogging
     public static Logger CreateLogger(string directory, string component, LogEventLevel minimumLevel = LogEventLevel.Information,
         long fileSizeLimitBytes = 5 * 1024 * 1024, int retainedFileCountLimit = 14)
     {
-        if (component is not ("desktop" or "launcher" or "maintenance" or "test")) throw new ArgumentException("Unknown logging component.");
+        if (component is not ("desktop" or "launcher" or "maintenance" or "web" or "test")) throw new ArgumentException("Unknown logging component.");
         Workspace.RejectReparsePoints(directory);
         Directory.CreateDirectory(directory);
         foreach (var file in Directory.EnumerateFiles(directory, component + "-*.jsonl")) Workspace.RejectFileReparsePoint(file);

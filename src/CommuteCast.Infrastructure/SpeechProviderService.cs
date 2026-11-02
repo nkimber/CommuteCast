@@ -2,8 +2,15 @@ using CommuteCast.Core;
 
 namespace CommuteCast.Infrastructure;
 
+public interface ISpeechService : IDurableSpeechProvider, IJobSpeechStatusProvider, IRenderUnitSpeechProvider, IDisposable
+{
+    IReadOnlyDictionary<string, string> VoiceNames { get; }
+    Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct, bool explicitRetry);
+    Task<ProviderInfo> CaptureForSubmissionAsync(string engine, ProviderInfo? cached, CancellationToken ct = default);
+}
+
 public sealed class SpeechProviderService(Workspace workspace, AppSettings settings, LocalSpeechProvider? localProvider = null, ISpeechSecrets? secrets = null, HttpClient? http = null)
-    : IDurableSpeechProvider, IDurableAuditionSpeechProvider, IJobSpeechStatusProvider, IRenderUnitSpeechProvider, IDisposable
+    : ISpeechService, IDurableAuditionSpeechProvider
 {
     private readonly LocalSpeechProvider local = localProvider ?? new(workspace);
     private readonly HostedSpeechProvider hosted = new(secrets ?? new WindowsSpeechSecrets(), http);

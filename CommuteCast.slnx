@@ -3,10 +3,12 @@
     <Project Path="src/CommuteCast.Desktop/CommuteCast.Desktop.csproj" />
     <Project Path="src/CommuteCast.Core/CommuteCast.Core.csproj" />
     <Project Path="src/CommuteCast.Infrastructure/CommuteCast.Infrastructure.csproj" />
+    <Project Path="src/CommuteCast.Web/CommuteCast.Web.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/CommuteCast.Desktop.Tests/CommuteCast.Desktop.Tests.csproj" />
     <Project Path="tests/CommuteCast.Tests/CommuteCast.Tests.csproj" />
+    <Project Path="tests/CommuteCast.Web.Tests/CommuteCast.Web.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/CommuteCast.AcceptanceFixtures/CommuteCast.AcceptanceFixtures.csproj" />

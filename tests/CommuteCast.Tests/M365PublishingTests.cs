@@ -98,6 +98,8 @@ public sealed class M365PublishingTests : IDisposable
     [Theory]
     [InlineData("../drive", "folder")]
     [InlineData("drive", "https://example.com")]
+    [InlineData("..", "folder")]
+    [InlineData("drive", ".")]
     public void RejectsDestinationPathInjection(string drive, string folder) =>
         Assert.Throws<ArgumentException>(() => (Destination with { DriveId = drive, FolderId = folder }).Validate());
 
