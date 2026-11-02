@@ -21,8 +21,14 @@ public sealed record M365Destination(string TenantId = "", string ClientId = "",
 public sealed record M365Folder(string Name, string PublicUrl);
 public sealed record M365Upload(string ItemId, string Name, string ETag, long Size);
 
+public interface IM365Publisher
+{
+    Task<M365Folder> CheckFolderAsync(M365Destination destination, bool createPublicLink, CancellationToken ct);
+    Task<M365Upload> UploadAsync(M365Destination destination, string path, string name, string expectedHash, CancellationToken ct);
+}
+
 /// <summary>Server-side Graph transport. Upload sessions never receive the Graph bearer token.</summary>
-public sealed class M365Publisher(HttpClient http, Func<M365Destination, string?> getSecret)
+public sealed class M365Publisher(HttpClient http, Func<M365Destination, string?> getSecret) : IM365Publisher
 {
     private static string Item(M365Destination d) => $"https://graph.microsoft.com/v1.0/drives/{Uri.EscapeDataString(d.DriveId)}/items/{Uri.EscapeDataString(d.FolderId)}";
 

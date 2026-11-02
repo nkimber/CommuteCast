@@ -15,6 +15,7 @@ public static class WebApi
         api.MapPost("/jobs", async (ComposeRequest request, WebRuntime runtime, CancellationToken ct) => new { id = await runtime.SubmitAsync(request, ct) });
         api.MapPost("/defaults", async (NarrationOptions options, WebRuntime runtime, CancellationToken ct) => { await runtime.SaveDefaultsAsync(options, ct); return Results.Ok(); });
         api.MapPost("/providers/check", async (ProviderRequest request, WebRuntime runtime, CancellationToken ct) => { await runtime.CheckProviderAsync(request, ct); return Results.Ok(); });
+        api.MapPost("/providers/repair", async (ProviderRequest request, WebRuntime runtime, CancellationToken ct) => { await runtime.RepairProviderAsync(request.Engine, ct); return Results.Ok(); });
         api.MapPost("/queue", async (QueueRequest request, WebRuntime runtime, CancellationToken ct) => { await runtime.PauseAsync(request.Paused, ct); return Results.Ok(); });
         api.MapPost("/jobs/{id}/cancel", async (string id, WebRuntime runtime) => { await runtime.Queue.CancelAsync(id); return Results.Ok(); });
         api.MapPost("/jobs/{id}/retry", async (string id, WebRuntime runtime) => { await runtime.Queue.RetryAsync(id); return Results.Ok(); });

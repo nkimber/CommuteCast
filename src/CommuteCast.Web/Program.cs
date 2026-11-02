@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using CommuteCast.Web;
+using CommuteCast.Infrastructure;
 using Microsoft.AspNetCore.Antiforgery;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -8,17 +9,22 @@ builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 
 builder.Services.AddRazorPages();
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddAntiforgery(options => { options.HeaderName = "X-CSRF-TOKEN"; options.Cookie.Name = "CommuteCast.Csrf"; options.Cookie.SameSite = SameSiteMode.Strict; });
-builder.Services.AddHttpClient("Microsoft365", client => client.Timeout = TimeSpan.FromMinutes(10));
+builder.Services.AddHttpClient("Microsoft365", client => client.Timeout = TimeSpan.FromMinutes(10)).RemoveAllLoggers();
+builder.Services.AddSingleton<IM365Publisher>(services => new M365Publisher(services.GetRequiredService<IHttpClientFactory>().CreateClient("Microsoft365"), d => WindowsWebSecrets.Get(WindowsWebSecrets.Target(d))));
 builder.Services.AddSingleton<WebRuntime>();
 builder.Services.AddSingleton<IWebSpeechFactory, WebSpeechFactory>();
 builder.Services.AddHostedService(services => services.GetRequiredService<WebRuntime>());
 builder.Services.AddCommuteCastAuthentication(builder.Configuration);
 var app = builder.Build();
+if (!string.IsNullOrWhiteSpace(app.Configuration["Cloudflare:TeamDomain"]))
+    _ = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerOptions>>().Get("Bearer");
 app.UseExceptionHandler(handler => handler.Run(async context =>
 {
     var error = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error ?? new Exception();
     context.Response.StatusCode = error is ArgumentException or IOException or AntiforgeryValidationException ? 400 : 500;
-    await context.Response.WriteAsJsonAsync(new { error = WebRuntime.SafeError(error) });
+    await context.Response.WriteAsJsonAsync(new { error = error is AntiforgeryValidationException
+        ? "Your form session expired. Copy any unsaved text, then refresh the page before trying again."
+        : WebRuntime.SafeError(error) });
 }));
 app.Use(async (context, next) =>
 {

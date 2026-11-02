@@ -136,6 +136,71 @@ public sealed class WebApplicationTests
     private static ComposeRequest Request(string text) => new("Test narration", text,
         new("kokoro", "af_heart", 1, false, "", new(), LocalVoice: null), SubmissionId: Guid.NewGuid().ToString("N"));
 
+    [Fact]
+    public async Task DraftStoresSourceAndVoiceSettingsTogether()
+    {
+        await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();
+        var loaded = await client.GetFromJsonAsync<JsonElement>("/api/draft");
+        var options = Request("text").Options with { Speed = 1.15 };
+        (await client.PostAsJsonAsync("/api/draft", new DraftRequest(new("A saved draft", "My reading text."), loaded.GetProperty("revision").GetString()!, options))).EnsureSuccessStatusCode();
+        var saved = await client.GetFromJsonAsync<JsonElement>("/api/draft");
+        Assert.Equal(1.15, saved.GetProperty("options").GetProperty("speed").GetDouble());
+        Assert.Equal("My reading text.", saved.GetProperty("draft").GetProperty("source").GetString());
+    }
+
+    [Fact]
+    public async Task DuplicateSubmissionWithChangedVoiceSettingsIsRejected()
+    {
+        await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();
+        (await client.PostAsJsonAsync("/api/queue", new QueueRequest(true))).EnsureSuccessStatusCode();
+        var request = Request("One saved narration."); (await client.PostAsJsonAsync("/api/jobs", request)).EnsureSuccessStatusCode();
+        var conflict = await client.PostAsJsonAsync("/api/jobs", request with { Options = request.Options with { Speed = 1.1 } });
+        Assert.Equal(HttpStatusCode.BadRequest, conflict.StatusCode);
+        Assert.Equal(1, Assert.Single(host.Services.GetRequiredService<WebRuntime>().Queue.Snapshot()).Settings.Speed);
+    }
+
+    [Fact]
+    public async Task PublishingRetryReusesAudioAndRetainsCapturedDestination()
+    {
+        await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();
+        var destination = new M365Destination(Guid.NewGuid().ToString(), Guid.NewGuid().ToString(), "original-drive", "original-folder");
+        (await client.PostAsJsonAsync("/api/destination", new DestinationRequest(destination, true))).EnsureSuccessStatusCode();
+        host.Publishing.FailNext = true;
+        var request = Request("An interesting explanation for the journey home.");
+        (await client.PostAsJsonAsync("/api/jobs", request)).EnsureSuccessStatusCode();
+        await WaitPublicationAsync(client, request.SubmissionId!, "Failed");
+        var changed = destination with { DriveId = "new-drive", FolderId = "new-folder" };
+        (await client.PostAsJsonAsync("/api/destination", new DestinationRequest(changed, true))).EnsureSuccessStatusCode();
+        (await client.PostAsJsonAsync("/api/jobs/" + request.SubmissionId + "/publish", new PublicationRequest())).EnsureSuccessStatusCode();
+        await WaitPublicationAsync(client, request.SubmissionId!, "Published");
+        Assert.Equal(1, host.Speech.Calls); Assert.Equal(2, host.Publishing.Attempts.Count);
+        Assert.All(host.Publishing.Attempts, attempted => Assert.Equal(destination, attempted));
+    }
+
+    [Fact]
+    public async Task CloudflareOwnerCanObtainAndUseBrowserAntiforgeryToken()
+    {
+        await using var host = new StudioFactory(cloudflare: true); using var client = host.CreateClient();
+        client.DefaultRequestHeaders.Add("Cf-Access-Jwt-Assertion", host.Token("owner@example.com", "correct-audience", false));
+        var html = await client.GetStringAsync("/");
+        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", Regex.Match(html, "name=\"csrf-token\" content=\"([^\"]+)\"").Groups[1].Value);
+        (await client.PostAsJsonAsync("/api/queue", new QueueRequest(true))).EnsureSuccessStatusCode();
+        Assert.True(host.Services.GetRequiredService<WebRuntime>().Queue.Paused);
+    }
+
+    private static async Task WaitPublicationAsync(HttpClient client, string id, string wanted)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(40);
+        while (DateTime.UtcNow < deadline)
+        {
+            var details = await client.GetFromJsonAsync<JsonElement>("/api/jobs/" + id);
+            if (details.GetProperty("publication").GetProperty("status").GetString() == wanted) return;
+            if (details.GetProperty("stage").GetString() == "Failed") Assert.Fail(details.GetProperty("error").GetString());
+            await Task.Delay(150);
+        }
+        Assert.Fail("Publication did not reach " + wanted);
+    }
+
     private sealed class StudioFactory : WebApplicationFactory<Program>
     {
         private readonly string parent;
@@ -143,6 +208,7 @@ public sealed class WebApplicationTests
         private readonly IPAddress remote;
         private readonly RSA rsa = RSA.Create(2048);
         public SyntheticSpeech Speech { get; } = new();
+        public SyntheticPublishing Publishing { get; } = new();
         public StudioFactory(string? parent = null, IPAddress? remoteAddress = null, bool cloudflare = false)
         {
             ownsParent = parent is null; this.parent = parent ?? Path.Combine(Path.GetTempPath(), "CommuteCast-Web-tests-" + Guid.NewGuid().ToString("N"));
@@ -160,6 +226,7 @@ public sealed class WebApplicationTests
             {
                 services.AddSingleton<IStartupFilter>(new ConnectionAddress(remote));
                 services.AddSingleton<IWebSpeechFactory>(new SyntheticFactory(Speech));
+                services.AddSingleton<IM365Publisher>(Publishing);
                 if (cloudflare) services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
                 {
                     var config = new OpenIdConnectConfiguration { Issuer = "https://test.cloudflareaccess.com" };
@@ -203,6 +270,7 @@ public sealed class WebApplicationTests
         public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct) => Task.FromResult(new ProviderInfo(engine, "web-test", ["af_heart"], "ready", 0));
         public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct, bool explicitRetry) => ReadyAsync(engine, ct);
         public Task<ProviderInfo> CaptureForSubmissionAsync(string engine, ProviderInfo? cached, CancellationToken ct = default) => ReadyAsync(engine, ct);
+        public async Task<SpeechRepairResult> RepairAsync(string engine, CancellationToken ct = default) => new(await ReadyAsync(engine, ct), "Synthetic installed services checked.");
         public Task<ProviderInfo> ReadyForJobAsync(Job job, CancellationToken ct) => ReadyAsync(job.Settings.Engine, ct);
         public Task<ProviderInfo> ReadyForSettingsAsync(NarrationSettings settings, CancellationToken ct) => ReadyAsync(settings.Engine, ct);
         public async Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
@@ -217,5 +285,17 @@ public sealed class WebApplicationTests
         }
         public Task SynthesizeUnitAsync(Job job, TextChunk unit, string output, Func<Task> checkpoint, CancellationToken ct) => SynthesizeAsync(job, job.Settings, unit.Text, output, checkpoint, ct);
         public void Dispose() { }
+    }
+    public sealed class SyntheticPublishing : IM365Publisher
+    {
+        public bool FailNext;
+        public List<M365Destination> Attempts { get; } = [];
+        public Task<M365Folder> CheckFolderAsync(M365Destination destination, bool createPublicLink, CancellationToken ct) => Task.FromResult(new M365Folder("Test folder", "https://tenant.sharepoint.com/public-folder"));
+        public Task<M365Upload> UploadAsync(M365Destination destination, string path, string name, string expectedHash, CancellationToken ct)
+        {
+            Attempts.Add(destination);
+            if (FailNext) { FailNext = false; throw new IOException("Synthetic Microsoft 365 outage."); }
+            return Task.FromResult(new M365Upload("test-item", name, "test-etag", new FileInfo(path).Length));
+        }
     }
 }

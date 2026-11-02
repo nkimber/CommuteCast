@@ -10,7 +10,8 @@ public sealed record WebSettings(M365Destination Destination, bool AutoPublish =
 public sealed record PublishingRecord(string JobId, string Status, M365Destination Destination, string FolderUrl,
     string Error = "", M365Upload? Receipt = null, DateTimeOffset? PublishedUtc = null);
 public sealed record ComposeRequest(string Title, string Source, NarrationOptions Options, string? GenerationPrompt = null, PodcastEpisode? Episode = null, string? SubmissionId = null);
-public sealed record DraftRequest(Draft Draft, string Revision);
+public sealed record DraftRequest(Draft Draft, string Revision, NarrationOptions? Options = null);
+public sealed record EditorDraft(Draft Draft, NarrationOptions? Options = null);
 public sealed record DestinationRequest(M365Destination Destination, bool AutoPublish, string? Secret = null);
 public sealed record ProviderRequest(string Engine, string? Model = null, string? ApiKey = null);
 public sealed record QueueRequest(bool Paused);

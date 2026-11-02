@@ -5,7 +5,7 @@ using CommuteCast.Infrastructure;
 
 namespace CommuteCast.Web;
 
-public sealed class WebRuntime(IConfiguration configuration, IHttpClientFactory httpFactory, IWebSpeechFactory speechFactory, ILogger<WebRuntime> logger) : BackgroundService
+public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publisher, IWebSpeechFactory speechFactory, ILogger<WebRuntime> logger) : BackgroundService
 {
     public Workspace Workspace { get; private set; } = null!;
     public AppSettings Settings { get; private set; } = null!;
@@ -14,10 +14,10 @@ public sealed class WebRuntime(IConfiguration configuration, IHttpClientFactory 
     public ISpeechService Speech { get; private set; } = null!;
     public DraftStore Drafts { get; private set; } = null!;
     private WorkspaceLease? lease;
+    private int stopped;
     private readonly SemaphoreSlim gate = new(1), publicationGate = new(1);
     private readonly ConcurrentDictionary<string, PublishingRecord> publications = new();
     private readonly ISpeechSecrets speechSecrets = new WindowsSpeechSecrets();
-    private M365Publisher publisher = null!;
     private ExportPublisher localPublisher = null!;
     private string ConfigPath => Path.Combine(Workspace.Root, "web", "settings.json");
     private string PublicationPath(string id) => Path.Combine(Workspace.JobDirectory(id), "m365-publication.json");
@@ -45,7 +45,6 @@ public sealed class WebRuntime(IConfiguration configuration, IHttpClientFactory 
                 ScratchRetentionDays = Settings.ScratchRetentionDays, PrivateStorageLimitMiB = Settings.PrivateStorageLimitMiB
             };
             Drafts = new(Workspace);
-            publisher = new(httpFactory.CreateClient("Microsoft365"), d => WindowsWebSecrets.Get(WindowsWebSecrets.Target(d)));
             await Queue.InitializeAsync(ct);
             foreach (var job in Queue.Snapshot())
             {
@@ -57,7 +56,7 @@ public sealed class WebRuntime(IConfiguration configuration, IHttpClientFactory 
             }
             await base.StartAsync(ct);
         }
-        catch { if (Queue is not null) await Queue.DisposeAsync(); Speech?.Dispose(); lease.Dispose(); throw; }
+        catch { Interlocked.Exchange(ref stopped, 1); if (Queue is not null) await Queue.DisposeAsync(); Speech?.Dispose(); lease.Dispose(); throw; }
     }
 
     public object State() => new
@@ -94,18 +93,32 @@ public sealed class WebRuntime(IConfiguration configuration, IHttpClientFactory 
 
     public async Task<object> LoadDraftAsync()
     {
-        var draft = await Drafts.LoadAsync();
-        return new { draft, revision = Job.Hash(JsonSerializer.Serialize(draft)) };
+        var saved = await ReadEditorDraftAsync();
+        return new { saved.Draft, saved.Options, revision = Job.Hash(JsonSerializer.Serialize(saved)) };
+    }
+    private async Task<EditorDraft> ReadEditorDraftAsync()
+    {
+        var path = Path.Combine(Workspace.Root, "web", "draft.json");
+        if (!File.Exists(path)) return new(await Drafts.LoadAsync());
+        Workspace.RejectFileReparsePoint(path);
+        if (new FileInfo(path).Length > 2 * 1024 * 1024) throw new IOException("The saved web draft is oversized. Preserve it for inspection.");
+        return JsonSerializer.Deserialize<EditorDraft>(await File.ReadAllTextAsync(path)) ?? throw new IOException("The web draft could not be read.");
     }
     public async Task<object> SaveDraftAsync(DraftRequest request, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
         try
         {
-            var current = await Drafts.LoadAsync(ct);
+            var current = await ReadEditorDraftAsync();
             if (Job.Hash(JsonSerializer.Serialize(current)) != request.Revision) throw new IOException("This draft changed in another browser. Your text is still here; copy it before refreshing to load the newer draft.");
-            await Drafts.SaveAsync(request.Draft, ct);
-            return new { revision = Job.Hash(JsonSerializer.Serialize(await Drafts.LoadAsync(ct))) };
+            var draft = request.Draft;
+            if (draft is null || draft.Title is null || draft.Title.Length > 300 || draft.Source is null || draft.Source.Length > TextPreparation.MaximumCharacters)
+                throw new ArgumentException("Keep the draft within 300 title characters and 250,000 narration characters.");
+            draft.PromptDraft?.ValidateStorage(); draft.Podcast?.Episode.ValidateStorage(); DraftStore.ValidateGenerationPrompt(draft.GenerationPrompt);
+            request.Options?.Validate();
+            var saved = new EditorDraft(draft, request.Options ?? current.Options);
+            await Workspace.AtomicWriteAsync(Path.Combine(Workspace.Root, "web", "draft.json"), JsonSerializer.Serialize(saved));
+            return new { revision = Job.Hash(JsonSerializer.Serialize(saved)) };
         }
         finally { gate.Release(); }
     }
@@ -133,8 +146,12 @@ public sealed class WebRuntime(IConfiguration configuration, IHttpClientFactory 
             var existing = Queue.Snapshot().FirstOrDefault(j => j.Id == request.SubmissionId);
             if (existing is not null)
             {
-                if (existing.Source != request.Source || existing.Title != (string.IsNullOrWhiteSpace(request.Title) ? TextPreparation.SuggestTitle(request.Source) : request.Title.Trim()))
-                    throw new ArgumentException("This submission identity is already in use. Refresh the library before submitting again.");
+                var captured = existing.Settings;
+                var originalOptions = new NarrationOptions(captured.Engine, captured.Voice, captured.Speed, captured.ExcludeCode, captured.Pronunciation, captured.Profile ?? new(), captured.LocalVoice, captured.Speech);
+                var requestedOptions = request.Options with { Speech = SpeechProviders.IsHosted(request.Options.Engine) ? request.Options.Speech ?? new(SpeechProviders.Get(request.Options.Engine).DefaultModel) : null };
+                if (existing.Source != request.Source || existing.Title != (string.IsNullOrWhiteSpace(request.Title) ? TextPreparation.SuggestTitle(request.Source) : request.Title.Trim()) ||
+                    requestedOptions != originalOptions || existing.GenerationPrompt != request.GenerationPrompt || JsonSerializer.Serialize(existing.Episode) != JsonSerializer.Serialize(request.Episode))
+                    throw new ArgumentException("This submission was already accepted with different text or voice settings. Open its library item before creating a new narration.");
                 return existing.Id;
             }
             var o = request.Options;
@@ -201,6 +218,18 @@ public sealed class WebRuntime(IConfiguration configuration, IHttpClientFactory 
             var same = request.Destination == WebSettings.Destination;
             var updated = new WebSettings(request.Destination, request.AutoPublish, same ? WebSettings.FolderName : "", same ? WebSettings.FolderUrl : "");
             await Workspace.AtomicWriteAsync(ConfigPath, JsonSerializer.Serialize(updated)); WebSettings = updated;
+        }
+        finally { gate.Release(); }
+    }
+    public async Task RepairProviderAsync(string engine, CancellationToken ct)
+    {
+        if (SpeechProviders.IsHosted(engine)) throw new ArgumentException("Hosted providers use Save & check connection.");
+        await gate.WaitAsync(ct);
+        try
+        {
+            var repaired = await Speech.RepairAsync(engine, ct);
+            Settings.Providers[engine] = repaired.Provider;
+            await Workspace.SaveSettingsAsync(Settings);
         }
         finally { gate.Release(); }
     }
@@ -287,9 +316,16 @@ public sealed class WebRuntime(IConfiguration configuration, IHttpClientFactory 
     public static string SafeError(Exception error) => error is ArgumentException or IOException ? error.Message : "The operation could not finish. Check server logs and configuration, then retry.";
     public override async Task StopAsync(CancellationToken ct)
     {
-        await base.StopAsync(ct);
-        if (Queue is not null) await Queue.DisposeAsync();
-        Speech?.Dispose(); lease?.Dispose();
-        if (configuration.GetValue("CommuteCast:OperationalLogging", true)) AppLogging.Stop();
+        if (Interlocked.Exchange(ref stopped, 1) != 0) return;
+        try { await base.StopAsync(ct); }
+        finally
+        {
+            try { if (Queue is not null) await Queue.DisposeAsync(); }
+            finally
+            {
+                Speech?.Dispose(); lease?.Dispose();
+                if (configuration.GetValue("CommuteCast:OperationalLogging", true)) AppLogging.Stop();
+            }
+        }
     }
 }

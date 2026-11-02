@@ -1,4 +1,4 @@
-param([switch]$Build, [switch]$BuildOnly)
+param([switch]$Build, [switch]$BuildOnly, [string]$Workspace = (Join-Path $env:LOCALAPPDATA 'CommuteCast'))
 $ErrorActionPreference = 'Stop'
 if ($BuildOnly -and -not $Build) { throw 'BuildOnly requires Build.' }
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -32,7 +32,7 @@ if ($BuildOnly) {
 if ($LASTEXITCODE -ne 0) { throw 'Service provisioning failed. Existing services were not removed.' }
 $imageId = (& docker image inspect commutecast-speech:1 --format '{{.Id}}')
 if ($LASTEXITCODE -ne 0) { throw 'Image identity could not be read.' }
-$dataDirectory = Join-Path $env:LOCALAPPDATA 'CommuteCast'
+$dataDirectory = [IO.Path]::GetFullPath($Workspace)
 New-Item -ItemType Directory -Force -Path $dataDirectory | Out-Null
 @{ ImageId = $imageId.Trim(); Contract = 1 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dataDirectory 'provider-lock.local.json')
 Write-Host 'CommuteCast services provisioned. Image identity pinned locally. The app will only start these verified containers.'

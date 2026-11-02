@@ -11,7 +11,8 @@ let state,
 let promptGeneratedFor = null,
   promptVersion = 0,
   cast = [],
-  profile = null;
+  profile = null,
+  localVoiceBase = null;
 let submissionId = crypto.randomUUID().replaceAll("-", "");
 const pageNames = {
   new: "New narration",
@@ -149,7 +150,17 @@ function refreshComposeVoices(selectedVoice, selectedModel) {
     p.capabilities.models.map((id) => ({ id })),
     selectedModel || p.defaultModel,
   );
-  options($("voice"), p.voices, selectedVoice || p.defaultVoice);
+  const desiredVoice = selectedVoice || p.defaultVoice;
+  const voices = p.voices.some((v) => v.id === desiredVoice)
+    ? p.voices
+    : [
+        {
+          id: desiredVoice,
+          displayName: desiredVoice + " · refresh to verify",
+        },
+        ...p.voices,
+      ];
+  options($("voice"), voices, desiredVoice);
   options(
     $("blend"),
     [{ id: "", displayName: "No blend" }, ...p.voices],
@@ -185,15 +196,18 @@ function captureOptions() {
     localVoice: p.capabilities.hosted
       ? null
       : {
+          ...localVoiceBase,
           naturalPhrasing: $("natural").checked,
           blendVoice: p.id === "kokoro" ? $("blend").value : "",
           blendWeight: +$("blend-weight").value,
-          noiseScale: null,
-          noiseWidth: null,
+          noiseScale:
+            p.id === "piper" ? (localVoiceBase?.noiseScale ?? null) : null,
+          noiseWidth:
+            p.id === "piper" ? (localVoiceBase?.noiseWidth ?? null) : null,
           gainDb: +$("gain").value,
-          sentencePauseMs: 220,
-          paragraphPauseMs: 500,
-          turnPauseMs: 140,
+          sentencePauseMs: localVoiceBase?.sentencePauseMs ?? 220,
+          paragraphPauseMs: localVoiceBase?.paragraphPauseMs ?? 500,
+          turnPauseMs: localVoiceBase?.turnPauseMs ?? 140,
           version: 1,
         },
     speech: p.capabilities.hosted
@@ -209,6 +223,7 @@ function captureOptions() {
 function applyOptions(o) {
   if (!o) return;
   profile = o.profile;
+  localVoiceBase = o.localVoice;
   $("engine").value = o.engine;
   refreshComposeVoices(o.voice, o.speech?.model);
   $("speed").value = o.speed;
@@ -287,6 +302,7 @@ function renderCast() {
     const voice = node("select");
     voice.id = voiceId;
     options(voice, provider()?.voices || [], speaker.voice);
+    speaker.voice = voice.value;
     voice.onchange = () => {
       speaker.voice = voice.value;
       scheduleDraft();
@@ -372,7 +388,11 @@ function saveDraft() {
   saveChain = saveChain
     .then(async () => {
       try {
-        const saved = await api("draft", { draft, revision: draftRevision });
+        const saved = await api("draft", {
+          draft,
+          revision: draftRevision,
+          options: captureOptions(),
+        });
         draftRevision = saved.revision;
         $("draft-status").textContent = "Draft saved";
       } catch (error) {
@@ -770,6 +790,7 @@ function settingsProvider() {
   if (!p) return;
   $("provider-model-section").hidden = !p.capabilities.hosted;
   $("provider-key-section").hidden = !p.capabilities.hosted;
+  $("repair-provider").hidden = p.capabilities.hosted;
   options(
     $("settings-model"),
     p.capabilities.models.map((id) => ({ id })),
@@ -986,6 +1007,15 @@ bind("check-provider", async () => {
   refreshComposeVoices($("voice").value, $("model").value);
   toast("Speech connection verified.");
 });
+bind("repair-provider", async () => {
+  $("provider-status").textContent =
+    "Checking installed services and repairing local speech…";
+  await api("providers/repair", { engine: $("settings-provider").value });
+  await refresh();
+  settingsProvider();
+  refreshComposeVoices($("voice").value, $("model").value);
+  toast("Installed speech services checked and repaired.");
+});
 $("close-dialog").onclick = () => {
   $("detail-dialog").close();
   selectedId = null;
@@ -1036,6 +1066,7 @@ window.addEventListener("beforeunload", (event) => {
   try {
     const saved = await api("draft");
     draftRevision = saved.revision;
+    if (saved.options) applyOptions(saved.options);
     loadDraft(saved.draft);
     $("draft-status").textContent = "Draft saved";
     ready = true;

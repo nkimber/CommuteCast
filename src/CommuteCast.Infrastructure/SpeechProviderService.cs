@@ -7,6 +7,7 @@ public interface ISpeechService : IDurableSpeechProvider, IJobSpeechStatusProvid
     IReadOnlyDictionary<string, string> VoiceNames { get; }
     Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct, bool explicitRetry);
     Task<ProviderInfo> CaptureForSubmissionAsync(string engine, ProviderInfo? cached, CancellationToken ct = default);
+    Task<SpeechRepairResult> RepairAsync(string engine, CancellationToken ct = default);
 }
 
 public sealed class SpeechProviderService(Workspace workspace, AppSettings settings, LocalSpeechProvider? localProvider = null, ISpeechSecrets? secrets = null, HttpClient? http = null)
