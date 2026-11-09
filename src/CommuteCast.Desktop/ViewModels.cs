@@ -208,6 +208,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private string page = "library", source = "", draftTitle = "", statusMessage = "Loading your listening library…", serviceStatus = "Checking local speech…";
     private string providerDetails = "", encoderVersion = "Not checked";
     private string operationError = "", speechError = "", speechErrorEngine = "";
+    private (string Heading, string Message)? dismissedAttention;
     private string checkedJobId = "", selectedSpeechResult = "";
     private string setupDetails = "Setup has not been checked. This inspection does not start or change speech services.";
     private string speechRepairDetails = "Start / repair checks both engines, starts stopped services, recreates missing services from the pinned local image and reconciles stale image references from verified idle services. Results explain any remaining setup steps. Saved narrations remain available for explicit resume.";
@@ -301,7 +302,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public JobView? LatestJob => Jobs.MaxBy(j => j.Job.CreatedUtc);
     public bool HasLatestJob => LatestJob is not null;
     private JobView? AttentionJob => Jobs.Where(j => j.NeedsAttention).MaxBy(j => j.Job.CreatedUtc);
-    public bool HasAttention => AttentionMessage.Length > 0;
+    public bool HasAttention => AttentionMessage is { Length: > 0 } message && dismissedAttention != (AttentionHeading, message);
     public string AttentionHeading => queue.PersistenceError.Length > 0 ? "Queue stopped · storage needs attention"
         : operationError.StartsWith("Speech repair needs attention.", StringComparison.Ordinal) ? "Speech repair needs attention"
         : operationError.Length > 0 ? "Action could not finish"
@@ -310,8 +311,18 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         : operationError.Length > 0 ? operationError
         : speechError.Length > 0 ? speechError + "\nCheck speech readiness after setup. Saved narrations remain in Your library; retry the existing item after resolving its error."
         : AttentionJob is { } job ? $"{job.Title}: {job.Error}\n{job.Guidance}" : "";
-    private void RaiseAttention() { Raise(nameof(HasAttention)); Raise(nameof(AttentionHeading)); Raise(nameof(AttentionMessage)); }
-    private void ReportError(string message) { operationError = message; StatusMessage = message; RaiseAttention(); }
+    private void RaiseAttention()
+    {
+        if (dismissedAttention is not null && dismissedAttention != (AttentionHeading, AttentionMessage)) dismissedAttention = null;
+        Raise(nameof(HasAttention)); Raise(nameof(AttentionHeading)); Raise(nameof(AttentionMessage));
+    }
+    private void ReportError(string message)
+    {
+        operationError = message;
+        dismissedAttention = null;
+        StatusMessage = message;
+        RaiseAttention();
+    }
     public string LibrarySummary => !queueLoaded ? "Local records have not loaded. Repair storage or restore a verified backup." : $"{Jobs.Count} narrations · {Jobs.Count(j => j.Job.Stage == JobStage.Queued)} queued · {Jobs.Count(j => j.IsWorking)} working · {Jobs.Count(j => j.NeedsAttention)} need attention · {Jobs.Count(j => j.Job.Stage == JobStage.Exported)} exported locally";
     public string PauseLabel => queue.Paused ? "Resume queue" : "Pause future jobs";
     public bool HasSelectedJob => SelectedJob is not null;
@@ -321,6 +332,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public ICommand NavigateCommand { get; }
     public ICommand ViewLatestCommand { get; }
     public ICommand ViewAttentionCommand { get; }
+    public ICommand DismissAttentionCommand { get; }
     public ICommand CopyDetailsCommand { get; }
     public ICommand CopyCodexCommand { get; }
     public ICommand SelectedReadinessCommand { get; }
@@ -383,6 +395,12 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         CopyCodexCommand = Command(p => { if (p is string text && text.Length > 0) { Clipboard.SetText(text); StatusMessage = "Copied. Paste into your Codex chat."; } return Task.CompletedTask; }, false);
         ViewLatestCommand = Command(_ => { RevealJob(LatestJob); return Task.CompletedTask; }, false);
         ViewAttentionCommand = Command(_ => { RevealJob(AttentionJob ?? LatestJob); return Task.CompletedTask; }, false);
+        DismissAttentionCommand = Command(_ =>
+        {
+            dismissedAttention = (AttentionHeading, AttentionMessage);
+            Raise(nameof(HasAttention));
+            return Task.CompletedTask;
+        }, false);
         CopyDetailsCommand = Command(_ => { RequireSelected(); Clipboard.SetText(SelectedDetailsForCopy); StatusMessage = "Narration details copied, including the error and repair steps. Source text and spoken script are not included."; return Task.CompletedTask; }, false);
         SelectedReadinessCommand = Command(_ => CheckSavedSpeechAsync(RequireSelected()));
         RepairSelectedCommand = Command(async _ =>

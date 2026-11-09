@@ -1,5 +1,9 @@
+using System.Windows;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Documents;
+using System.Windows.Threading;
 using CommuteCast.Core;
 using CommuteCast.Desktop;
 
@@ -72,6 +76,43 @@ public class PlaybackTests
             timeline.Value = 55; Assert.Equal(55, output.Position);
             model.RefreshJobs([new() { Title = "A different item", Stage = JobStage.Cancelled }]);
             Assert.Equal("Playing item", model.Playback.Title); Assert.Equal(55, model.Playback.PositionSeconds);
+        }
+        finally { await model.DisposeAsync(); }
+    });
+
+    [Fact]
+    public Task DismissingPlaybackAlertCollapsesTheCardUntilAnotherFailure() => DesktopHost.Run(async () =>
+    {
+        var model = new MainViewModel(new() { QueuePaused = true }, DesktopHost.Workspace(), playbackOutput: new Output());
+        try
+        {
+            var pending = new Job { Title = "Pending audio", Stage = JobStage.Queued };
+            var failed = new Job { Title = "Earlier narration", Stage = JobStage.Failed, Error = "Saved job error" };
+            model.RefreshJobs([pending, failed]);
+            var window = new MainWindow(model);
+            DesktopHost.Layout(window, 1060, 700);
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            model.SelectedJob = model.Jobs.Single(job => job.Id == pending.Id);
+
+            var banner = (Border)window.FindName("AttentionBanner");
+            var dismiss = (Button)window.FindName("DismissAttentionButton");
+            await DesktopHost.Execute(model.PlayCommand);
+            Assert.Equal("Action could not finish", model.AttentionHeading);
+            Assert.Contains("No validated local audio", model.AttentionMessage);
+            Assert.Equal(Visibility.Visible, banner.Visibility);
+
+            var close = new ButtonAutomationPeer(dismiss);
+            Assert.Equal("Dismiss alert", close.GetName());
+            ((IInvokeProvider)close.GetPattern(PatternInterface.Invoke)).Invoke();
+            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            Assert.Equal(Visibility.Collapsed, banner.Visibility);
+            model.RefreshJobs([pending, failed]);
+            Assert.Equal(Visibility.Collapsed, banner.Visibility);
+            Assert.Equal(pending.Id, model.SelectedJob?.Id);
+            Assert.Equal("Saved job error", model.Jobs.Single(job => job.Id == failed.Id).Job.Error);
+
+            await DesktopHost.Execute(model.PlayCommand);
+            Assert.Equal(Visibility.Visible, banner.Visibility);
         }
         finally { await model.DisposeAsync(); }
     });

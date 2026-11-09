@@ -63,9 +63,15 @@
                 <Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Accent}" BorderThickness="2" CornerRadius="8" Padding="16" Margin="0,0,0,18" Visibility="{Binding HasPowerRecovery, Converter={StaticResource BoolVisible}}">
                     <StackPanel><TextBlock Text="{Binding PowerRecoveryMessage}" TextWrapping="Wrap" AutomationProperties.Name="Laptop wake recovery" AutomationProperties.LiveSetting="Polite"/><Button Content="Recheck wake recovery" Command="{Binding RecheckWakeCommand}" HorizontalAlignment="Left" Margin="0,10,0,0"/></StackPanel>
                 </Border>
-                <Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Error}" BorderThickness="2" CornerRadius="8" Padding="16" Margin="0,0,0,18" Visibility="{Binding HasAttention, Converter={StaticResource BoolVisible}}" AutomationProperties.Name="Attention required" AutomationProperties.LiveSetting="Assertive">
+                <Border x:Name="AttentionBanner" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Error}" BorderThickness="2" CornerRadius="8" Padding="16" Margin="0,0,0,18" Visibility="{Binding HasAttention, Converter={StaticResource BoolVisible}}" AutomationProperties.Name="Attention required" AutomationProperties.LiveSetting="Assertive">
                 <StackPanel>
-                    <TextBlock Text="{Binding AttentionHeading}" Foreground="{DynamicResource Error}" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding AttentionHeading}" Foreground="{DynamicResource Error}" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                        <Button x:Name="DismissAttentionButton" Grid.Column="1" Content="×" Command="{Binding DismissAttentionCommand}"
+                                Width="36" Height="36" Padding="0" Margin="0" VerticalAlignment="Top" FontSize="24"
+                                Foreground="{DynamicResource Error}" ToolTip="Dismiss alert" AutomationProperties.Name="Dismiss alert"/>
+                    </Grid>
                     <ScrollViewer MaxHeight="120" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,8,0,12"><TextBlock x:Name="AttentionMessageText" Text="{Binding AttentionMessage}" TextWrapping="Wrap"/></ScrollViewer>
                     <WrapPanel><Button Content="View saved narrations" Command="{Binding ViewAttentionCommand}"/><Button Content="Start / repair speech services" Command="{Binding RepairSpeechCommand}"/><Button Content="Check speech readiness" Command="{Binding ReadinessCommand}"/><Button Content="Open setup checks" Command="{Binding NavigateCommand}" CommandParameter="settings"/></WrapPanel>
                 </StackPanel>
