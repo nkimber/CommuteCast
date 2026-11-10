@@ -262,7 +262,7 @@ During processing, the library, fixed detail header and latest narration card ke
 
 Completed-segment bars and active processing indicators are green in both themes, including the latest narration card. Errors retain their separate warning color. Windows high-contrast mode uses the system highlight color for progress.
 
-Once an MP3 is created, a folder icon appears at the top-right of its library card. Click it to open File Explorer with that narration's MP3 selected, including completed audio awaiting export. If the file was moved, the existing recorded folder opens with a notice; a missing folder produces an explanatory error.
+Once an MP3 is created, a folder icon appears at the top-right of its library card. Click it to show the narration's MP3 in File Explorer, including completed audio awaiting export. Explorer reuses a window already showing the folder and selects the requested MP3. If the file was moved, the existing recorded folder opens with a notice; a missing folder produces an explanatory error.
 
 Completed library cards also show the total audio length and MP3 file size beneath the submission date. Duration comes from final audio validation, while size is measured from the exported file (or the completed local MP3 awaiting export), using decimal KB/MB/GB. Missing or inaccessible files show an unavailable size without discarding the saved duration. Copy all details includes this information.
 

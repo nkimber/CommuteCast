@@ -3,7 +3,6 @@ using CommuteCast.Infrastructure;
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -183,7 +182,6 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private readonly AppSettings settings;
     private readonly SpeechProviderService provider;
     private readonly ISetupRuntime setupRuntime;
-    private readonly Action<ProcessStartInfo> openFolder;
     private readonly DispatcherTimer progressTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer syncTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(10) };
     private bool checkingSync;
@@ -371,7 +369,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public ICommand MeasureStorageCommand { get; }
     public ICommand CleanCacheCommand { get; }
 
-    public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null, Action<ProcessStartInfo>? openFolder = null, IPlaybackOutput? playbackOutput = null, IPowerEvents? powerEvents = null, IUserNotifications? notifications = null, Action<string>? copyText = null)
+    public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null, IPlaybackOutput? playbackOutput = null, IPowerEvents? powerEvents = null, IUserNotifications? notifications = null, Action<string>? copyText = null)
     {
         settings = saved; narrationPreferences = new(settings); Workspace = workspace ?? new();
         writeClipboard = copyText ?? Clipboard.SetText;
@@ -382,7 +380,6 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         store = new SqliteJobStore(Workspace);
         provider = new(Workspace, settings, speechProvider, speechSecrets); publisher = new(Workspace, store);
         setupRuntime = setupInspection ?? new SetupRuntime(Workspace.Root);
-        this.openFolder = openFolder ?? (info => { Process.Start(info); });
         queue = new(Workspace, store, provider, new(settings), publisher) { Paused = settings.QueuePaused, CacheQuotaMiB = settings.CacheQuotaMiB, ScratchRetentionDays = settings.ScratchRetentionDays, PrivateStorageLimitMiB = settings.PrivateStorageLimitMiB };
         auditions = new(Workspace, provider, queue.InferenceGate, (engine, ct) => provider.ReadyAsync(engine, ct, true));
         queue.Changed += _ => Application.Current.Dispatcher.InvokeAsync(() => RefreshJobs(queue.Snapshot()));
@@ -437,7 +434,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         MoveLaterCommand = Command(_ => queue.MovePendingAsync(RequireSelected().Id, 1, shutdown.Token));
         PlayCommand = Command(async _ => { var job = RequireSelected(); await StopPlaybackAsync(false); var file = Workspace.FinalPath(job); if (!File.Exists(file) || job.FinalHash.Length == 0 || await Infrastructure.Workspace.HashFileAsync(file) != job.FinalHash) throw new IOException("No validated local audio is available for this narration."); Playback.Open(file, job.Title); StatusMessage = "Playing local audio. Pause, seek or skip with the playback controls."; });
         StopCommand = Command(_ => StopPlaybackAsync(true));
-        OpenFolderCommand = Command(parameter =>
+        OpenFolderCommand = Command(async parameter =>
         {
             var job = parameter is JobView row
                 ? queue.Snapshot().SingleOrDefault(j => j.Id == row.Id) ?? throw new ArgumentException("This narration no longer exists. Refresh the library.")
@@ -447,10 +444,9 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
                 if (!new JobView(job, Workspace).CanOpenFolder) throw new ArgumentException("This narration has no completed MP3 to locate.");
                 SelectedJob = Jobs.FirstOrDefault(j => j.Id == job.Id);
             }
-            var location = AudioFolderNavigation.ForJob(job, Workspace); this.openFolder(location);
-            StatusMessage = !location.UseShellExecute ? "The MP3 is selected in its folder."
+            var selectedFile = await AudioFolderNavigation.ShowAsync(job, Workspace);
+            StatusMessage = selectedFile ? "The MP3 is selected in its folder."
                 : job.ExportCommitted || job.FinalHash.Length > 0 ? "Folder opened. The recorded MP3 is missing or moved." : "Output folder opened.";
-            return Task.CompletedTask;
         });
         InspectCommand = Command(_ => { var job = RequireSelected(); ShowPreparation(job.Prepared, job.Source, job.Settings, job.Episode); return Task.CompletedTask; });
         RetryCommand = Command(_ => ResumeAsync(RequireSelected()));

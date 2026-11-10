@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using CommuteCast.Core;
 using CommuteCast.Infrastructure;
 
@@ -7,7 +8,9 @@ namespace CommuteCast.Desktop;
 
 public static class AudioFolderNavigation
 {
-    public static ProcessStartInfo ForJob(Job job, Workspace workspace)
+    public static Task<bool> ShowAsync(Job job, Workspace workspace) => Task.Run(() => Show(job, workspace));
+
+    private static bool Show(Job job, Workspace workspace)
     {
         var generated = !job.ExportCommitted && job.FinalHash.Length > 0;
         var folder = generated ? workspace.JobDirectory(job.Id) : job.Destination;
@@ -20,8 +23,44 @@ public static class AudioFolderNavigation
             file = Path.Combine(folder, job.ExportName);
         }
         else if (generated) file = workspace.FinalPath(job);
-        return file is not null && File.Exists(file)
-            ? new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe")) { UseShellExecute = false, Arguments = "/select,\"" + Path.GetFullPath(file) + "\"" }
-            : new ProcessStartInfo(Path.GetFullPath(folder)) { UseShellExecute = true };
+        if (file is not null && File.Exists(file))
+        {
+            SelectFile(Path.GetFullPath(file));
+            return true;
+        }
+
+        using var process = Process.Start(new ProcessStartInfo(Path.GetFullPath(folder)) { UseShellExecute = true });
+        return false;
     }
+
+    private static void SelectFile(string path)
+    {
+        const uint coinitMultithreaded = 0;
+        Marshal.ThrowExceptionForHR(CoInitializeEx(0, coinitMultithreaded));
+        nint item = 0;
+        try
+        {
+            var result = SHParseDisplayName(path, 0, out item, 0, 0);
+            // A single absolute item ID lets Explorer locate the folder and reuse its view.
+            if (result >= 0) result = SHOpenFolderAndSelectItems(item, 0, 0, 0);
+            if (result < 0) throw new IOException("Windows could not show the recorded MP3 in File Explorer.", Marshal.GetExceptionForHR(result));
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(item);
+            CoUninitialize();
+        }
+    }
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    private static extern int CoInitializeEx(nint reserved, uint flags);
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    private static extern void CoUninitialize();
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int SHParseDisplayName(string path, nint bindingContext, out nint item, uint attributesIn, nint attributesOut);
+
+    [DllImport("shell32.dll", ExactSpelling = true)]
+    private static extern int SHOpenFolderAndSelectItems(nint folderOrItem, uint itemCount, nint children, uint flags);
 }
