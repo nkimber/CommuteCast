@@ -99,7 +99,9 @@ The first listening comparison reused three verified October recordings of the s
 | B | Piper Lessac, natural phrasing and variation set to 0.55 sound / 0.65 timing | 22.06 s | −20.00 |
 | C | Kokoro Heart, natural phrasing and a single voice | 26.05 s | −20.00 |
 
-A and B compare one recorded take of each Piper recipe. Repeat both if a difference sounds promising, since Piper varies across generations. A and C compare complete local setups and can differ in pronunciation and native timing. Listen for the lift in the two questions, stress on the main contrast, and the pause before the final paragraph. The files passed hash checks against the original comparison reports, full decoding and format, duration and loudness checks. A listener preference is still open.
+A and B compare one recorded take of each Piper recipe. Repeat both if a difference sounds promising, since Piper varies across generations. A and C compare complete local setups and can differ in pronunciation and native timing. Listen for the lift in the two questions, stress on the main contrast, and the pause before the final paragraph. The files passed hash checks against the original comparison reports, full decoding and format, duration and loudness checks.
+
+The user strongly preferred **clip C, Kokoro Heart (`af_heart`) at 1.0× with natural phrasing and a single voice**, over both Piper samples. Use this recipe as the reference for the next 5–10 minute commute narration and any future expressive-voice comparisons. Preference over a full episode remains open.
 
 For direct delivery control, the first hosted comparison is **Gemini 3.8 Flash TTS** with one voice and the same prepared text. Render once with blank delivery direction and once with a specific direction. Use **Narrator delivery instructions** under **Settings → Speech providers** on desktop or **Delivery direction** in the web studio. Keep Gemini's numeric pace at 1.0. The provider receives the passage and auditions may be billed. [Gemini speech generation](https://aistudio.google.com/docs/speech-generation#style-vs-inline-tags)
 
