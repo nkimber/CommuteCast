@@ -87,6 +87,28 @@ October 10, 2026 trials used the pinned ONNX weights, CPU services limited to tw
 
 Kokoro's natural and natural-repeat MP3s decoded to the same PCM SHA256 (`4b80b6f10e90f37031fef823a5d9a23cdbdb979e233f796d5afb933a05282e01`). Piper's repeats were 22.97 and 23.04 seconds, reflecting stochastic synthesis. Timing was measured on a machine also running regression tests and other services; the eight-turn real-time factors were 1.73 for Kokoro and 0.39 for Piper. This does not establish general throughput or identical delivery across arbitrary texts. Listening approval remains pending.
 
+## Trial for emphasis and emotion
+
+The November 13, 2026 desktop defaults on the development machine were Piper Lessac at 1.0×, with natural phrasing enabled, 220 ms sentence and 500 ms paragraph minimums at generated joins, and model-default variation. Piper and Kokoro take their cues from the spoken text and offer pace and voice controls. For a draft that reads flat, try a shorter setup sentence, a genuine question or a clearer contrast, then audition the revision with the same voice and pace.
+
+The first listening comparison reused three verified October recordings of the same 67-word passage at 1.0×. Each was decoded to mono 24 kHz PCM WAV and adjusted with static gain to a measured −20 LUFS. The local WAVs are in the ignored `artifacts/voice-listening-comparison-20261113` folder.
+
+| Clip | Setup | Duration | Measured LUFS |
+| --- | --- | ---: | ---: |
+| A | Piper Lessac, natural phrasing and model-default variation | 22.97 s | −20.01 |
+| B | Piper Lessac, natural phrasing and variation set to 0.55 sound / 0.65 timing | 22.06 s | −20.00 |
+| C | Kokoro Heart, natural phrasing and a single voice | 26.05 s | −20.00 |
+
+A and B compare one recorded take of each Piper recipe. Repeat both if a difference sounds promising, since Piper varies across generations. A and C compare complete local setups and can differ in pronunciation and native timing. Listen for the lift in the two questions, stress on the main contrast, and the pause before the final paragraph. The files passed hash checks against the original comparison reports, full decoding and format, duration and loudness checks. A listener preference is still open.
+
+For direct delivery control, the first hosted comparison is **Gemini 3.8 Flash TTS** with one voice and the same prepared text. Render once with blank delivery direction and once with a specific direction. Use **Narrator delivery instructions** under **Settings → Speech providers** on desktop or **Delivery direction** in the web studio. Keep Gemini's numeric pace at 1.0. The provider receives the passage and auditions may be billed. [Gemini speech generation](https://aistudio.google.com/docs/speech-generation#style-vs-inline-tags)
+
+> Read as if you're explaining this to one person. Keep the explanation warm and measured. Let the questions sound genuinely curious. Stress the phrase that changes the meaning, then leave a short beat before the takeaway.
+
+Use a short excerpt for the first comparison, followed by a 5–10 minute episode for any promising recipe. Match listening volume and check for spoken-text fidelity, word stress, pacing, audible joins and fatigue. Hosted single narration currently renders independent blocks up to 450 characters. If the short audition is expressive and the full episode repeatedly resets its cadence, compare longer paragraph-aligned blocks and silence-aware joins on the same provider and voice. If offline delivery is required, the existing Qwen 1.7B CustomVoice harness below is the direct instruction-control candidate.
+
+Live hosted synthesis remains untested in this trial.
+
 ## Optional expressive-model experiments
 
 `tools/CommuteCast.VoiceQuality/compare_expressive.py` is a separate CPU experiment, outside the application provider list. It requires predownloaded local models, uses offline Hugging Face loading, fixes speaker/reference and generation settings, and writes neutral, expressive and expressive-repeat float WAVs plus hashes, load/synthesis timing, package versions and model inventory. The fixed seed initializes the run once; repeats intentionally let sampling continue to expose variation. It does not add dependencies or automatic downloads to CommuteCast.
