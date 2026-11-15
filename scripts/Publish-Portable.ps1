@@ -19,6 +19,7 @@ Copy-Item -LiteralPath (Join-Path $launcherOutput 'CommuteCast.Launcher.exe') -D
 New-Item -ItemType Directory -Force -Path (Join-Path $release 'scripts'), (Join-Path $release 'services'), (Join-Path $release 'documents') | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md'), (Join-Path $projectRoot 'THIRD-PARTY-NOTICES.md') -Destination $release
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Start-CommuteCast.ps1'), (Join-Path $projectRoot 'scripts\Provision-Speech.ps1') -Destination (Join-Path $release 'scripts')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Register-CommuteCast-Worker.ps1') -Destination (Join-Path $release 'scripts')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'services\compose.yaml') -Destination (Join-Path $release 'services')
 $speechPackage = Join-Path $release 'services\speech'
 New-Item -ItemType Directory -Force -Path $speechPackage | Out-Null

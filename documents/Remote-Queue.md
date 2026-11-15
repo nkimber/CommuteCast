@@ -11,7 +11,7 @@ CommuteCast exchanges private narration requests, status, and finished MP3s thro
 
 The worker uses the existing serial local queue and saves the actual speech settings before rendering. On restart it reuses saved, validated chunks. Finished audio is kept locally, so interrupted delivery can retry with the same output name. After fixing a missing voice, open the affected narration in **Remote queue** on the worker and choose **Retry on this worker**. The same job ID and source are reused. A hosted request interrupted after it may have been billed follows the existing explicit retry policy. A job assigned to a missing machine stays assigned until that worker returns.
 
-On Windows, test first with CommuteCast and OneDrive running under the signed-in worker account. A Windows Task Scheduler task can launch the app at sign-in. If the shared folder appears after CommuteCast starts, the app retries opening it. Recovery before sign-in depends on the host setup, including availability of OneDrive and any local speech runtime.
+On Windows, test first with CommuteCast and OneDrive running under the signed-in worker account. From the extracted portable package, run `.\scripts\Register-CommuteCast-Worker.ps1 -Executable .\app\CommuteCast.Desktop.exe` under that account to launch CommuteCast at sign-in. For an installed copy, pass its stable `CommuteCast.exe` path instead. Add `-WhatIf` to preview the change or run the script with `-Remove` to remove the sign-in task. If the shared folder appears after CommuteCast starts, the app retries opening it. Recovery before sign-in depends on the host setup, including availability of OneDrive and any local speech runtime.
 
 ## Send from Android
 
