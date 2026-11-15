@@ -1,4 +1,5 @@
 using CommuteCast.Core;
+using System.Globalization;
 using System.Text;
 using System.Security.Cryptography;
 
@@ -30,8 +31,21 @@ public sealed class ExportPublisher(Workspace workspace, IJobStore store, IExpor
         var length = Math.Min(title.Length, 70);
         if (length < title.Length && char.IsHighSurrogate(title[length - 1]) && char.IsLowSurrogate(title[length])) length--;
         title = title[..length].TrimEnd(' ', '.');
-        var timestamp = job.CreatedUtc.UtcDateTime.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+        var timestamp = job.CreatedUtc.UtcDateTime.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
         return $"{timestamp}-{title}-{job.Id}.mp3";
+    }
+
+    public static string DisplayTitle(string filename)
+    {
+        var stem = Path.GetFileNameWithoutExtension(filename);
+        const int timestampLength = 15; // yyyyMMdd-HHmmss
+        const int identityLength = 32; // GUID in N format
+        var titleEnd = stem.Length - identityLength - 1;
+        if (titleEnd <= timestampLength + 1 || stem[timestampLength] != '-' || stem[titleEnd] != '-' ||
+            !DateTime.TryParseExact(stem.AsSpan(0, timestampLength), "yyyyMMdd-HHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out _) ||
+            !Guid.TryParseExact(stem.AsSpan(titleEnd + 1), "N", out _))
+            return stem;
+        return stem[(timestampLength + 1)..titleEnd];
     }
     public async Task TestDestinationAsync(string destination, CancellationToken ct = default)
     {

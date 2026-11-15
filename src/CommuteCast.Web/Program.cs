@@ -34,7 +34,10 @@ app.Use(async (context, next) =>
 {
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["Referrer-Policy"] = "no-referrer";
-    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; media-src 'none'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+    var mediaSources = context.Request.Path.Equals("/listen", StringComparison.OrdinalIgnoreCase) ||
+        context.Request.Path.Equals("/listen/", StringComparison.OrdinalIgnoreCase)
+        ? "'self' " + M365Publisher.ListeningMediaSources : "'none'";
+    context.Response.Headers["Content-Security-Policy"] = $"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; media-src {mediaSources}; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
     context.Response.Headers.CacheControl = "no-store";
     await next();
 });

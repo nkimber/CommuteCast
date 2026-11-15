@@ -6,7 +6,7 @@ Run an ASP.NET Core .NET 10 application on the Windows micro PC, reusing Core an
 
 Expose the management application at `commutecast.kimber.dev` through Cloudflare Tunnel and Access, restricted to the owner's verified identity. The application must verify Access JWTs at its boundary and protect state-changing browser requests against CSRF. Local setup uses loopback access. Do not expose audio, workspace directories, credentials or source-bearing diagnostics as static files.
 
-The backend generates and validates MP3s, retains them locally, and publishes finished files to a configured OneDrive/SharePoint folder through Microsoft Graph. The destination has a **read-only Anyone link**, explicitly requested by the owner. M365 owns playback and downloads. CommuteCast's web application provides neither MP3 streaming nor MP3 download routes.
+The backend generates and validates MP3s, retains them locally, and publishes finished files to a configured OneDrive/SharePoint folder through Microsoft Graph. The destination has a **read-only Anyone link**, explicitly requested by the owner. Microsoft 365 serves the MP3 bytes. The authenticated listener receives catalog metadata and redirects to short-lived playback URLs for the configured folder.
 
 Generation and publishing have independent durable states. A publishing retry reuses the validated local MP3, never calls TTS again, and never overwrites an unrelated remote file. Publication captures its destination so later configuration edits do not silently redirect existing work. Cloud confirmation is required before showing Published.
 
@@ -45,6 +45,20 @@ Library deletion currently removes the local narration and its local audio; any 
 5. Enable automatic publishing. Generate a short narration, wait for **Published**, then open the folder from a signed-out browser and verify the finished MP3 can be accessed with its link. This is live acceptance; synthetic tests cannot establish tenant permissions or external access.
 
 The backend uploads in 3.125 MiB fragments, including files larger than the simple-upload limit. An interrupted session is recovered by checking the unique final filename and bytes before another upload; partial sessions are not treated as published. A remote conflict is preserved for inspection. Retries never authorize another TTS request. [Graph upload sessions](https://learn.microsoft.com/en-us/graph/api/driveitem-createuploadsession?view=graph-rest-1.0).
+
+## Listen on Android
+
+In Studio settings, configure the Microsoft 365 folder that directly contains your finished MP3s. Use the ID of that folder itself, such as **Ready to Listen** when it lives inside a shared queue folder. **Listen** includes existing MP3s in that folder and picks up new ones when you return to the screen or tap **Refresh**. A folder used only for listening can have automatic publishing turned off. The web host still needs its application credential and read access to the folder.
+
+On Android, sign in to your CommuteCast HTTPS address in Chrome and open **Listen** (`/listen`). In the Chrome menu, use **Install app** or **Add to Home screen**. Open the resulting CommuteCast icon to go straight to the listener. [Chrome installation](https://developer.chrome.com/docs/modern-web-guidance/guides/pwa/install-web-app).
+
+Use **Resume** at the top to restart the most recently played unfinished episode 20 seconds before its saved position, with a minimum start time of zero. Each episode keeps its own bookmark. Listening through the end marks it finished. **Show finished** reveals those episodes and lets you replay them. Bookmarks are saved in the current browser profile, including when the player is opened from its installed icon. A new browser profile starts with an empty listening history. Playback uses an internet connection, with media controls exposed through the browser’s Media Session API. [Media controls](https://web.dev/articles/media-session).
+
+The listener’s playback route checks the signed-in owner, then confirms the requested MP3 is still in the configured drive and folder before issuing a redirect. Microsoft 365 handles range requests directly. The catalog and playback responses are marked `no-store`. Local workspace and export directories stay outside the web root. [Microsoft Graph media delivery](https://learn.microsoft.com/en-us/graph/api/driveitem-get-content?view=graph-rest-1.0).
+
+To accept the actual commute setup, install the icon on the target phone and play an MP3 from the real folder over mobile data. Lock the screen, pause using the car’s Bluetooth control, reopen CommuteCast from its icon, and check the saved position and rewind. Confirm the episode moves to **Finished** at the end. These checks require the deployed HTTPS host, the configured Microsoft 365 destination and the target phone and car.
+
+Listener validation on Windows uses a self-contained web build and Chromium with synthetic MP3s. It exercises refresh after a failed catalog request, actual audio through a byte-range redirect, periodic and paused checkpoints, per-episode bookmarks across page close and reopen, 20-second rewind, Media Session handlers, and the finished filter. The layout was checked at 390 and 320 CSS pixels. Chromium reported zero installability errors in a persistent browser profile with mobile emulation. Live tenant playback and physical Android and Bluetooth acceptance remain pending.
 
 ## Cloudflare and kimber.dev
 

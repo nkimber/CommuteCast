@@ -42,6 +42,26 @@ public sealed class M365ListeningTests
         await Assert.ThrowsAsync<IOException>(() => new M365Publisher(http, _ => "secret").ListAsync(Destination, default));
     }
 
+    [Fact]
+    public async Task FollowsNextLinkWhenGraphUsesUnescapedDriveAndFolderIds()
+    {
+        const string path = "/v1.0/drives/drive!1/items/folder!2/children";
+        using var http = Client(request =>
+        {
+            Assert.Equal(path, Uri.UnescapeDataString(request.RequestUri!.AbsolutePath));
+            return request.RequestUri.Query.Contains("skiptoken")
+                ? Json(new { value = new[] { Item("old", "Older.mp3") } })
+                : Json(new Dictionary<string, object>
+                {
+                    ["value"] = Array.Empty<object>(),
+                    ["@odata.nextLink"] = "https://graph.microsoft.com" + path + "?$skiptoken=next"
+                });
+        });
+        var items = await new M365Publisher(http, _ => "secret").ListAsync(
+            Destination with { DriveId = "drive!1", FolderId = "folder!2" }, default);
+        Assert.Equal("old", Assert.Single(items).Id);
+    }
+
     [Theory]
     [InlineData("drive", "folder", "item", true)]
     [InlineData("other", "folder", "item", false)]

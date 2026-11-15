@@ -1,0 +1,69 @@
+@page "/listen"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#153c34" />
+    <meta name="description" content="Pick up where you left off with your CommuteCast listening library." />
+    <title>Listen · CommuteCast</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/listen.webmanifest" crossorigin="use-credentials" />
+    <link rel="stylesheet" href="/css/listen.css" asp-append-version="true" />
+    <script src="/js/listen.js" asp-append-version="true" defer></script>
+</head>
+<body>
+    <a href="#main" class="skip">Skip to listening library</a>
+    <header class="masthead">
+        <div class="frame masthead-inner">
+            <a class="brand" href="/listen" aria-label="CommuteCast listening">
+                <img src="/icon.svg" width="42" height="42" alt="" />
+                <span>CommuteCast</span>
+            </a>
+            <a class="studio-link" href="/">Studio <span aria-hidden="true">↗</span></a>
+        </div>
+    </header>
+    <main class="frame" id="main">
+        <section class="player" aria-labelledby="continue-heading">
+            <div class="player-heading">
+                <h1 id="continue-heading">Continue listening</h1>
+                <img class="player-icon" src="/icon.svg" width="54" height="54" alt="" />
+            </div>
+            <p class="player-empty" id="player-empty">Choose an episode from your library to get started.</p>
+            <div id="player-content" hidden>
+                <h2 class="episode-title" id="player-title"></h2>
+                <div class="timeline">
+                    <input type="range" min="0" max="1" step="1" value="0" id="seek" aria-label="Playback position" disabled />
+                    <div class="timeline-labels">
+                        <span id="position">0:00</span>
+                        <span id="remaining"></span>
+                    </div>
+                </div>
+                <div class="player-actions">
+                    <button type="button" class="primary" id="play-toggle">Resume</button>
+                    <button type="button" class="rewind" id="rewind" aria-label="Back 20 seconds" disabled>↶ 20 sec</button>
+                </div>
+            </div>
+            <p class="player-notice" id="player-notice" role="status"></p>
+            <audio id="audio" preload="none"></audio>
+        </section>
+
+        <section class="library" aria-labelledby="library-heading">
+            <div class="library-heading">
+                <h2 id="library-heading">Library</h2>
+                <button type="button" class="secondary" id="refresh">Refresh</button>
+            </div>
+            <label class="finished-filter"><input type="checkbox" id="show-finished" /> Show finished</label>
+            <p id="storage-warning" class="library-status" role="status" hidden>This browser couldn’t save your position for next time.</p>
+            <p id="library-status" class="library-status" role="status">Loading your library…</p>
+            <a class="setup-link" id="setup-link" href="/#settings" hidden>Set up the Microsoft 365 folder in Studio</a>
+            <div id="episodes"></div>
+        </section>
+
+        <details class="install">
+            <summary>Add to home screen</summary>
+            <p>Open this page in Chrome on Android. In the Chrome menu, choose <strong>Install app</strong> or <strong>Add to Home screen</strong>.</p>
+        </details>
+    </main>
+</body>
+</html>

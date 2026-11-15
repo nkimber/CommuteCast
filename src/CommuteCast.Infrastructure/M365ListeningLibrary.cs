@@ -20,13 +20,15 @@ public sealed partial class M365Publisher
     {
         var token = await TokenAsync(destination, ct);
         var children = new Uri(Item(destination) + "/children");
+        var folderPath = Uri.UnescapeDataString(children.AbsolutePath);
         string? next = children + "?$select=" + ListeningFields;
         var pages = new HashSet<string>(StringComparer.Ordinal);
         var items = new Dictionary<string, M365ListeningItem>(StringComparer.Ordinal);
         while (next is not null)
         {
             if (!Uri.TryCreate(next, UriKind.Absolute, out var pageUri) ||
-                pageUri.GetLeftPart(UriPartial.Path) != children.AbsoluteUri ||
+                pageUri.Scheme != Uri.UriSchemeHttps || pageUri.Host != children.Host || !pageUri.IsDefaultPort ||
+                Uri.UnescapeDataString(pageUri.AbsolutePath) != folderPath ||
                 pageUri.UserInfo.Length != 0 || pageUri.Fragment.Length != 0 ||
                 !pages.Add(pageUri.AbsoluteUri))
                 throw new IOException("Microsoft 365 returned an invalid listening library page.");

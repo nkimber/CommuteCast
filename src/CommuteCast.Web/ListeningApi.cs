@@ -19,7 +19,7 @@ public static class ListeningApi
             {
                 var known = published.GetValueOrDefault(item.Id);
                 return new ListeningEpisode(ItemKey(destination, item.Id), item.Id,
-                    known?.Title ?? Path.GetFileNameWithoutExtension(item.Name), known?.Duration ?? item.DurationSeconds);
+                    known?.Title ?? ExportPublisher.DisplayTitle(item.Name), known?.Duration ?? item.DurationSeconds);
             }).ToArray());
         });
         api.MapGet("/media/{id}/{key}", async (string id, string key, WebRuntime runtime, IM365ListeningLibrary library, CancellationToken ct) =>

@@ -37,6 +37,30 @@ public sealed class WebApplicationTests
     }
 
     [Fact]
+    public async Task ListenerHasAnInstallableEntryPointAndScopedMediaPolicy()
+    {
+        await using var host = new StudioFactory(); using var client = host.CreateClient();
+        using var page = await client.GetAsync("/listen");
+        page.EnsureSuccessStatusCode();
+        Assert.Contains("Continue listening", await page.Content.ReadAsStringAsync());
+        Assert.Contains("media-src 'self' https://*.sharepoint.com", page.Headers.GetValues("Content-Security-Policy").Single());
+        Assert.True(page.Headers.CacheControl!.NoStore);
+
+        using var manifest = await client.GetAsync("/listen.webmanifest");
+        manifest.EnsureSuccessStatusCode();
+        Assert.Equal("application/manifest+json", manifest.Content.Headers.ContentType!.MediaType);
+        var data = await manifest.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("/listen", data.GetProperty("start_url").GetString());
+        Assert.Equal("standalone", data.GetProperty("display").GetString());
+        foreach (var icon in data.GetProperty("icons").EnumerateArray())
+        {
+            using var image = await client.GetAsync(icon.GetProperty("src").GetString());
+            image.EnsureSuccessStatusCode();
+            Assert.Equal("image/png", image.Content.Headers.ContentType!.MediaType);
+        }
+    }
+
+    [Fact]
     public async Task LocalModeRejectsRemoteAddressesAndPublicHostEvenWithForgedForwardingHeaders()
     {
         await using var host = new StudioFactory(remoteAddress: IPAddress.Parse("192.0.2.5")); using var client = host.CreateClient();
@@ -348,7 +372,7 @@ public sealed class WebApplicationTests
     private sealed class SyntheticListening : IM365ListeningLibrary
     {
         public Task<IReadOnlyList<M365ListeningItem>> ListAsync(M365Destination destination, CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<M365ListeningItem>>([new("item", "An older commute.mp3", DateTimeOffset.UnixEpoch, 120)]);
+            Task.FromResult<IReadOnlyList<M365ListeningItem>>([new("item", "20261110-170000-An older commute-f288881460af4024888bd4f5228a5126.mp3", DateTimeOffset.UnixEpoch, 120)]);
 
         public Task<Uri?> PlaybackUriAsync(M365Destination destination, string itemId, CancellationToken ct) =>
             Task.FromResult(itemId == "item" ? new Uri("https://tenant.sharepoint.com/audio") : null);

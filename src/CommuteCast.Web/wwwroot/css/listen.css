@@ -1,0 +1,71 @@
+:root {
+    color-scheme: light;
+    font-family: Inter, "Segoe UI", system-ui, sans-serif;
+    color: #1d302a;
+    background: #f3f3e9;
+    --green: #153c34;
+    --lime: #d4ed8b;
+    --muted: #54645b;
+    --border: #d8ded2;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+[hidden] { display: none !important; }
+a { color: var(--green); }
+button, input { font: inherit; }
+button, summary, input[type="checkbox"] { cursor: pointer; }
+button:disabled { cursor: default; opacity: .55; }
+:focus-visible { outline: 3px solid #658444; outline-offset: 4px; }
+.player :focus-visible { outline-color: var(--lime); }
+.skip { position: absolute; top: -100px; padding: 12px; background: white; }
+.skip:focus { top: 8px; z-index: 1; }
+.frame { width: min(100% - 32px, 660px); margin-inline: auto; }
+
+.masthead { border-bottom: 1px solid var(--border); background: #fafaf4; }
+.masthead-inner { display: flex; align-items: center; justify-content: space-between; min-height: 72px; gap: 12px; }
+.brand, .studio-link { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
+.brand { font-size: 1.15rem; font-weight: 750; letter-spacing: -.025em; }
+.studio-link { font-size: .9rem; font-weight: 650; min-height: 44px; }
+.studio-link:hover { text-decoration: underline; }
+main { padding-block: 22px 36px; }
+
+.player { border-radius: 22px; background: var(--green); color: #fff; padding: clamp(18px, 5vw, 30px); }
+.player-heading { display: flex; justify-content: space-between; align-items: center; gap: 15px; }
+.player-heading h1 { margin: 0; color: var(--lime); font-size: 1.05rem; font-weight: 650; }
+.player-icon { border: 1px solid #507167; border-radius: 17px; }
+.player-empty { margin: 16px 0 4px; color: #deebe4; font-size: 1.1rem; line-height: 1.5; }
+.episode-title { font-size: clamp(1.45rem, 5vw, 2.25rem); line-height: 1.13; letter-spacing: -.035em; margin: 6px 0 12px; overflow-wrap: anywhere; }
+.timeline input { display: block; width: 100%; height: 36px; margin: 0; accent-color: var(--lime); }
+.timeline-labels { display: flex; justify-content: space-between; gap: 8px; font-size: .86rem; color: #deebe4; font-variant-numeric: tabular-nums; }
+.player-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.primary, .rewind, .secondary { border-radius: 12px; font-weight: 700; padding: 8px 14px; }
+.primary { min-height: 56px; flex: 1; background: var(--lime); color: #1d302a; border: 1px solid var(--lime); }
+.primary:hover { background: #e1f3af; }
+.rewind { min-height: 56px; border: 1px solid #75938a; color: #fff; background: transparent; }
+.rewind:hover:not(:disabled) { background: #284f46; }
+.player-notice { font-size: .88rem; color: #f7e5ae; line-height: 1.45; margin: 12px 0 0; }
+.player-notice:empty { display: none; }
+
+.library { margin-top: 26px; }
+.library-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.library-heading h2 { margin: 0; font-size: 1.65rem; letter-spacing: -.035em; }
+.secondary { min-height: 44px; border: 1px solid #bfcbbb; background: #fafaf4; color: var(--green); }
+.secondary:hover { background: #e9eedf; }
+.finished-filter { display: inline-flex; align-items: center; gap: 9px; min-height: 44px; color: var(--muted); font-size: .94rem; cursor: pointer; }
+.finished-filter input { width: 19px; height: 19px; margin: 0; accent-color: var(--green); }
+.library-status { margin-block: 8px; color: var(--muted); line-height: 1.5; }
+.library-status:empty { display: none; }
+.setup-link { display: inline-block; padding-block: 10px; }
+.episode-group { margin-block: 12px 19px; }
+.episode-group h3 { margin: 0 0 7px; color: var(--muted); font-size: .86rem; font-weight: 700; }
+.episode-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 7px; }
+.episode-row { background: #fafaf4; border: 1px solid var(--border); border-radius: 13px; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 11px 10px 14px; }
+.episode-row strong { display: block; line-height: 1.3; overflow-wrap: anywhere; }
+.episode-row small { display: block; margin-top: 4px; color: var(--muted); font-size: .85rem; }
+.episode-row button { flex-shrink: 0; }
+
+.install { color: var(--muted); font-size: .9rem; border-top: 1px solid var(--border); margin-top: 23px; }
+.install summary { font-weight: 650; padding-block: 13px; width: fit-content; }
+.install p { margin: 0; max-width: 450px; line-height: 1.5; }
+@media (display-mode: standalone) { .install { display: none; } }

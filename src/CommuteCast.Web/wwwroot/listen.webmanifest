@@ -1,0 +1,15 @@
+{
+  "id": "/listen",
+  "name": "CommuteCast Listening",
+  "short_name": "CommuteCast",
+  "description": "Resume listening and browse your CommuteCast MP3s.",
+  "start_url": "/listen",
+  "scope": "/listen",
+  "display": "standalone",
+  "background_color": "#f3f3e9",
+  "theme_color": "#153c34",
+  "icons": [
+    { "src": "/listen-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/listen-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
