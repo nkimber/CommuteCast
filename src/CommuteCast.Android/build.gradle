@@ -1,0 +1,31 @@
+plugins {
+    id 'com.android.application' version '9.2.1'
+}
+
+android {
+    namespace = 'dev.kimber.commutecast.listener'
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = 'dev.kimber.commutecast.listener'
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 1
+        versionName = '0.1.0'
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.media3:media3-exoplayer:1.9.4'
+    implementation 'androidx.media3:media3-session:1.9.4'
+    implementation 'com.microsoft.identity.client:msal:8.6.0'
+    compileOnly 'androidx.annotation:annotation:1.8.1'
+    compileOnly 'com.google.j2objc:j2objc-annotations:3.0.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20250517'
+}

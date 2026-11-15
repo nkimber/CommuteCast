@@ -1,0 +1,9 @@
+<resources>
+    <style name="ListenerThemeBase" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:colorAccent">#153C34</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowBackground">#F3F3E9</item>
+    </style>
+    <style name="ListenerTheme" parent="ListenerThemeBase" />
+</resources>

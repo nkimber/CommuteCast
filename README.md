@@ -8,6 +8,8 @@ The **web studio** runs on a Windows micro PC with a responsive narration editor
 
 Open `http://127.0.0.1:5188`. The web studio uses a separate `%LOCALAPPDATA%\CommuteCast-Web` workspace by default. Existing desktop narration data remains in its original workspace.
 
+The native **Android listener** connects directly to your OneDrive MP3 folder and keeps listening progress on the phone. See [CommuteCast for Android](documents/Android-Listener.md) for installation, Microsoft sign-in and the in-car playback check.
+
 A native Windows WPF utility that turns pasted text into a single MP3 using local or hosted speech. Source, preparation, queue, chunks, and diagnostics are saved under `%LOCALAPPDATA%\CommuteCast`. Only a completed, validated MP3 is published to your chosen local folder. OneDrive handles synchronization separately; the application reports **cloud upload unknown**.
 
 The Windows app also supports sending narrations to another CommuteCast PC through a shared OneDrive folder. See [Remote narration through OneDrive](documents/Remote-Queue.md) for worker setup, status, voice fallback, and restart checks.

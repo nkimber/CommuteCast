@@ -19,3 +19,11 @@ provider-lock.local.json
 *.jsonl
 *.log
 .playwright-cli/
+
+# Android build outputs and workstation configuration
+/src/CommuteCast.Android/.gradle/
+/src/CommuteCast.Android/.idea/
+/src/CommuteCast.Android/build/
+/src/CommuteCast.Android/local.properties
+*.jks
+*.keystore
