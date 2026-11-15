@@ -42,9 +42,37 @@ public sealed class WebApplicationTests
         await using var host = new StudioFactory(remoteAddress: IPAddress.Parse("192.0.2.5")); using var client = host.CreateClient();
         client.DefaultRequestHeaders.Add("X-Forwarded-For", "127.0.0.1"); client.DefaultRequestHeaders.Add("Cf-Access-Authenticated-User-Email", "owner@example.com");
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/state")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/listen/library")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/listen/media/file/key")).StatusCode);
         await using var loopback = new StudioFactory(); using var publicClient = loopback.CreateClient();
         publicClient.DefaultRequestHeaders.Host = "commutecast.kimber.dev";
         Assert.Equal(HttpStatusCode.Unauthorized, (await publicClient.GetAsync("/api/state")).StatusCode);
+    }
+
+    [Fact]
+    public async Task ListenerListsExistingAudioAndRedirectsOnlyForTheConfiguredDrive()
+    {
+        await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();
+        var empty = await client.GetFromJsonAsync<JsonElement>("/api/listen/library");
+        Assert.False(empty.GetProperty("configured").GetBoolean());
+
+        var destination = new M365Destination(Guid.NewGuid().ToString(), Guid.NewGuid().ToString(), "drive", "folder");
+        (await client.PostAsJsonAsync("/api/destination", new DestinationRequest(destination, false))).EnsureSuccessStatusCode();
+        var catalog = await client.GetFromJsonAsync<JsonElement>("/api/listen/library");
+        Assert.True(catalog.GetProperty("configured").GetBoolean());
+        var item = Assert.Single(catalog.GetProperty("episodes").EnumerateArray());
+        Assert.Equal("An older commute", item.GetProperty("title").GetString());
+        Assert.Equal(120, item.GetProperty("durationSeconds").GetDouble());
+        Assert.DoesNotContain("sharepoint.com", catalog.GetRawText());
+        var mediaPath = $"/api/listen/media/{item.GetProperty("id").GetString()}/{item.GetProperty("key").GetString()}";
+        using var noRedirect = host.CreateClient(new() { AllowAutoRedirect = false });
+        using var response = await noRedirect.GetAsync(mediaPath);
+        Assert.Equal(HttpStatusCode.TemporaryRedirect, response.StatusCode);
+        Assert.Equal("tenant.sharepoint.com", response.Headers.Location!.Host);
+        Assert.True(response.Headers.CacheControl!.NoStore);
+
+        (await client.PostAsJsonAsync("/api/destination", new DestinationRequest(destination with { DriveId = "other" }, false))).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.NotFound, (await noRedirect.GetAsync(mediaPath)).StatusCode);
     }
 
     [Fact]
@@ -291,6 +319,7 @@ public sealed class WebApplicationTests
                 services.AddSingleton<IStartupFilter>(new ConnectionAddress(remote));
                 services.AddSingleton<IWebSpeechFactory>(new SyntheticFactory(Speech));
                 services.AddSingleton<IM365Publisher>(Publishing);
+                services.AddSingleton<IM365ListeningLibrary, SyntheticListening>();
                 if (cloudflare) services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
                 {
                     var config = new OpenIdConnectConfiguration { Issuer = "https://test.cloudflareaccess.com" };
@@ -315,6 +344,14 @@ public sealed class WebApplicationTests
             await base.DisposeAsync(); rsa.Dispose();
             if (ownsParent && Directory.Exists(parent)) Directory.Delete(parent, true);
         }
+    }
+    private sealed class SyntheticListening : IM365ListeningLibrary
+    {
+        public Task<IReadOnlyList<M365ListeningItem>> ListAsync(M365Destination destination, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<M365ListeningItem>>([new("item", "An older commute.mp3", DateTimeOffset.UnixEpoch, 120)]);
+
+        public Task<Uri?> PlaybackUriAsync(M365Destination destination, string itemId, CancellationToken ct) =>
+            Task.FromResult(itemId == "item" ? new Uri("https://tenant.sharepoint.com/audio") : null);
     }
     private sealed class ConnectionAddress(IPAddress address) : IStartupFilter
     {

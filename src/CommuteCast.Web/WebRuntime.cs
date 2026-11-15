@@ -102,6 +102,21 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
     }
     private Job Find(string id) => Queue.Snapshot().FirstOrDefault(j => j.Id == id) ?? throw new ArgumentException("This narration no longer exists.");
 
+    internal IReadOnlyDictionary<string, ListeningTitle> ListeningTitles(M365Destination destination)
+    {
+        var titles = new Dictionary<string, ListeningTitle>(StringComparer.Ordinal);
+        foreach (var job in Queue.Snapshot())
+        {
+            if (publications.TryGetValue(job.Id, out var record) && record.Status == "Published" &&
+                record.Receipt is { } receipt && record.Destination.DriveId == destination.DriveId &&
+                record.Destination.FolderId == destination.FolderId)
+                titles.TryAdd(receipt.ItemId, new(job.Title, job.DurationSeconds > 0 ? job.DurationSeconds : null));
+        }
+        return titles;
+    }
+
+    internal sealed record ListeningTitle(string Title, double? Duration);
+
     public async Task<object> LoadDraftAsync()
     {
         var saved = await ReadEditorDraftAsync();

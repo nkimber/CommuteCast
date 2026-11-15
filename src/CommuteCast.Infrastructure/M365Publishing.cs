@@ -15,7 +15,7 @@ public sealed record M365Destination(string TenantId = "", string ClientId = "",
             !SafeId(DriveId) || !SafeId(FolderId))
             throw new ArgumentException("Enter the tenant ID, application ID, drive ID and folder ID for your Microsoft 365 destination.");
     }
-    private static bool SafeId(string? id) => id is { Length: > 0 and <= 250 } && id is not ("." or "..") && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '!' or '.');
+    internal static bool SafeId(string? id) => id is { Length: > 0 and <= 250 } && id is not ("." or "..") && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '!' or '.');
 }
 
 public sealed record M365Folder(string Name, string PublicUrl);
@@ -28,7 +28,7 @@ public interface IM365Publisher
 }
 
 /// <summary>Server-side Graph transport. Upload sessions never receive the Graph bearer token.</summary>
-public sealed class M365Publisher(HttpClient http, Func<M365Destination, string?> getSecret) : IM365Publisher
+public sealed partial class M365Publisher(HttpClient http, Func<M365Destination, string?> getSecret) : IM365Publisher, IM365ListeningLibrary
 {
     private static string Item(M365Destination d) => $"https://graph.microsoft.com/v1.0/drives/{Uri.EscapeDataString(d.DriveId)}/items/{Uri.EscapeDataString(d.FolderId)}";
 
@@ -36,7 +36,7 @@ public sealed class M365Publisher(HttpClient http, Func<M365Destination, string?
     {
         destination.Validate();
         var secret = getSecret(destination);
-        if (string.IsNullOrWhiteSpace(secret)) throw new IOException("Save the Microsoft 365 application secret in Settings before publishing.");
+        if (string.IsNullOrWhiteSpace(secret)) throw new IOException("Save the Microsoft 365 application secret in Studio settings.");
         using var request = new HttpRequestMessage(HttpMethod.Post, $"https://login.microsoftonline.com/{destination.TenantId}/oauth2/v2.0/token")
         {
             Content = new FormUrlEncodedContent(new Dictionary<string, string>

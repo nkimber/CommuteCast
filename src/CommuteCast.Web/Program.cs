@@ -12,7 +12,9 @@ builder.Services.AddDataProtection().SetApplicationName("CommuteCast.Web");
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddAntiforgery(options => { options.HeaderName = "X-CSRF-TOKEN"; options.Cookie.Name = "CommuteCast.Csrf"; options.Cookie.SameSite = SameSiteMode.Strict; });
 builder.Services.AddHttpClient("Microsoft365", client => client.Timeout = TimeSpan.FromMinutes(10)).RemoveAllLoggers();
-builder.Services.AddSingleton<IM365Publisher>(services => new M365Publisher(services.GetRequiredService<IHttpClientFactory>().CreateClient("Microsoft365"), d => WindowsWebSecrets.Get(WindowsWebSecrets.Target(d))));
+builder.Services.AddSingleton(services => new M365Publisher(services.GetRequiredService<IHttpClientFactory>().CreateClient("Microsoft365"), d => WindowsWebSecrets.Get(WindowsWebSecrets.Target(d))));
+builder.Services.AddSingleton<IM365Publisher>(services => services.GetRequiredService<M365Publisher>());
+builder.Services.AddSingleton<IM365ListeningLibrary>(services => services.GetRequiredService<M365Publisher>());
 builder.Services.AddSingleton<WebRuntime>();
 builder.Services.AddSingleton<IWebSpeechFactory, WebSpeechFactory>();
 builder.Services.AddHostedService(services => services.GetRequiredService<WebRuntime>());
@@ -48,6 +50,7 @@ app.Use(async (context, next) =>
 app.UseStaticFiles();
 app.MapRazorPages().RequireAuthorization();
 app.MapCommuteCastApi();
+app.MapListeningApi();
 app.Run();
 
 public partial class Program;
