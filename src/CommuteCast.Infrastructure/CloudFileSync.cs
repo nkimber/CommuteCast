@@ -19,27 +19,31 @@ public static class CloudFileSync
             if (string.IsNullOrEmpty(job.ExportName) || Path.GetFileName(job.ExportName) != job.ExportName || job.ExportName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return CloudSyncState.Unknown;
             var path = Path.GetFullPath(Path.Combine(job.Destination, job.ExportName));
             if (!Path.IsPathFullyQualified(job.Destination) || path.StartsWith(@"\\", StringComparison.Ordinal)) return CloudSyncState.Unknown;
-            // Windows compatibility mode can hide the cloud reparse tag, making a
-            // synced MP3 appear to be an ordinary file. Override only this thread
-            // while querying metadata, then restore it before returning to the pool.
-            var previousMode = RtlSetThreadPlaceholderCompatibilityMode(ExposePlaceholders);
-            if (previousMode < 0) return CloudSyncState.Unknown;
-            try
-            {
-                var handle = FindFirstFile(path, out var data);
-                if (handle == new IntPtr(-1))
-                    return Marshal.GetLastWin32Error() is 2 or 3 ? CloudSyncState.Missing : CloudSyncState.Unknown;
-                try
-                {
-                    if ((data.Attributes & (uint)FileAttributes.Directory) != 0) return CloudSyncState.Unknown;
-                    return FromPlaceholderState(CfGetPlaceholderStateFromAttributeTag(data.Attributes, data.ReparseTag));
-                }
-                finally { FindClose(handle); }
-            }
-            finally { RtlSetThreadPlaceholderCompatibilityMode(previousMode); }
+            return ReadPath(path);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or DllNotFoundException or EntryPointNotFoundException)
         { return CloudSyncState.Unknown; }
+    }
+
+    internal static CloudSyncState ReadPath(string path, bool allowDirectory = false)
+    {
+        if (!OperatingSystem.IsWindows()) return CloudSyncState.Unknown;
+        // Compatibility mode can hide the cloud tag. Restore the thread mode before returning to the pool.
+        var previousMode = RtlSetThreadPlaceholderCompatibilityMode(ExposePlaceholders);
+        if (previousMode < 0) return CloudSyncState.Unknown;
+        try
+        {
+            var handle = FindFirstFile(path, out var data);
+            if (handle == new IntPtr(-1))
+                return Marshal.GetLastWin32Error() is 2 or 3 ? CloudSyncState.Missing : CloudSyncState.Unknown;
+            try
+            {
+                if (!allowDirectory && (data.Attributes & (uint)FileAttributes.Directory) != 0) return CloudSyncState.Unknown;
+                return FromPlaceholderState(CfGetPlaceholderStateFromAttributeTag(data.Attributes, data.ReparseTag));
+            }
+            finally { FindClose(handle); }
+        }
+        finally { RtlSetThreadPlaceholderCompatibilityMode(previousMode); }
     }
 
     public static CloudSyncState FromPlaceholderState(uint state) => state == uint.MaxValue || (state & Placeholder) == 0

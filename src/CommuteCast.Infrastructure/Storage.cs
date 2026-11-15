@@ -66,16 +66,18 @@ public sealed class Workspace
         try { await AtomicWriteAsync(Path.Combine(Root, "settings.json"), snapshot); }
         finally { settingsGate.Release(); }
     }
-    public static async Task AtomicWriteAsync(string path, string text)
+    public static Task AtomicWriteAsync(string path, string text) => AtomicWriteAsync(path, text, true, SqliteSchema.RejectLink);
+
+    internal static async Task AtomicWriteAsync(string path, string text, bool overwrite, Action<string> guard)
     {
-        path = Path.GetFullPath(path); SqliteSchema.RejectLink(path);
+        path = Path.GetFullPath(path); guard(path);
         var gate = atomicWriteGates[(uint)StringComparer.OrdinalIgnoreCase.GetHashCode(path) % (uint)atomicWriteGates.Length];
         await gate.WaitAsync();
         var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
         var ownsTemporary = false;
         try
         {
-            SqliteSchema.RejectLink(path); Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            guard(path); Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             await using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
             {
                 ownsTemporary = true;
@@ -84,8 +86,8 @@ public sealed class Workspace
             }
             for (var attempt = 0; ; attempt++)
             {
-                SqliteSchema.RejectLink(path); SqliteSchema.RejectLink(temporary);
-                try { File.Move(temporary, path, true); break; }
+                guard(path); guard(temporary);
+                try { File.Move(temporary, path, overwrite); break; }
                 catch (Exception error) when (OperatingSystem.IsWindows() && error is IOException or UnauthorizedAccessException &&
                     attempt < 5 && (error.HResult & 0xffff) is 5 or 32 or 33)
                 { await Task.Delay(50 * (1 << attempt)); }
