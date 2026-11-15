@@ -6,6 +6,7 @@ namespace CommuteCast.Infrastructure;
 public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueFolder folder, Workspace workspace,
     QueueCoordinator queue, RemoteRenderPlanner planner, TimeProvider? clock = null, Func<string, CloudSyncState>? syncStatus = null)
 {
+    private static readonly TimeSpan DeliveryNoticeAfter = TimeSpan.FromMinutes(10);
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
     private readonly Func<string, CloudSyncState> syncStatus = syncStatus ?? (path => CloudFileSync.ReadPath(path));
     private readonly SemaphoreSlim updates = new(1);
@@ -145,17 +146,22 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
                 });
             else if (lastStatus.GetValueOrDefault(job.Id)?.State != RemoteJobState.Ready)
             {
-                var state = syncStatus(path) == CloudSyncState.InSync ? RemoteJobState.Ready : RemoteJobState.Uploading;
-                await ReportAsync(ToStatus(job, state) with { OutputFile = confirmed.OutputFile, DurationSeconds = job.DurationSeconds });
+                var cloud = syncStatus(path);
+                if (cloud == CloudSyncState.InSync) await ReportReadyAsync(job, confirmed);
+                else await ReportUploadingAsync(job, confirmed.OutputFile, path, cloud);
             }
             return;
         }
         string filename;
+        string output;
+        CloudSyncState sync;
         RemoteDelivery? delivery = null;
         try
         {
             filename = await folder.PublishAsync(job, workspace, ct);
-            if (syncStatus(folder.OutputPath(filename)) == CloudSyncState.InSync)
+            output = folder.OutputPath(filename);
+            sync = syncStatus(output);
+            if (sync == CloudSyncState.InSync)
                 delivery = await queue.ConfirmRemoteDeliveryAsync(job.Id, new(filename, job.FinalHash, clock.GetUtcNow()), ct);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -166,7 +172,18 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
             return;
         }
         if (delivery is not null) await ReportReadyAsync(job, delivery);
-        else await ReportAsync(ToStatus(job, RemoteJobState.Uploading) with { OutputFile = filename, DurationSeconds = job.DurationSeconds });
+        else await ReportUploadingAsync(job, filename, output, sync);
+    }
+
+    private Task ReportUploadingAsync(Job job, string filename, string path, CloudSyncState sync)
+    {
+        string? notice = null;
+        if (sync != CloudSyncState.Missing && clock.GetUtcNow() - File.GetLastWriteTimeUtc(path) >= DeliveryNoticeAfter)
+            notice = sync == CloudSyncState.Unknown
+                ? "Windows has not reported sync status for this MP3. Check that OneDrive syncs the folder and Files On-Demand is enabled."
+                : "OneDrive has not confirmed delivery yet. Check the OneDrive icon for a paused sync or an upload error.";
+        return ReportAsync(ToStatus(job, RemoteJobState.Uploading) with
+        { OutputFile = filename, DurationSeconds = job.DurationSeconds, Attention = notice });
     }
 
     private Task ReportReadyAsync(Job job, RemoteDelivery delivery) => ReportAsync(ToStatus(job, RemoteJobState.Ready) with

@@ -11,6 +11,7 @@ public sealed class RemoteQueueWorkerTests
         using var test = new TestWorkspace();
         using var syncRoot = new CloudFileSyncTests.TestSyncRoot(test.Destination);
         using var other = new TestWorkspace();
+        var clock = new DeliveryClock();
         var store = new SqliteJobStore(test.Workspace);
         var speech = new RestartableSpeech();
         var id = Guid.NewGuid().ToString("N");
@@ -34,7 +35,7 @@ public sealed class RemoteQueueWorkerTests
         await using (var queue = OpenQueue(test.Workspace, store, speech))
         {
             await queue.InitializeAsync();
-            var worker = new RemoteQueueWorker(id, "Basement", folder, test.Workspace, queue, planner);
+            var worker = new RemoteQueueWorker(id, "Basement", folder, test.Workspace, queue, planner, clock);
             await worker.PollAsync();
             var until = DateTime.UtcNow.AddSeconds(30);
             while (!speech.SecondChunk.Task.IsCompleted && queue.Snapshot().Single().Stage is not (JobStage.Failed or JobStage.Generated) && DateTime.UtcNow < until)
@@ -54,7 +55,7 @@ public sealed class RemoteQueueWorkerTests
         await using (var queue = OpenQueue(test.Workspace, store, speech))
         {
             await queue.InitializeAsync();
-            var worker = new RemoteQueueWorker(id, "Basement", folder, test.Workspace, queue, planner);
+            var worker = new RemoteQueueWorker(id, "Basement", folder, test.Workspace, queue, planner, clock);
             var until = DateTime.UtcNow.AddSeconds(30);
             while (queue.Snapshot().Single().Stage is not (JobStage.Generated or JobStage.Failed) && DateTime.UtcNow < until)
                 await Task.Delay(50);
@@ -62,7 +63,15 @@ public sealed class RemoteQueueWorkerTests
             Assert.True(finished.Stage == JobStage.Generated, finished.Error);
             Assert.Equal(finished.Chunks.Count, speech.Syntheses);
             await worker.PollAsync();
-            Assert.Equal(RemoteJobState.Uploading, (await folder.ReadStatusAsync(request.JobId))?.State);
+            var uploading = Assert.IsType<RemoteJobStatus>(await folder.ReadStatusAsync(request.JobId));
+            Assert.Equal(RemoteJobState.Uploading, uploading.State);
+            Assert.Null(uploading.Attention);
+            clock.Advance(TimeSpan.FromMinutes(15));
+            await worker.PollAsync();
+            var stillUploading = Assert.IsType<RemoteJobStatus>(await folder.ReadStatusAsync(request.JobId));
+            Assert.Equal(RemoteJobState.Uploading, stillUploading.State);
+            Assert.Contains("Files On-Demand", stillUploading.Attention);
+            Assert.Equal(finished.Chunks.Count, speech.Syntheses);
         }
 
         var deliveredFile = Assert.Single(Directory.GetFiles(folder.OutputFolder, "*.mp3"));
@@ -72,10 +81,11 @@ public sealed class RemoteQueueWorkerTests
             var calls = speech.Syntheses;
             await queue.InitializeAsync();
             var reopenedFolder = new RemoteQueueFolder(test.Destination + Path.DirectorySeparatorChar, test.Workspace);
-            var worker = new RemoteQueueWorker(id, "Basement", reopenedFolder, test.Workspace, queue, planner);
+            var worker = new RemoteQueueWorker(id, "Basement", reopenedFolder, test.Workspace, queue, planner, clock);
             await worker.PollAsync();
             var status = Assert.IsType<RemoteJobStatus>(await folder.ReadStatusAsync(request.JobId));
             Assert.Equal(RemoteJobState.Ready, status.State);
+            Assert.Null(status.Attention);
             Assert.Equal("piper", status.ActualVoice?.Engine);
             Assert.Equal(deliveredFile, folder.OutputPath(status.OutputFile!));
             var saved = Assert.Single(await store.LoadAsync());
@@ -91,7 +101,7 @@ public sealed class RemoteQueueWorkerTests
         {
             var calls = speech.Syntheses;
             await queue.InitializeAsync();
-            var worker = new RemoteQueueWorker(id, "Basement", folder, test.Workspace, queue, planner);
+            var worker = new RemoteQueueWorker(id, "Basement", folder, test.Workspace, queue, planner, clock);
             await worker.PollAsync();
             var status = Assert.IsType<RemoteJobStatus>(await folder.ReadStatusAsync(request.JobId));
             Assert.Equal(RemoteJobState.NeedsAttention, status.State);
@@ -138,6 +148,13 @@ public sealed class RemoteQueueWorkerTests
 
     private static QueueCoordinator OpenQueue(Workspace workspace, IJobStore store, ISpeechProvider speech) =>
         new(workspace, store, speech, new(new()), new(workspace, store));
+
+    private sealed class DeliveryClock : TimeProvider
+    {
+        private TimeSpan offset;
+        public void Advance(TimeSpan time) => offset += time;
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.UtcNow + offset;
+    }
 
     private sealed class RestartableSpeech : ISpeechProvider
     {
