@@ -1,0 +1,28 @@
+.request {
+    background: #fafaf4;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: clamp(16px, 5vw, 26px);
+}
+.request h1 { margin: 0; font-size: clamp(1.5rem, 6vw, 2rem); letter-spacing: -.035em; }
+.request p { color: var(--muted); line-height: 1.4; overflow-wrap: anywhere; }
+.request p:empty { display: none; }
+.request label { display: block; font-weight: 650; margin: 14px 0 6px; }
+.request input, .request select, .request textarea {
+    display: block;
+    font: inherit;
+    color: inherit;
+    background: #fff;
+    border: 1px solid #aab7aa;
+    border-radius: 9px;
+    padding: 9px 11px;
+    width: 100%;
+    min-height: 44px;
+}
+.request textarea { resize: vertical; line-height: 1.45; }
+.request small { display: inline-block; color: var(--muted); line-height: 1.4; margin-top: 5px; }
+.request .primary { width: 100%; margin-top: 16px; }
+.remote-job { display: block; }
+.remote-job p { margin: 6px 0 0; color: var(--muted); line-height: 1.4; overflow-wrap: anywhere; }
+.remote-job summary { width: fit-content; padding-block: 9px; }
+.remote-job .fallback { color: #815410; }

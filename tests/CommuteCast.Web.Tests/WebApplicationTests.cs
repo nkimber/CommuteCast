@@ -51,6 +51,7 @@ public sealed class WebApplicationTests
         Assert.Equal("application/manifest+json", manifest.Content.Headers.ContentType!.MediaType);
         var data = await manifest.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("/listen", data.GetProperty("start_url").GetString());
+        Assert.Equal("/", data.GetProperty("scope").GetString());
         Assert.Equal("standalone", data.GetProperty("display").GetString());
         foreach (var icon in data.GetProperty("icons").EnumerateArray())
         {
@@ -66,6 +67,8 @@ public sealed class WebApplicationTests
         await using var host = new StudioFactory(remoteAddress: IPAddress.Parse("192.0.2.5")); using var client = host.CreateClient();
         client.DefaultRequestHeaders.Add("X-Forwarded-For", "127.0.0.1"); client.DefaultRequestHeaders.Add("Cf-Access-Authenticated-User-Email", "owner@example.com");
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/state")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/remote")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/remote")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/listen/library")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/listen/media/file/key")).StatusCode);
         await using var loopback = new StudioFactory(); using var publicClient = loopback.CreateClient();
@@ -304,6 +307,52 @@ public sealed class WebApplicationTests
         Assert.True(host.Services.GetRequiredService<WebRuntime>().Queue.Paused);
     }
 
+    [Fact]
+    public async Task AndroidPageQueuesOneRequestForTheChosenWorkerAndReportsPublicProgressWithoutSource()
+    {
+        await using var host = new StudioFactory(cloudflare: true, remoteQueue: true);
+        using var client = host.CreateClient();
+        client.DefaultRequestHeaders.Add("Cf-Access-Jwt-Assertion", host.Token("owner@example.com", "correct-audience", false));
+        var html = await client.GetStringAsync("/remote");
+        Assert.Contains("Send to worker", html);
+        Assert.Contains("/js/remote.js", html);
+        var runtime = host.Services.GetRequiredService<WebRuntime>();
+        var folder = new RemoteQueueFolder(host.SharedQueue, runtime.Workspace);
+        var worker = Guid.NewGuid().ToString("N");
+        await folder.WriteWorkerAsync(new(worker, "Basement", DateTimeOffset.UtcNow.AddMinutes(-10), RemoteWorkerState.Ready, ["Kokoro"]));
+        var state = await client.GetFromJsonAsync<JsonElement>("/api/remote");
+        var preset = state.GetProperty("presets")[0];
+        Assert.Equal("https://tenant.sharepoint.com/ready", state.GetProperty("listeningFolderUrl").GetString());
+        Assert.Equal("Offline", Assert.Single(state.GetProperty("workers").EnumerateArray()).GetProperty("state").GetString());
+        var request = new WebRemoteSubmission(Guid.NewGuid().ToString("N"), worker, DateTimeOffset.UtcNow,
+            "Morning reading", "Private synthetic narration for the worker.", preset.GetProperty("id").GetString()!);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/remote/jobs", request)).StatusCode);
+        Assert.Empty(folder.RequestIds());
+
+        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", Regex.Match(html, "name=\"csrf-token\" content=\"([^\"]+)\"").Groups[1].Value);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/remote/jobs", request with { TargetWorkerId = Guid.NewGuid().ToString("N") })).StatusCode);
+        (await client.PostAsJsonAsync("/api/remote/jobs", request)).EnsureSuccessStatusCode();
+        (await client.PostAsJsonAsync("/api/remote/jobs", request)).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/remote/jobs", request with { Text = "Changed." })).StatusCode);
+        Assert.Equal(request.JobId, Assert.Single(folder.RequestIds()));
+        var saved = Assert.IsType<RemoteRequest>(await folder.ReadRequestAsync(request.JobId));
+        Assert.Equal(worker, saved.TargetWorkerId);
+        Assert.Equal(request.Text, saved.Text);
+        Assert.Equal(0, host.Speech.Calls);
+        Assert.Empty(runtime.Queue.Snapshot());
+
+        await folder.WriteStatusAsync(new(request.JobId, worker, DateTimeOffset.UtcNow, RemoteJobState.Ready, RemoteVoice.From(saved.Options),
+            new("piper", "en_US-lessac-medium", 1), OutputFile: request.JobId + ".mp3", FallbackReason: "Requested voice is unavailable."));
+        using var statusResponse = await client.GetAsync("/api/remote");
+        Assert.True(statusResponse.Headers.CacheControl!.NoStore);
+        var jobs = (await statusResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("jobs");
+        var job = Assert.Single(jobs.EnumerateArray());
+        Assert.Equal("Morning reading", job.GetProperty("title").GetString());
+        Assert.DoesNotContain(request.Text, job.GetRawText());
+        Assert.Equal("piper", job.GetProperty("status").GetProperty("actualVoice").GetProperty("engine").GetString());
+        Assert.Contains("Requested voice is unavailable.", job.GetRawText());
+    }
+
     private static async Task WaitPublicationAsync(HttpClient client, string id, string wanted)
     {
         var deadline = DateTime.UtcNow.AddSeconds(40);
@@ -320,15 +369,17 @@ public sealed class WebApplicationTests
     private sealed class StudioFactory : WebApplicationFactory<Program>
     {
         private readonly string parent;
-        private readonly bool ownsParent, cloudflare;
+        private readonly bool ownsParent, cloudflare, remoteQueue;
         private readonly IPAddress remote;
         private readonly RSA rsa = RSA.Create(2048);
         public SyntheticSpeech Speech { get; } = new();
         public SyntheticPublishing Publishing { get; } = new();
-        public StudioFactory(string? parent = null, IPAddress? remoteAddress = null, bool cloudflare = false)
+        public string SharedQueue => Path.Combine(parent, "shared");
+        public StudioFactory(string? parent = null, IPAddress? remoteAddress = null, bool cloudflare = false, bool remoteQueue = false)
         {
             ownsParent = parent is null; this.parent = parent ?? Path.Combine(Path.GetTempPath(), "CommuteCast-Web-tests-" + Guid.NewGuid().ToString("N"));
-            remote = remoteAddress ?? IPAddress.Loopback; this.cloudflare = cloudflare;
+            remote = remoteAddress ?? IPAddress.Loopback; this.cloudflare = cloudflare; this.remoteQueue = remoteQueue;
+            if (remoteQueue) Directory.CreateDirectory(SharedQueue);
         }
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -336,6 +387,8 @@ public sealed class WebApplicationTests
             {
                 ["CommuteCast:Workspace"] = Path.Combine(parent, "private"), ["CommuteCast:Exports"] = Path.Combine(parent, "exports"),
                 ["CommuteCast:OperationalLogging"] = "false",
+                ["RemoteQueue:Folder"] = remoteQueue ? SharedQueue : null,
+                ["RemoteQueue:ListeningFolderUrl"] = remoteQueue ? "https://tenant.sharepoint.com/ready" : null,
                 ["Cloudflare:TeamDomain"] = cloudflare ? "test.cloudflareaccess.com" : "", ["Cloudflare:Audience"] = "correct-audience", ["Cloudflare:AllowedEmail"] = "owner@example.com"
             }));
             builder.ConfigureTestServices(services =>

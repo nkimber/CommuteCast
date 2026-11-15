@@ -16,6 +16,7 @@ builder.Services.AddSingleton(services => new M365Publisher(services.GetRequired
 builder.Services.AddSingleton<IM365Publisher>(services => services.GetRequiredService<M365Publisher>());
 builder.Services.AddSingleton<IM365ListeningLibrary>(services => services.GetRequiredService<M365Publisher>());
 builder.Services.AddSingleton<WebRuntime>();
+builder.Services.AddSingleton<WebRemoteQueue>();
 builder.Services.AddSingleton<IWebSpeechFactory, WebSpeechFactory>();
 builder.Services.AddHostedService(services => services.GetRequiredService<WebRuntime>());
 builder.Services.AddCommuteCastAuthentication(builder.Configuration);

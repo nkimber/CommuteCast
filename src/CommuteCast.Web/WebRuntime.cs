@@ -20,6 +20,7 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
     private readonly ConcurrentDictionary<string, PublishingRecord> publications = new();
     private readonly ConcurrentDictionary<string, ProviderInfo> providerCatalog = new();
     private volatile NarrationOptions? narrationDefaults;
+    internal NarrationOptions CurrentNarrationDefaults => narrationDefaults ?? throw new InvalidOperationException("The web workspace has not started.");
     private readonly ISpeechSecrets speechSecrets = new WindowsSpeechSecrets();
     private ExportPublisher localPublisher = null!;
     private string ConfigPath => Path.Combine(Workspace.Root, "web", "settings.json");

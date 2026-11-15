@@ -13,4 +13,10 @@ The worker uses the existing serial local queue and saves the actual speech sett
 
 On Windows, test first with CommuteCast and OneDrive running under the signed-in worker account. A Windows Task Scheduler task can launch the app at sign-in. Recovery before sign-in depends on the host setup, including availability of OneDrive and any local speech runtime.
 
-For live acceptance, use a short synthetic script, close the work app after submission, and verify that the remote status advances when you reopen it. Check that the actual Android OneDrive account can open the completed MP3. Repeat with the basement app restarted after the first chunk and with a requested voice missing from its catalog. Check for one delivered file with the expected fallback notice. The automated restart test uses real FFmpeg and simulated speech and sync confirmation.
+## Send from Android
+
+The optional web host lets you send pasted text from Chrome and follow the same remote job list. Run it under an account with access to the shared OneDrive folder and give it its own private workspace. Set `RemoteQueue__Folder` to the folder's absolute local path on the web host. Set `RemoteQueue__ListeningFolderUrl` if you want a link to the `Ready to Listen` folder in OneDrive. Use an HTTPS link that keeps your intended Microsoft account permissions.
+
+Open `/listen` in Chrome and use **Send a narration**, or go directly to `/remote`. Use the approved [web sign-in setup](Web-Application.md) for access away from home. The form offers Studio defaults and saved presets. Select a worker and a preset, enter the text, and send it. The browser request uses the worker's existing serial queue. Chrome can open both pages within the CommuteCast home-screen app.
+
+For live acceptance, use a short synthetic script, close the work app after submission, and verify that the remote status advances when you reopen it. Check that the actual Android OneDrive account can open the completed MP3. Send a second narration from Chrome on Android and check that the same worker picks it up. Repeat with the basement app restarted after the first chunk and with a requested voice missing from its catalog. Check for one delivered file with the expected fallback notice. The automated restart test uses real FFmpeg and simulated speech and sync confirmation.

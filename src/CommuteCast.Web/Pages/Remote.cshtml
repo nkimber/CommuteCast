@@ -1,0 +1,59 @@
+@page "/remote"
+@inject Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#153c34" />
+    <meta name="csrf-token" content="@Antiforgery.GetAndStoreTokens(HttpContext).RequestToken" />
+    <title>Remote queue · CommuteCast</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/css/listen.css" asp-append-version="true" />
+    <link rel="stylesheet" href="/css/remote.css" asp-append-version="true" />
+    <script src="/js/remote.js" asp-append-version="true" defer></script>
+</head>
+<body>
+    <a href="#main" class="skip">Skip to narration form</a>
+    <header class="masthead">
+        <div class="frame masthead-inner">
+            <a class="brand" href="/listen"><img src="/icon.svg" width="42" height="42" alt="" /> CommuteCast</a>
+            <a class="studio-link" href="/listen">Listen <span aria-hidden="true">↗</span></a>
+        </div>
+    </header>
+    <main class="frame" id="main">
+        <section class="request" aria-labelledby="request-heading">
+            <h1 id="request-heading">Send a narration</h1>
+            <p id="connection" role="status">Checking the shared queue…</p>
+            <form id="request-form" hidden>
+                <label for="worker">Worker</label>
+                <select id="worker" required></select>
+                <small id="worker-detail"></small>
+
+                <label for="preset">Voice preset</label>
+                <select id="preset" required></select>
+                <small id="voice-detail"></small>
+
+                <label for="title">Title <small>(optional)</small></label>
+                <input id="title" maxlength="200" />
+
+                <label for="text">Narration text</label>
+                <textarea id="text" maxlength="250000" rows="7" required></textarea>
+
+                <button class="primary" id="send" type="submit" disabled>Send to worker</button>
+            </form>
+            <p id="result" role="status"></p>
+        </section>
+
+        <section class="library" aria-labelledby="jobs-heading">
+            <div class="library-heading">
+                <h2 id="jobs-heading">Remote narrations</h2>
+                <button class="secondary" id="refresh" type="button">Refresh</button>
+            </div>
+            <a id="folder" class="setup-link" hidden>Open listening folder in OneDrive</a>
+            <p id="jobs-empty" class="library-status"></p>
+            <ul id="jobs" class="episode-list"></ul>
+        </section>
+    </main>
+</body>
+</html>

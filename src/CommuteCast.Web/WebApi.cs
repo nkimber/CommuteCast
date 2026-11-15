@@ -7,6 +7,8 @@ public static class WebApi
     public static void MapCommuteCastApi(this WebApplication app)
     {
         var api = app.MapGroup("/api").RequireAuthorization();
+        api.MapGet("/remote", (WebRemoteQueue remote, CancellationToken ct) => remote.ReadAsync(ct));
+        api.MapPost("/remote/jobs", async (WebRemoteSubmission request, WebRemoteQueue remote, CancellationToken ct) => new { id = await remote.SubmitAsync(request, ct) });
         api.MapGet("/state", (WebRuntime runtime) => runtime.State());
         api.MapGet("/jobs/{id}", (string id, WebRuntime runtime) => runtime.Details(id));
         api.MapGet("/draft", async (WebRuntime runtime) => await runtime.LoadDraftAsync());
