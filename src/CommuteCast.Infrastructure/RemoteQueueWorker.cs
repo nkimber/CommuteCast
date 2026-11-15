@@ -46,7 +46,7 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
             }
 
             if (job.Remote is not { } remote || remote.WorkerId != workerId ||
-                !remote.QueueRoot.Equals(folder.Root, StringComparison.OrdinalIgnoreCase) || remote.RequestFingerprint != RemoteQueueFolder.Fingerprint(request))
+                !folder.MatchesRoot(remote.QueueRoot) || remote.RequestFingerprint != RemoteQueueFolder.Fingerprint(request))
                 throw new IOException("The saved job and shared request no longer match. Preserve both for inspection.");
             if (job.Stage == JobStage.Generated)
             {
@@ -112,11 +112,9 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
     private async Task RecoverStatusesAsync(CancellationToken ct)
     {
         var pending = 0;
-        foreach (var job in queue.Snapshot().Where(j => j.Remote is { } remote && remote.WorkerId == workerId &&
-            remote.QueueRoot.Equals(folder.Root, StringComparison.OrdinalIgnoreCase)))
+        foreach (var job in queue.Snapshot().Where(j => j.Remote is { } remote && remote.WorkerId == workerId && folder.MatchesRoot(remote.QueueRoot)))
         {
             ct.ThrowIfCancellationRequested();
-            if (lastStatus.GetValueOrDefault(job.Id)?.State == RemoteJobState.Ready) continue;
             if (job.Stage == JobStage.Generated)
             {
                 await PublishAsync(job, ct);
@@ -136,12 +134,29 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
 
     private async Task PublishAsync(Job job, CancellationToken ct)
     {
+        if (job.Remote?.Delivery is { } confirmed)
+        {
+            var path = folder.OutputPath(confirmed.OutputFile);
+            if (!File.Exists(path))
+                await ReportAsync(ToStatus(job, RemoteJobState.NeedsAttention) with
+                {
+                    OutputFile = confirmed.OutputFile, DurationSeconds = job.DurationSeconds,
+                    Attention = "The previously delivered MP3 is missing from the worker's listening folder. Check OneDrive or restore the listening copy there."
+                });
+            else if (lastStatus.GetValueOrDefault(job.Id)?.State != RemoteJobState.Ready)
+            {
+                var state = syncStatus(path) == CloudSyncState.InSync ? RemoteJobState.Ready : RemoteJobState.Uploading;
+                await ReportAsync(ToStatus(job, state) with { OutputFile = confirmed.OutputFile, DurationSeconds = job.DurationSeconds });
+            }
+            return;
+        }
         string filename;
-        RemoteJobState state;
+        RemoteDelivery? delivery = null;
         try
         {
             filename = await folder.PublishAsync(job, workspace, ct);
-            state = syncStatus(folder.OutputPath(filename)) == CloudSyncState.InSync ? RemoteJobState.Ready : RemoteJobState.Uploading;
+            if (syncStatus(folder.OutputPath(filename)) == CloudSyncState.InSync)
+                delivery = await queue.ConfirmRemoteDeliveryAsync(job.Id, new(filename, job.FinalHash, clock.GetUtcNow()), ct);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -150,8 +165,12 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
             { Attention = "The finished MP3 is saved on the worker. Check the shared output folder and OneDrive sync so delivery can retry." });
             return;
         }
-        await ReportAsync(ToStatus(job, state) with { OutputFile = filename, DurationSeconds = job.DurationSeconds });
+        if (delivery is not null) await ReportReadyAsync(job, delivery);
+        else await ReportAsync(ToStatus(job, RemoteJobState.Uploading) with { OutputFile = filename, DurationSeconds = job.DurationSeconds });
     }
+
+    private Task ReportReadyAsync(Job job, RemoteDelivery delivery) => ReportAsync(ToStatus(job, RemoteJobState.Ready) with
+    { OutputFile = delivery.OutputFile, DurationSeconds = job.DurationSeconds });
 
     private RemoteJobStatus ToStatus(Job job, RemoteJobState state)
     {

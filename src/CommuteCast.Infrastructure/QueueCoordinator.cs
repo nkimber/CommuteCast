@@ -172,6 +172,32 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
             PersistenceError = "Queue paused because its checkpoint could not be saved. Repair disk space or permissions, then retry the narration and resume. Existing durable records are retained. " + FriendlyError(error);
         }
     }
+
+    internal async Task<RemoteDelivery> ConfirmRemoteDeliveryAsync(string id, RemoteDelivery delivery, CancellationToken ct)
+    {
+        await dispatchGate.WaitAsync(ct);
+        try
+        {
+            Task? settling;
+            lock (sync) settling = activeId == id ? activeFinished!.Task : null;
+            if (settling is not null) await settling.WaitAsync(ct);
+
+            Job current;
+            lock (sync) current = jobs.FirstOrDefault(j => j.Id == id) ?? throw new IOException("The remote narration was removed before delivery could be recorded.");
+            if (current.Remote is not { } remote || current.Stage != JobStage.Generated || current.DeletionRequested ||
+                current.CancellationRequested || current.FinalHash != delivery.Hash || ExportPublisher.Filename(current) != delivery.OutputFile)
+                throw new IOException("The remote narration changed before delivery could be recorded.");
+            if (remote.Delivery is { } confirmed) return confirmed;
+
+            var saved = current.CreateSnapshot();
+            saved.Remote = remote with { Delivery = delivery };
+            await store.SaveAsync(saved, ct);
+            lock (sync) jobs[jobs.IndexOf(current)] = saved;
+        }
+        finally { dispatchGate.Release(); }
+        Notify();
+        return delivery;
+    }
     public async Task MovePendingAsync(string id, int direction, CancellationToken ct = default)
     {
         if (direction is not (-1 or 1)) throw new ArgumentException("Choose move earlier or later.");
@@ -481,6 +507,7 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
             job = jobs.FirstOrDefault(j => j.Id == id) ?? throw new ArgumentException("This narration no longer exists. Refresh the library.");
             if (activeId == id || job.Stage == JobStage.Queued) throw new ArgumentException("This job is already queued or running.");
             if (job.ExportCommitted) throw new ArgumentException("This job was exported. Submit a new job to regenerate it.");
+            if (job.Remote?.Delivery is not null) throw new ArgumentException("This remote job was delivered. Submit a new job to regenerate it.");
             if (job.DeletionRequested) throw new ArgumentException("This narration is pending deletion. Retry its deletion to finish removal.");
         }
         var queued = JsonSerializer.Deserialize<Job>(JsonSerializer.Serialize(job))!;

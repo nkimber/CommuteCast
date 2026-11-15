@@ -21,7 +21,7 @@ public sealed class RemoteQueueFolder
     {
         if (!Path.IsPathFullyQualified(root) || root.StartsWith(@"\\", StringComparison.Ordinal))
             throw new ArgumentException("Choose an existing local OneDrive folder for remote narration.");
-        Root = Path.GetFullPath(root);
+        Root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
         if (!Directory.Exists(Root) || Workspace.IsWithin(workspace.Root, Root) || Workspace.IsWithin(Root, workspace.Root))
             throw new ArgumentException("The shared queue folder must exist and be separate from CommuteCast's private workspace.");
         Guard(Root);
@@ -45,6 +45,8 @@ public sealed class RemoteQueueFolder
     }
 
     public static string Fingerprint(RemoteRequest request) => Job.Hash(JsonSerializer.Serialize(request, Json));
+
+    internal bool MatchesRoot(string path) => Root.Equals(Path.TrimEndingDirectorySeparator(path), StringComparison.OrdinalIgnoreCase);
 
     public IReadOnlyList<string> RequestIds() => ListIds("Inbox");
 
@@ -104,7 +106,7 @@ public sealed class RemoteQueueFolder
 
     public async Task<string> PublishAsync(Job job, Workspace workspace, CancellationToken ct = default)
     {
-        if (job.Remote is null || !Root.Equals(job.Remote.QueueRoot, StringComparison.OrdinalIgnoreCase) ||
+        if (job.Remote is null || !MatchesRoot(job.Remote.QueueRoot) ||
             job.Stage != JobStage.Generated || job.FinalHash.Length == 0 || !RemoteIdentity.IsValid(job.Id))
             throw new InvalidOperationException("Publish only a validated narration assigned to this folder.");
         var name = ExportPublisher.Filename(job);

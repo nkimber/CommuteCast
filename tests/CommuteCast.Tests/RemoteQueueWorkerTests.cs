@@ -9,6 +9,7 @@ public sealed class RemoteQueueWorkerTests
     public async Task AssignedWorkerResumesSavedChunksAndPublishesTheFallbackOnlyOnce()
     {
         using var test = new TestWorkspace();
+        using var syncRoot = new CloudFileSyncTests.TestSyncRoot(test.Destination);
         using var other = new TestWorkspace();
         var store = new SqliteJobStore(test.Workspace);
         var speech = new RestartableSpeech();
@@ -53,7 +54,7 @@ public sealed class RemoteQueueWorkerTests
         await using (var queue = OpenQueue(test.Workspace, store, speech))
         {
             await queue.InitializeAsync();
-            var worker = new RemoteQueueWorker(id, "Basement", folder, test.Workspace, queue, planner, syncStatus: _ => CloudSyncState.NotInSync);
+            var worker = new RemoteQueueWorker(id, "Basement", folder, test.Workspace, queue, planner);
             var until = DateTime.UtcNow.AddSeconds(30);
             while (queue.Snapshot().Single().Stage is not (JobStage.Generated or JobStage.Failed) && DateTime.UtcNow < until)
                 await Task.Delay(50);
@@ -64,16 +65,39 @@ public sealed class RemoteQueueWorkerTests
             Assert.Equal(RemoteJobState.Uploading, (await folder.ReadStatusAsync(request.JobId))?.State);
         }
 
+        var deliveredFile = Assert.Single(Directory.GetFiles(folder.OutputFolder, "*.mp3"));
+        syncRoot.ConfirmFile(deliveredFile);
         await using (var queue = OpenQueue(test.Workspace, store, speech))
         {
             var calls = speech.Syntheses;
             await queue.InitializeAsync();
-            var worker = new RemoteQueueWorker(id, "Basement", folder, test.Workspace, queue, planner, syncStatus: _ => CloudSyncState.InSync);
+            var reopenedFolder = new RemoteQueueFolder(test.Destination + Path.DirectorySeparatorChar, test.Workspace);
+            var worker = new RemoteQueueWorker(id, "Basement", reopenedFolder, test.Workspace, queue, planner);
             await worker.PollAsync();
             var status = Assert.IsType<RemoteJobStatus>(await folder.ReadStatusAsync(request.JobId));
             Assert.Equal(RemoteJobState.Ready, status.State);
             Assert.Equal("piper", status.ActualVoice?.Engine);
-            Assert.Equal(folder.OutputPath(status.OutputFile!), Assert.Single(Directory.GetFiles(folder.OutputFolder, "*.mp3")));
+            Assert.Equal(deliveredFile, folder.OutputPath(status.OutputFile!));
+            var saved = Assert.Single(await store.LoadAsync());
+            var receipt = Assert.IsType<RemoteDelivery>(saved.Remote?.Delivery);
+            Assert.Equal(status.OutputFile, receipt.OutputFile);
+            Assert.Equal(saved.FinalHash, receipt.Hash);
+            Assert.Equal(calls, speech.Syntheses);
+        }
+
+        File.Delete(deliveredFile);
+        File.Delete(Path.Combine(folder.Root, "Status", request.JobId + ".json"));
+        await using (var queue = OpenQueue(test.Workspace, store, speech))
+        {
+            var calls = speech.Syntheses;
+            await queue.InitializeAsync();
+            var worker = new RemoteQueueWorker(id, "Basement", folder, test.Workspace, queue, planner);
+            await worker.PollAsync();
+            var status = Assert.IsType<RemoteJobStatus>(await folder.ReadStatusAsync(request.JobId));
+            Assert.Equal(RemoteJobState.NeedsAttention, status.State);
+            Assert.Contains("previously delivered MP3", status.Attention);
+            Assert.False(await worker.RetryAsync(request.JobId));
+            Assert.Empty(Directory.GetFiles(folder.OutputFolder, "*.mp3"));
             Assert.Equal(calls, speech.Syntheses);
         }
     }

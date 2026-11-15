@@ -1,5 +1,6 @@
 using CommuteCast.Core;
 using CommuteCast.Infrastructure;
+using Microsoft.Win32.SafeHandles;
 using System.Runtime.InteropServices;
 
 namespace CommuteCast.Tests;
@@ -115,6 +116,32 @@ public class CloudFileSyncTests
         finally { Marshal.ThrowExceptionForHR(Native.CfUnregisterSyncRoot(test.Destination)); }
     }
 
+    internal sealed class TestSyncRoot : IDisposable
+    {
+        private readonly string path;
+
+        public TestSyncRoot(string path)
+        {
+            this.path = path;
+            var registration = new Native.Registration
+            {
+                Size = (uint)Marshal.SizeOf<Native.Registration>(), Name = "CommuteCast remote delivery fixture", Version = "1"
+            };
+            var policies = new Native.Policies { Size = (uint)Marshal.SizeOf<Native.Policies>(), Hydration = 2, Population = 3 };
+            Marshal.ThrowExceptionForHR(Native.CfRegisterSyncRoot(path, ref registration, ref policies, 0));
+        }
+
+        public void ConfirmFile(string file)
+        {
+            Assert.True(Workspace.IsWithin(path, file));
+            using var handle = File.OpenHandle(file, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
+            const uint markInSync = 1;
+            Marshal.ThrowExceptionForHR(Native.CfConvertToPlaceholder(handle, IntPtr.Zero, 0, markInSync, IntPtr.Zero, IntPtr.Zero));
+        }
+
+        public void Dispose() => Marshal.ThrowExceptionForHR(Native.CfUnregisterSyncRoot(path));
+    }
+
     private static class Native
     {
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -157,6 +184,7 @@ public class CloudFileSyncTests
         [DllImport("kernel32.dll", EntryPoint = "FindFirstFileW", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr FindFirstFile(string path, out FindData data);
         [DllImport("kernel32.dll")] public static extern bool FindClose(IntPtr handle);
         [DllImport("cldapi.dll")] public static extern uint CfGetPlaceholderStateFromAttributeTag(uint attributes, uint tag);
+        [DllImport("cldapi.dll")] public static extern int CfConvertToPlaceholder(SafeFileHandle handle, IntPtr identity, uint size, uint flags, IntPtr usn, IntPtr overlapped);
         [DllImport("ntdll.dll", ExactSpelling = true)] public static extern sbyte RtlSetThreadPlaceholderCompatibilityMode(sbyte mode);
         [DllImport("ntdll.dll", ExactSpelling = true)] public static extern sbyte RtlQueryThreadPlaceholderCompatibilityMode();
         [DllImport("cldapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)] public static extern int CfRegisterSyncRoot(string path, ref Registration registration, ref Policies policies, uint flags);

@@ -30,7 +30,9 @@ public sealed record RemoteVoice(string Engine, string Voice, double Speed, stri
 
 // Stored alongside the accepted narration in the worker's private queue.
 public sealed record RemoteRender(string WorkerId, string QueueRoot, string RequestFingerprint,
-    RemoteVoice RequestedVoice, RemoteVoice ActualVoice, string? FallbackReason);
+    RemoteVoice RequestedVoice, RemoteVoice ActualVoice, string? FallbackReason, RemoteDelivery? Delivery = null);
+
+public sealed record RemoteDelivery(string OutputFile, string Hash, DateTimeOffset ConfirmedUtc);
 
 public sealed record RemoteJobStatus(string JobId, string WorkerId, DateTimeOffset UpdatedUtc, RemoteJobState State,
     RemoteVoice RequestedVoice, RemoteVoice? ActualVoice = null, int ChunksDone = 0, int ChunksTotal = 0,
