@@ -125,8 +125,9 @@ public sealed class RemoteQueueFolder
         input.Position = 0;
 
         Directory.CreateDirectory(OutputFolder);
-        var temporary = Path.Combine(OutputFolder, $".{job.Id}-{Guid.NewGuid():N}.partial");
+        var temporary = Path.Combine(Root, "Staging", $".{job.Id}-{Guid.NewGuid():N}.partial");
         Guard(temporary);
+        Directory.CreateDirectory(Path.GetDirectoryName(temporary)!);
         var created = false;
         try
         {

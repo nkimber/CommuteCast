@@ -15,6 +15,7 @@ internal sealed class RemoteQueueHost
     private readonly Task[] loops;
     private volatile Health? health;
     private volatile bool folderTrouble;
+    public string WorkerId => worker.WorkerId;
 
     public RemoteQueueHost(RemoteQueueWorker worker, RemoteQueueSettings settings, QueueCoordinator queue,
         RemoteRenderPlanner planner, NarrationPreset[] capabilities)
@@ -72,6 +73,7 @@ internal sealed class RemoteQueueHost
             try
             {
                 await worker.CheckInAsync(state, presets);
+                if (state == RemoteWorkerState.Disabled) return;
                 lastCheckIn = now; lastState = state; lastPresets = presets;
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -90,6 +92,12 @@ internal sealed class RemoteQueueHost
 
     private bool WorkInProgress() => queue.Snapshot().Any(job => JobProgress.Describe(job).IsWorking && job.Stage != JobStage.Queued);
 
+    public async Task<bool> RetryAsync(string id, CancellationToken ct)
+    {
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, stopping.Token);
+        return await worker.RetryAsync(id, cancellation.Token);
+    }
+
     public async Task StopAsync(bool disable)
     {
         await stopping.CancelAsync();
@@ -97,6 +105,7 @@ internal sealed class RemoteQueueHost
         catch (OperationCanceledException) { }
         catch (Exception error) { AppLogging.Failure("RemoteWorkerStop", error); }
         finally { stopping.Dispose(); }
+        if (!settings.EnableWorker && !disable) return;
         try { await worker.CheckInAsync(disable || !settings.EnableWorker ? RemoteWorkerState.Disabled : RemoteWorkerState.Stopped, []); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { AppLogging.Failure("RemoteWorkerFinalCheckIn", error); }
     }

@@ -46,6 +46,7 @@
             <WrapPanel>
                 <Button x:Name="PlayButton" Content="Open finished MP3" Click="OpenMp3" IsEnabled="False"/>
                 <Button x:Name="DiagnosticsButton" Content="Copy speech diagnostics" Click="CopyDiagnostics" IsEnabled="False"/>
+                <Button x:Name="RetryButton" Content="Retry on this worker" Click="RetryOnWorker" IsEnabled="False"/>
                 <Button Content="Open listening folder" Click="OpenListeningFolder"/>
             </WrapPanel>
             <TextBlock x:Name="Feedback" TextWrapping="Wrap" Margin="0,8,0,0" AutomationProperties.LiveSetting="Polite"/>

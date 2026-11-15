@@ -11,6 +11,13 @@ public sealed class RemoteRenderPlanner(
     public async Task<bool> IsAvailableAsync(NarrationOptions options, CancellationToken ct) =>
         (await TrySettingsAsync(options, ct)).Settings is not null;
 
+    internal async Task<(Job? Job, string? Attention)> TryPrepareAsync(RemoteRequest request, string workerId, string queueRoot, CancellationToken ct)
+    {
+        try { return (await PrepareAsync(request, workerId, queueRoot, ct), null); }
+        catch (RemoteSpeechUnavailableException error) { return (null, error.Message); }
+        catch (ArgumentException) { return (null, "This narration could not be prepared. Review its text and voice choices on the submitting PC."); }
+    }
+
     public async Task<Job> PrepareAsync(RemoteRequest request, string workerId, string queueRoot, CancellationToken ct)
     {
         request.Validate();

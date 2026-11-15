@@ -82,11 +82,12 @@ public partial class RemoteQueueWindow : Window
         if (writing) return;
         writing = true;
         UpdateSend();
+        UpdateRetry();
         try { await action(); }
         catch (OperationCanceledException) when (closed) { }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
         { if (!closed) Feedback.Text = QueueCoordinator.FriendlyError(error); }
-        finally { writing = false; if (!closed) UpdateSend(); }
+        finally { writing = false; if (!closed) { UpdateSend(); UpdateRetry(); } }
         if (!closed) await RefreshAsync();
     }
 
@@ -167,6 +168,25 @@ public partial class RemoteQueueWindow : Window
         JobDetails.Text = row?.Details ?? "Select a narration to see its progress and voice settings.";
         PlayButton.IsEnabled = row?.Status is { State: RemoteJobState.Ready, OutputFile: not null };
         DiagnosticsButton.IsEnabled = row?.Status is { FallbackReason: not null } or { Attention: not null };
+        UpdateRetry();
+    }
+
+    private void UpdateRetry()
+    {
+        if (RetryButton is not null) RetryButton.IsEnabled = !writing && JobList.SelectedItem is JobRow
+            { Status: { State: RemoteJobState.NeedsAttention } status } && model.CanRetryRemote(status.WorkerId);
+    }
+
+    private async void RetryOnWorker(object sender, RoutedEventArgs e)
+    {
+        if (JobList.SelectedItem is not JobRow { Status: { State: RemoteJobState.NeedsAttention } status }) return;
+        await WriteAsync(async () =>
+        {
+            Feedback.Text = "Checking whether the saved narration can resume…";
+            Feedback.Text = await model.RetryRemoteAsync(status.WorkerId, status.JobId, lifetime.Token)
+                ? "The saved narration can continue. Watch its status here."
+                : "The saved narration still needs attention. See its details for the latest reason.";
+        });
     }
 
     private void OpenMp3(object sender, RoutedEventArgs e)

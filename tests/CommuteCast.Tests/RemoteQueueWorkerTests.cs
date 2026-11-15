@@ -101,6 +101,15 @@ public sealed class RemoteQueueWorkerTests
         Assert.Equal(RemoteJobState.NeedsAttention, trouble.State);
         Assert.Contains("fallbacks", trouble.Attention);
         Assert.Equal(second.JobId, Assert.Single(queue.Snapshot()).Id);
+
+        speech.KokoroVoices = ["af_heart", "af_missing"];
+        Assert.True(await worker.RetryAsync(first.JobId));
+        var recovered = Assert.IsType<RemoteJobStatus>(await folder.ReadStatusAsync(first.JobId));
+        Assert.Equal(RemoteJobState.Queued, recovered.State);
+        Assert.Equal("af_missing", recovered.ActualVoice?.Voice);
+        Assert.Null(recovered.FallbackReason);
+        Assert.Equal(2, folder.RequestIds().Count);
+        Assert.Equal(new[] { second.JobId, first.JobId }, queue.Snapshot().Select(j => j.Id));
     }
 
     private static QueueCoordinator OpenQueue(Workspace workspace, IJobStore store, ISpeechProvider speech) =>
@@ -109,11 +118,12 @@ public sealed class RemoteQueueWorkerTests
     private sealed class RestartableSpeech : ISpeechProvider
     {
         public bool BlockSecondChunk { get; set; } = true;
+        public string[] KokoroVoices { get; set; } = ["af_heart"];
         public int Syntheses { get; private set; }
         public TaskCompletionSource SecondChunk { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct) => Task.FromResult(new ProviderInfo(
-            engine, "fixture-" + engine, engine == "kokoro" ? ["af_heart"] : ["en_US-lessac-medium"], "ready", 0));
+            engine, "fixture-" + engine, engine == "kokoro" ? KokoroVoices : ["en_US-lessac-medium"], "ready", 0));
 
         public async Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
         {

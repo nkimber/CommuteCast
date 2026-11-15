@@ -11,6 +11,29 @@ namespace CommuteCast.Desktop.Tests;
 public sealed class RemoteQueueTests
 {
     [Fact]
+    public Task RegisteredWorkerReappearsWhenTheSharedFolderBecomesAvailableAfterStartup() => DesktopHost.Run(async () =>
+    {
+        var workspace = DesktopHost.Workspace();
+        var shared = workspace.Root + "-late-shared";
+        var settings = new AppSettings { QueuePaused = true, RemoteQueue = new(shared, true, "Basement", Guid.NewGuid().ToString("N"), []) };
+        await using var model = new MainViewModel(settings, workspace, powerEvents: new LifecycleTests.Events(), notifications: new LifecycleTests.Notifications());
+        await model.InitializeAsync();
+        Assert.Contains("attention", model.RemoteQueueLabel);
+
+        Directory.CreateDirectory(shared);
+        var folder = new RemoteQueueFolder(shared, workspace);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        while ((await folder.ReadWorkersAsync(timeout.Token)).Count == 0) await Task.Delay(100, timeout.Token);
+        var original = Assert.Single(await folder.ReadWorkersAsync(timeout.Token));
+        Assert.Equal("Basement", original.Name);
+        Assert.Equal("Remote queue", model.RemoteQueueLabel);
+        await model.SaveRemoteSettingsAsync(shared, false, "Basement", [], false);
+        var retired = Assert.Single(await folder.ReadWorkersAsync(timeout.Token));
+        Assert.Equal(original.WorkerId, retired.WorkerId);
+        Assert.Equal(RemoteWorkerState.Disabled, retired.State);
+    });
+
+    [Fact]
     public Task DesktopSubmitsToTheSelectedWorkerWithoutLocalSpeechAndDisplaysTheFinishedFallback() => DesktopHost.Run(async () =>
     {
         var workspace = DesktopHost.Workspace();

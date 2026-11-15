@@ -390,7 +390,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         queue.Changed += _ => Application.Current.Dispatcher.InvokeAsync(() => RefreshJobs(queue.Snapshot()));
         progressTimer.Tick += (_, _) => { foreach (var job in Jobs) job.RefreshActivity(); };
         progressTimer.Start();
-        syncTimer.Tick += (_, _) => { _ = RefreshCloudSyncAsync(); };
+        syncTimer.Tick += (_, _) => { _ = RefreshCloudSyncAsync(); OpenRemoteWorker(); };
         syncTimer.Start();
         RefreshVoiceChoices();
         NavigateCommand = Command(p => { Navigate(p?.ToString() ?? "compose"); return Task.CompletedTask; }, false);

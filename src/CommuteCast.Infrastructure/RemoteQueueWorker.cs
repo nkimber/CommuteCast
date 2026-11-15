@@ -10,6 +10,7 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
     private readonly Func<string, CloudSyncState> syncStatus = syncStatus ?? (path => CloudFileSync.ReadPath(path));
     private readonly SemaphoreSlim updates = new(1);
     private readonly Dictionary<string, RemoteJobStatus> lastStatus = new(StringComparer.Ordinal);
+    public string WorkerId => workerId;
     public event Action<RemoteJobStatus>? StatusChanged;
 
     public async Task PollAsync(CancellationToken ct = default, bool acceptRequests = true)
@@ -27,6 +28,37 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
     // The host can check in independently of a slow provider readiness check or an upload.
     public Task CheckInAsync(RemoteWorkerState state, IEnumerable<string> presets) => folder.WriteWorkerAsync(new(workerId, name,
         clock.GetUtcNow(), state, presets.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()));
+
+    public async Task<bool> RetryAsync(string jobId, CancellationToken ct = default)
+    {
+        await updates.WaitAsync(ct);
+        try
+        {
+            var request = await folder.ReadRequestAsync(jobId, ct);
+            var status = await ReadStatusAsync(jobId, ct);
+            if (request?.TargetWorkerId != workerId || status is not { State: RemoteJobState.NeedsAttention } || status.WorkerId != workerId)
+                throw new ArgumentException("Choose a job assigned to this worker that needs attention.");
+            var job = queue.Snapshot().FirstOrDefault(j => j.Id == jobId);
+            if (job is null)
+            {
+                if (status.ActualVoice is not null) throw new IOException("Restore the worker's local queue before retrying the previously accepted job.");
+                return await AcceptAsync(request, ct);
+            }
+
+            if (job.Remote is not { } remote || remote.WorkerId != workerId ||
+                !remote.QueueRoot.Equals(folder.Root, StringComparison.OrdinalIgnoreCase) || remote.RequestFingerprint != RemoteQueueFolder.Fingerprint(request))
+                throw new IOException("The saved job and shared request no longer match. Preserve both for inspection.");
+            if (job.Stage == JobStage.Generated)
+            {
+                await PublishAsync(job, ct);
+                return lastStatus[jobId].State is RemoteJobState.Ready or RemoteJobState.Uploading;
+            }
+            await queue.RetryAsync(jobId);
+            await ReportAsync(ToStatus(job, RemoteJobState.Queued));
+            return true;
+        }
+        finally { updates.Release(); }
+    }
 
     private async Task ImportAsync(CancellationToken ct)
     {
@@ -59,18 +91,22 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
         {
             ct.ThrowIfCancellationRequested();
             if (queue.Paused || queue.PowerSuspended || queue.PersistenceError.Length > 0) return;
-            Job job;
-            try { job = await planner.PrepareAsync(request, workerId, folder.Root, ct); }
-            catch (Exception error) when (error is RemoteSpeechUnavailableException or ArgumentException)
-            {
-                var reason = error is RemoteSpeechUnavailableException ? error.Message : "This narration could not be prepared. Review its text and voice choices on the submitting PC.";
-                await ReportAsync(new(request.JobId, workerId, clock.GetUtcNow(), RemoteJobState.NeedsAttention,
-                    RemoteVoice.From(request.Options, request.Preset), Attention: reason));
-                continue;
-            }
-            await queue.AddAsync(job, ct);
-            await ReportAsync(ToStatus(job, RemoteJobState.Queued));
+            await AcceptAsync(request, ct);
         }
+    }
+
+    private async Task<bool> AcceptAsync(RemoteRequest request, CancellationToken ct)
+    {
+        var current = await planner.TryPrepareAsync(request, workerId, folder.Root, ct);
+        if (current.Job is not { } job)
+        {
+            await ReportAsync(new(request.JobId, workerId, clock.GetUtcNow(), RemoteJobState.NeedsAttention,
+                RemoteVoice.From(request.Options, request.Preset), Attention: current.Attention));
+            return false;
+        }
+        await queue.AddAsync(job, ct);
+        await ReportAsync(ToStatus(job, RemoteJobState.Queued));
+        return true;
     }
 
     private async Task RecoverStatusesAsync(CancellationToken ct)
@@ -83,18 +119,7 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
             if (lastStatus.GetValueOrDefault(job.Id)?.State == RemoteJobState.Ready) continue;
             if (job.Stage == JobStage.Generated)
             {
-                try
-                {
-                    var filename = await folder.PublishAsync(job, workspace, ct);
-                    var state = syncStatus(folder.OutputPath(filename)) == CloudSyncState.InSync ? RemoteJobState.Ready : RemoteJobState.Uploading;
-                    await ReportAsync(ToStatus(job, state) with { OutputFile = filename, DurationSeconds = job.DurationSeconds });
-                }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-                {
-                    AppLogging.Failure("RemotePublication", error);
-                    await ReportAsync(ToStatus(job, RemoteJobState.NeedsAttention) with
-                    { Attention = "The finished MP3 is saved on the worker. Check the shared output folder and OneDrive sync so delivery can retry." });
-                }
+                await PublishAsync(job, ct);
                 continue;
             }
 
@@ -107,6 +132,25 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
             };
             await ReportAsync(status);
         }
+    }
+
+    private async Task PublishAsync(Job job, CancellationToken ct)
+    {
+        string filename;
+        RemoteJobState state;
+        try
+        {
+            filename = await folder.PublishAsync(job, workspace, ct);
+            state = syncStatus(folder.OutputPath(filename)) == CloudSyncState.InSync ? RemoteJobState.Ready : RemoteJobState.Uploading;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            AppLogging.Failure("RemotePublication", error);
+            await ReportAsync(ToStatus(job, RemoteJobState.NeedsAttention) with
+            { Attention = "The finished MP3 is saved on the worker. Check the shared output folder and OneDrive sync so delivery can retry." });
+            return;
+        }
+        await ReportAsync(ToStatus(job, state) with { OutputFile = filename, DurationSeconds = job.DurationSeconds });
     }
 
     private RemoteJobStatus ToStatus(Job job, RemoteJobState state)

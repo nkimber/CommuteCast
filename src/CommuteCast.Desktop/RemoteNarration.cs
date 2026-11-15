@@ -10,6 +10,7 @@ public sealed partial class MainViewModel
     private RemoteQueueHost? remoteHost;
     private RemoteRequest? pendingRemoteSubmission;
     private readonly Dictionary<string, string> remoteNotices = new(StringComparer.Ordinal);
+    private bool changingRemoteSettings;
 
     internal RemoteQueueSettings? RemoteSettings => settings.RemoteQueue;
     internal IReadOnlyList<NarrationPreset> RemotePresets => presetLibrary.Items;
@@ -32,24 +33,31 @@ public sealed partial class MainViewModel
         }
         var registration = previous?.RegistrationId ?? "";
         if (enabled && !RemoteIdentity.IsValid(registration)) registration = Guid.NewGuid().ToString("N");
-        settings.RemoteQueue = new(folder.Root, enabled, name, registration, fallbackNames, allowHosted);
-        try { await SaveSettingsAsync(); }
-        catch { settings.RemoteQueue = previous; throw; }
-        await StopRemoteWorkerAsync(disable: previous?.EnableWorker == true && !enabled);
-        OpenRemoteWorker();
+        changingRemoteSettings = true;
+        try
+        {
+            settings.RemoteQueue = new(folder.Root, enabled, name, registration, fallbackNames, allowHosted);
+            try { await SaveSettingsAsync(); }
+            catch { settings.RemoteQueue = previous; throw; }
+            await StopRemoteWorkerAsync(disable: previous?.EnableWorker == true && !enabled);
+        }
+        finally { changingRemoteSettings = false; OpenRemoteWorker(); }
     }
 
     internal RemoteQueueFolder? OpenRemoteFolder() => RemoteSettings is { } remote ? new(remote.Folder, Workspace) : null;
 
     private void OpenRemoteWorker()
     {
-        if (RemoteSettings is not { } config || !RemoteIdentity.IsValid(config.RegistrationId)) return;
+        if (!queueLoaded || changingRemoteSettings || shutdown.IsCancellationRequested || remoteHost is not null ||
+            RemoteSettings is not { } config || !RemoteIdentity.IsValid(config.RegistrationId)) return;
         try
         {
             var folder = new RemoteQueueFolder(config.Folder, Workspace);
             var fallbacks = config.FallbackPresets.Select(name => RemotePresets.FirstOrDefault(p =>
                 p.Name.Equals(name, StringComparison.OrdinalIgnoreCase))).OfType<NarrationPreset>().ToArray();
-            var planner = new RemoteRenderPlanner(provider.ReadyForSettingsAsync, fallbacks, config.AllowHosted);
+            var planner = new RemoteRenderPlanner((snapshot, ct) => SpeechProviders.IsHosted(snapshot.Engine)
+                ? provider.ReadyForSettingsAsync(snapshot, ct)
+                : provider.CaptureForSubmissionAsync(snapshot.Engine, cached: null, ct), fallbacks, config.AllowHosted);
             // A settings restore on another machine creates a separate roster entry.
             var id = Job.Hash(config.RegistrationId + "\n" + Environment.MachineName)[..32].ToLowerInvariant();
             var worker = new RemoteQueueWorker(id, config.WorkerName, folder, Workspace, queue, planner);
@@ -60,12 +68,15 @@ public sealed partial class MainViewModel
             var defaults = SpeechProviders.All.Where(p => !p.Capabilities.Hosted)
                 .Select(p => new NarrationPreset(p.DefaultVoice, new(p.Id, p.DefaultVoice, 1, false, "", new())));
             remoteHost = new(worker, config, queue, planner, fallbacks.Concat(defaults).ToArray());
+            if (remoteNotices.Remove("worker")) Raise(nameof(RemoteQueueLabel));
         }
         catch (Exception error) when (error is ArgumentException or IOException or UnauthorizedAccessException)
         {
-            AppLogging.Failure("RemoteWorkerStart", error);
-            remoteNotices["worker"] = "Check the shared remote queue folder in CommuteCast.";
-            Raise(nameof(RemoteQueueLabel));
+            if (remoteNotices.TryAdd("worker", "Check the shared remote queue folder in CommuteCast."))
+            {
+                AppLogging.Failure("RemoteWorkerStart", error);
+                Raise(nameof(RemoteQueueLabel));
+            }
         }
     }
 
@@ -83,6 +94,11 @@ public sealed partial class MainViewModel
         remoteHost = null;
         if (host is not null) await host.StopAsync(disable);
     }
+
+    internal bool CanRetryRemote(string id) => RemoteSettings?.EnableWorker == true && remoteHost?.WorkerId == id;
+
+    internal Task<bool> RetryRemoteAsync(string workerId, string id, CancellationToken ct) => CanRetryRemote(workerId)
+        ? remoteHost!.RetryAsync(id, ct) : throw new ArgumentException("Retry this narration on its assigned worker.");
 
     internal async Task<string> SubmitRemoteDraftAsync(string workerId, CancellationToken ct)
     {
