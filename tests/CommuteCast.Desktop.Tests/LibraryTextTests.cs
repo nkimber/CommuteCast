@@ -31,11 +31,11 @@ public class LibraryTextTests
             model.RefreshJobs([job]); model.SelectedJob = model.Jobs.Single();
             Assert.True(model.SelectedJob.HasGenerationPrompt);
             await DesktopHost.Execute(model.CopyLibraryPromptCommand, model.SelectedJob); Assert.Equal(original, copied[^1]);
-            model.CreateVersionDraft(job); Assert.Equal(original, model.GenerationPrompt);
+            model.CreateVersionDraft(job, () => true); Assert.Equal(original, model.GenerationPrompt);
             job.GenerationPrompt = null; model.RefreshJobs([job]);
             Assert.False(model.SelectedJob!.HasGenerationPrompt);
             Assert.Throws<ArgumentException>(() => MainViewModel.SavedPromptForCopy(job));
-            model.CreateVersionDraft(job); Assert.Equal("", model.GenerationPrompt);
+            model.CreateVersionDraft(job, () => true); Assert.Equal("", model.GenerationPrompt);
         }
         finally { await model.DisposeAsync(); }
     });

@@ -51,6 +51,11 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
     public string Title => Job.Title;
     public bool HasGenerationPrompt => !string.IsNullOrWhiteSpace(Job.GenerationPrompt);
     public string GenerationPromptStatus => HasGenerationPrompt ? "Saved generation prompt available" : "No generation prompt saved for this narration. Attach the prompt you used to generate its script.";
+    public bool CanCreateVersion => VersionDraftUnavailableReason(Job) is null;
+    public string CreateVersionHint => VersionDraftUnavailableReason(Job) ?? "Open the saved script and choose speech settings for a separate MP3.";
+    internal static string? VersionDraftUnavailableReason(Job job) => job.DeletionRequested || job.Stage == JobStage.Deleting
+        ? "This narration is pending removal."
+        : string.IsNullOrWhiteSpace(job.Source) ? "This narration has no saved script." : null;
     public bool HasOriginalVersion => Job.Version is not null;
     public string VersionSummary => Job.Version is { } version
         ? $"Version {version.Number} of {version.BaseTitle} · " + (Job.Hash(Job.Source) == version.ParentSourceHash ? "script unchanged from parent" : "script edited from parent")
@@ -362,7 +367,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public ICommand ResumeJobCommand { get; }
     public ICommand ReplaceDestinationCommand { get; }
     public ICommand CancelCommand { get; }
-    public ICommand ReuseCommand { get; }
+    public ICommand CreateVersionCommand { get; }
     public ICommand DeleteCommand { get; }
     public ICommand DeleteAllCommand { get; }
     public ICommand DiagnosticsCommand { get; }
@@ -460,7 +465,13 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         });
         ReplaceDestinationCommand = Command(async _ => { var job = RequireSelected(); var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); await queue.RetryAsync(job.Id, path); StatusMessage = queue.Snapshot().Single(j => j.Id == job.Id).ExportNotice is { Length: > 0 } notice ? notice : "Narration queued in the selected output folder."; } });
         CancelCommand = Command(async _ => { var id = RequireSelected().Id; await queue.CancelAsync(id); StatusMessage = "Cancellation settled. Exported files remain exported; validated chunks are retained for retry."; });
-        ReuseCommand = Command(_ => { CreateVersionDraft(RequireSelected()); return Task.CompletedTask; });
+        CreateVersionCommand = Command(_ =>
+        {
+            CreateVersionDraft(RequireSelected(), () => MessageBox.Show(Application.Current.MainWindow,
+                "Replace the current narration draft with the selected narration's saved script and settings?",
+                "Create new version", MessageBoxButton.OKCancel, MessageBoxImage.Question, MessageBoxResult.Cancel) == MessageBoxResult.OK);
+            return Task.CompletedTask;
+        });
         OpenOriginalVersionCommand = Command(_ =>
         {
             var id = RequireSelected().Version?.RootJobId;

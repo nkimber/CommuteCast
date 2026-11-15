@@ -16,9 +16,10 @@ public sealed partial class MainViewModel
     private int NextVersionNumber(string root) => Jobs.Where(j => j.Id == root || j.Job.Version?.RootJobId == root)
         .Select(j => j.Job.Version?.Number ?? 1).DefaultIfEmpty(1).Max() + 1;
 
-    internal void CreateVersionDraft(Job job)
+    internal void CreateVersionDraft(Job job, Func<bool> confirmReplace)
     {
-        if (job.DeletionRequested || job.Stage == JobStage.Deleting) throw new ArgumentException("This narration is pending removal.");
+        if (JobView.VersionDraftUnavailableReason(job) is { } reason) throw new ArgumentException(reason);
+        if ((Source.Length > 0 || DraftTitle.Length > 0 || GenerationPrompt.Length > 0 || HasVersionDraft) && !confirmReplace()) return;
         var root = job.Version?.RootJobId ?? job.Id;
         draftVersion = new(root, job.Id, job.Version?.BaseTitle ?? job.Title, Math.Max(NextVersionNumber(root), (job.Version?.Number ?? 1) + 1), Job.Hash(job.Source));
         DraftTitle = SuggestedVersionTitle(draftVersion); Source = job.Source; GenerationPrompt = job.GenerationPrompt ?? "";
