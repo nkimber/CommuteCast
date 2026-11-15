@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Collections.Concurrent;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -353,6 +354,57 @@ public sealed class WebApplicationTests
         Assert.Contains("Requested voice is unavailable.", job.GetRawText());
     }
 
+    [Fact]
+    public async Task DesktopAndPhoneRequestsShareOneSerialWorkerAndProduceFourReadyMp3s()
+    {
+        await using var host = new StudioFactory(remoteQueue: true);
+        using var phone = await host.OwnerClientAsync();
+        var runtime = host.Services.GetRequiredService<WebRuntime>();
+        var workerWorkspace = new Workspace(Path.Combine(runtime.Workspace.Root, "batch-worker"));
+        var folder = new RemoteQueueFolder(host.SharedQueue, workerWorkspace);
+        var store = new SqliteJobStore(workerWorkspace);
+        var speech = new SyntheticSpeech { LocalVoiceContract = 1 };
+        await using var queue = new QueueCoordinator(workerWorkspace, store, speech, new(new()), new(workerWorkspace, store));
+        await queue.InitializeAsync();
+        var id = Guid.NewGuid().ToString("N");
+        var worker = new RemoteQueueWorker(id, "Basement", folder, workerWorkspace, queue,
+            new(speech.ReadyForSettingsAsync, []), syncStatus: _ => CloudSyncState.InSync);
+        await worker.CheckInAsync(RemoteWorkerState.Ready, ["Kokoro"]);
+        var state = await phone.GetFromJsonAsync<JsonElement>("/api/remote");
+        var preset = state.GetProperty("presets")[0].GetProperty("id").GetString()!;
+        var options = new NarrationOptions("kokoro", "af_heart", 1, false, "", new(), new());
+        var startingTime = DateTimeOffset.UtcNow;
+        var scripts = new[] { "Read the first item.", "Read the second item.", "Read the third item.", "Read the fourth item." };
+        for (var index = 0; index < scripts.Length; index++)
+        {
+            var jobId = Guid.NewGuid().ToString("N");
+            var submittedAt = startingTime.AddSeconds(index);
+            if (index % 2 == 0) await folder.SubmitAsync(new(jobId, id, submittedAt, $"Item {index + 1}", scripts[index], options));
+            else (await phone.PostAsJsonAsync("/api/remote/jobs", new WebRemoteSubmission(jobId, id, submittedAt,
+                $"Item {index + 1}", scripts[index], preset))).EnsureSuccessStatusCode();
+        }
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        JsonElement[] ready;
+        do
+        {
+            await worker.PollAsync(deadline.Token);
+            var response = await phone.GetFromJsonAsync<JsonElement>("/api/remote", deadline.Token);
+            var rows = response.GetProperty("jobs").EnumerateArray();
+            ready = rows.Where(row => row.GetProperty("status") is { ValueKind: JsonValueKind.Object } status &&
+                status.GetProperty("state").GetString() == "Ready").ToArray();
+            if (ready.Length == scripts.Length) break;
+            await Task.Delay(100, deadline.Token);
+        } while (true);
+
+        Assert.Equal(scripts, speech.RenderedText);
+        Assert.False(speech.OverlappingRenders);
+        Assert.Equal(4, Directory.GetFiles(folder.OutputFolder, "*.mp3").Length);
+        Assert.All(ready, row => Assert.True(row.GetProperty("status").GetProperty("durationSeconds").GetDouble() > 0));
+        Assert.Empty(runtime.Queue.Snapshot());
+        Assert.Equal(0, host.Speech.Calls);
+    }
+
     private static async Task WaitPublicationAsync(HttpClient client, string id, string wanted)
     {
         var deadline = DateTime.UtcNow.AddSeconds(40);
@@ -445,8 +497,12 @@ public sealed class WebApplicationTests
     {
         public int Calls;
         public bool RepairUnavailable;
+        public int LocalVoiceContract { get; init; }
+        public ConcurrentQueue<string> RenderedText { get; } = new();
+        private int rendering;
+        public bool OverlappingRenders { get; private set; }
         public IReadOnlyDictionary<string, string> VoiceNames { get; } = new Dictionary<string, string>();
-        public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct) => Task.FromResult(new ProviderInfo(engine, "web-test", ["af_heart"], "ready", 0));
+        public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct) => Task.FromResult(new ProviderInfo(engine, "web-test", ["af_heart"], "ready", 0, LocalVoiceContract: LocalVoiceContract));
         public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct, bool explicitRetry) => ReadyAsync(engine, ct);
         public Task<ProviderInfo> CaptureForSubmissionAsync(string engine, ProviderInfo? cached, CancellationToken ct = default) => ReadyAsync(engine, ct);
         public async Task<SpeechRepairResult> RepairAsync(string engine, CancellationToken ct = default)
@@ -458,9 +514,16 @@ public sealed class WebApplicationTests
         public Task<ProviderInfo> ReadyForSettingsAsync(NarrationSettings settings, CancellationToken ct) => ReadyAsync(settings.Engine, ct);
         public async Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
         {
-            Interlocked.Increment(ref Calls); await Task.Delay(150, ct);
-            using var file = File.Create(output); const int samples = 24000 * 4; WaveAudio.WriteHeader(file, samples);
-            using var writer = new BinaryWriter(file); for (var i = 0; i < samples; i++) writer.Write((short)(Math.Sin(i * 2 * Math.PI * 220 / 24000) * 8000));
+            Interlocked.Increment(ref Calls);
+            if (Interlocked.Increment(ref rendering) > 1) OverlappingRenders = true;
+            RenderedText.Enqueue(text);
+            try
+            {
+                await Task.Delay(150, ct);
+                using var file = File.Create(output); const int samples = 24000 * 4; WaveAudio.WriteHeader(file, samples);
+                using var writer = new BinaryWriter(file); for (var i = 0; i < samples; i++) writer.Write((short)(Math.Sin(i * 2 * Math.PI * 220 / 24000) * 8000));
+            }
+            finally { Interlocked.Decrement(ref rendering); }
         }
         public async Task SynthesizeAsync(Job job, NarrationSettings settings, string text, string output, Func<Task> checkpoint, CancellationToken ct)
         {
