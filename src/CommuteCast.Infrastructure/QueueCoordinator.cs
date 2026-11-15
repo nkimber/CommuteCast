@@ -103,14 +103,15 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
                 catch (Exception error) { job.Stage = JobStage.Deleting; job.Error = FriendlyError(error); retained.Add(job); await store.SaveAsync(job, ct); }
                 continue;
             }
-            try { await publisher.ReconcileAsync(job, ct); }
+            try { if (job.Remote is null) await publisher.ReconcileAsync(job, ct); }
             catch (IOException error) { AppLogging.Failure("ExportReconciliation", error); job.Error = "Export reconciliation failed. The local job is preserved; inspect the destination and retry."; job.Stage = JobStage.Failed; }
             if (job.CancellationRequested && !job.ExportCommitted)
             {
                 job.Stage = JobStage.Cancelled; job.Error = ""; job.FailureCategory = FailureCategory.Cancelled; job.FailedStage = null;
                 await store.SaveAsync(job, ct);
             }
-            if (job.Stage is not (JobStage.Exported or JobStage.Cancelled or JobStage.Failed))
+            if (job.Stage is not (JobStage.Exported or JobStage.Cancelled or JobStage.Failed) &&
+                !(job.Stage == JobStage.Generated && job.Remote is not null))
             {
                 job.Stage = JobStage.Queued;
                 await store.SaveAsync(job, ct);
@@ -415,7 +416,7 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
         job.DurationSeconds = checkedFinal.Duration;
         job.FinalHash = await Workspace.HashFileAsync(final, ct);
         await StageAsync(job, JobStage.Generated, ct);
-        await publisher.PublishAsync(job, ct);
+        if (job.Remote is null) await publisher.PublishAsync(job, ct);
         Notify();
     }
     public async Task CancelAsync(string id)

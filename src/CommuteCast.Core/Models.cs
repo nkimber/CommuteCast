@@ -33,6 +33,7 @@ public sealed class Job
     public string Source { get; set; } = "";
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? GenerationPrompt { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public NarrationVersion? Version { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public RemoteRender? Remote { get; set; }
     public PreparedText Prepared { get; set; } = new("", []);
     public NarrationSettings Settings { get; set; } = new("kokoro", "af_heart", 1, false, "", "");
     public string Destination { get; set; } = "";

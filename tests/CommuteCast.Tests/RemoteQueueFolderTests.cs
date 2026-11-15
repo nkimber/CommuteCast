@@ -14,7 +14,7 @@ public sealed class RemoteQueueFolderTests : IDisposable
     public async Task ConcurrentSubmissionsWithTheSameIdPreserveTheFirstRequest()
     {
         var folder = Open();
-        var request = new RemoteRequest(Id(), DateTimeOffset.UtcNow, "Morning", "Listen to this.",
+        var request = new RemoteRequest(Id(), Id(), DateTimeOffset.UtcNow, "Morning", "Listen to this.",
             new("kokoro", "af_heart", 1, false, "", new()));
 
         await Task.WhenAll(folder.SubmitAsync(request), Open().SubmitAsync(request));

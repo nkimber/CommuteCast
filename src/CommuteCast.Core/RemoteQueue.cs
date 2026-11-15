@@ -1,14 +1,15 @@
 namespace CommuteCast.Core;
 
-public sealed record RemoteRequest(string JobId, DateTimeOffset CreatedUtc, string Title, string Text,
-    NarrationOptions Options, int Version = 1)
+public sealed record RemoteRequest(string JobId, string TargetWorkerId, DateTimeOffset CreatedUtc, string Title, string Text,
+    NarrationOptions Options, int Version = 1, string? Preset = null)
 {
     public void Validate()
     {
-        if (Version != 1 || !RemoteIdentity.IsValid(JobId) || CreatedUtc == default)
+        if (Version != 1 || !RemoteIdentity.IsValid(JobId) || !RemoteIdentity.IsValid(TargetWorkerId) || CreatedUtc == default)
             throw new ArgumentException("The remote request version or identity is invalid.");
         if (string.IsNullOrWhiteSpace(Title) || Title.Length > 200 || string.IsNullOrWhiteSpace(Text) ||
-            Text.Length > TextPreparation.MaximumCharacters || Options?.Profile is null || Options.Pronunciation is null)
+            Text.Length > TextPreparation.MaximumCharacters || Options?.Profile is null || Options.Pronunciation is null ||
+            Preset is { Length: > 60 } || Preset?.Any(char.IsControl) == true)
             throw new ArgumentException("A remote request needs a title, narration text and valid voice settings.");
         if (Options.Voice?.Length > 160 || SpeechProviders.IsKnown(Options.Engine) &&
             SpeechProviders.IsHosted(Options.Engine) != (Options.Speech is not null))
@@ -19,11 +20,17 @@ public sealed record RemoteRequest(string JobId, DateTimeOffset CreatedUtc, stri
 
 public enum RemoteJobState { Queued, Generating, Uploading, Ready, NeedsAttention }
 
-public sealed record RemoteVoice(string Engine, string Voice, double Speed, string? Model = null, string? Preset = null)
+public sealed record RemoteVoice(string Engine, string Voice, double Speed, string? Model = null, string? Preset = null,
+    LocalVoiceOptions? LocalDelivery = null, bool HasDeliveryInstructions = false, string? Emotion = null)
 {
     public static RemoteVoice From(NarrationOptions options, string? preset = null) =>
-        new(options.Engine, options.Voice, options.Speed, options.Speech?.Model, preset);
+        new(options.Engine, options.Voice, options.Speed, options.Speech?.Model, preset, options.LocalVoice,
+            options.Speech?.Delivery.Length > 0, options.Speech?.Emotion);
 }
+
+// Stored alongside the accepted narration in the worker's private queue.
+public sealed record RemoteRender(string WorkerId, string QueueRoot, string RequestFingerprint,
+    RemoteVoice RequestedVoice, RemoteVoice ActualVoice, string? FallbackReason);
 
 public sealed record RemoteJobStatus(string JobId, string WorkerId, DateTimeOffset UpdatedUtc, RemoteJobState State,
     RemoteVoice RequestedVoice, RemoteVoice? ActualVoice = null, int ChunksDone = 0, int ChunksTotal = 0,

@@ -102,6 +102,51 @@ public sealed class RemoteQueueFolder
         return path;
     }
 
+    public async Task<string> PublishAsync(Job job, Workspace workspace, CancellationToken ct = default)
+    {
+        if (job.Remote is null || !Root.Equals(job.Remote.QueueRoot, StringComparison.OrdinalIgnoreCase) ||
+            job.Stage != JobStage.Generated || job.FinalHash.Length == 0 || !RemoteIdentity.IsValid(job.Id))
+            throw new InvalidOperationException("Publish only a validated narration assigned to this folder.");
+        var name = ExportPublisher.Filename(job);
+        var destination = OutputPath(name);
+        if (File.Exists(destination))
+        {
+            if (await Workspace.HashFileAsync(destination, ct) != job.FinalHash)
+                throw new IOException("A different file already occupies this narration's output name.");
+            return name;
+        }
+
+        var source = workspace.FinalPath(job);
+        Workspace.RejectReparsePoints(Path.GetDirectoryName(source)!);
+        Workspace.RejectFileReparsePoint(source);
+        await using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
+        if (Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(input, ct)) != job.FinalHash)
+            throw new IOException("The locally validated narration has changed. Use Retry on the worker.");
+        input.Position = 0;
+
+        Directory.CreateDirectory(OutputFolder);
+        var temporary = Path.Combine(OutputFolder, $".{job.Id}-{Guid.NewGuid():N}.partial");
+        Guard(temporary);
+        var created = false;
+        try
+        {
+            await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, true))
+            {
+                created = true;
+                await input.CopyToAsync(output, ct);
+                output.Flush(true);
+            }
+            ct.ThrowIfCancellationRequested();
+            Guard(destination);
+            File.Move(temporary, destination);
+            return name;
+        }
+        finally
+        {
+            if (created && File.Exists(temporary)) { Guard(temporary); File.Delete(temporary); }
+        }
+    }
+
     private static bool IsOutputName(string filename) => filename.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase) &&
         filename.Length <= 200 && !filename.Any(c => char.IsControl(c) || "<>:\"/\\|?*".Contains(c));
 
