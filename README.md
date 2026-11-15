@@ -1,6 +1,6 @@
 # CommuteCast
 
-The new **web studio** runs on a Windows micro PC, with a responsive narration editor, voice controls, podcast dialogue, prompt builder, persistent queue and library. Finished MP3s publish to a read-only public-link Microsoft 365 folder; the website has no audio playback or download endpoints. Cloudflare Tunnel and Access provide private management access at your chosen domain. See [Web application setup](documents/Web-Application.md) for local startup, Microsoft 365 permissions, Cloudflare configuration and acceptance limits.
+The **web studio** runs on a Windows micro PC with a responsive narration editor, voice controls, podcast dialogue, prompt builder, persistent queue and library. Finished MP3s publish to a Microsoft 365 folder. The **Listen** page plays files from that folder, remembers where you stopped and opens from an Android home-screen icon. Cloudflare Tunnel and Access protect the studio and listener. See [Web application setup](documents/Web-Application.md) for Microsoft 365 permissions, Cloudflare configuration and listener installation.
 
 ```powershell
 .\scripts\Start-CommuteCast-Web.ps1
@@ -9,6 +9,8 @@ The new **web studio** runs on a Windows micro PC, with a responsive narration e
 Open `http://127.0.0.1:5188`. The web studio uses a separate `%LOCALAPPDATA%\CommuteCast-Web` workspace by default. Existing desktop narration data remains in its original workspace.
 
 A native Windows WPF utility that turns pasted text into a single MP3 using local or hosted speech. Source, preparation, queue, chunks, and diagnostics are saved under `%LOCALAPPDATA%\CommuteCast`. Only a completed, validated MP3 is published to your chosen local folder. OneDrive handles synchronization separately; the application reports **cloud upload unknown**.
+
+The Windows app also supports sending narrations to another CommuteCast PC through a shared OneDrive folder. See [Remote narration through OneDrive](documents/Remote-Queue.md) for worker setup, status, voice fallback, and restart checks.
 
 Local Kokoro/Piper and hosted ElevenLabs, OpenAI, Cartesia and Google Gemini are available through the same queue. Podcast mode supports two to five speakers with reusable personalities, provider voice bindings and formats. Hosted adapters have automated contract/audio tests; live provider-account and listening acceptance remains pending. See [Podcast and hosted speech](documents/Podcast-and-Hosted-Speech.md) for setup, workflow and limits, and the [original implementation plan](documents/Multi-Provider-TTS-and-Podcast-Plan.md) for design decisions.
 

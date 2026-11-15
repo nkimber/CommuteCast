@@ -8,6 +8,9 @@ public sealed class RemoteRenderPlanner(
     Func<NarrationSettings, CancellationToken, Task<ProviderInfo>> checkSpeech,
     IReadOnlyList<NarrationPreset> fallbacks, bool allowHosted = false)
 {
+    public async Task<bool> IsAvailableAsync(NarrationOptions options, CancellationToken ct) =>
+        (await TrySettingsAsync(options, ct)).Settings is not null;
+
     public async Task<Job> PrepareAsync(RemoteRequest request, string workerId, string queueRoot, CancellationToken ct)
     {
         request.Validate();

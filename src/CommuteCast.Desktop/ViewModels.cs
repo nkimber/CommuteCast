@@ -580,6 +580,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         try { using var trace = new StartupStepTrace(StartupPhase.AuditionRecovery); await Task.Run(() => auditions.RecoverAsync(shutdown.Token)); trace.Complete(); }
         catch (IOException error) { AppLogging.Failure("AuditionRecovery", error); previewNotice = "An interrupted voice preview needs inspection. Its files were preserved in private storage."; }
         using (var trace = new StartupStepTrace(StartupPhase.QueueRecovery)) { await Task.Run(() => queue.InitializeAsync(shutdown.Token)); queueLoaded = true; Raise(nameof(LibrarySummary)); trace.Complete(); }
+        OpenRemoteWorker();
         try { using var trace = new StartupStepTrace(StartupPhase.SpeechReadiness); await CheckReadinessAsync(); trace.Complete(); } catch (Exception error) { AppLogging.Failure("InitialSpeechReadiness", error); StatusMessage = QueueCoordinator.FriendlyError(error); }
         await RefreshVoiceLibraryAsync();
         if (previewNotice is not null) ReportError(previewNotice);
@@ -952,6 +953,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         var settled = operations.StopAsync();
         draftSave?.Cancel(); shutdown.Cancel(); Playback.Stop();
         await settled.WaitAsync(TimeSpan.FromSeconds(20));
+        await StopRemoteWorkerAsync();
         Playback.Dispose(); // An already admitted playback action may have finished after the first stop.
         await ClearComparisonAsync();
         await queue.DisposeAsync();

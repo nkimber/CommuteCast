@@ -95,6 +95,7 @@ public record ProviderInfo(string Engine, string Fingerprint, string[] Voices, s
 public record AudioInfo(double Duration, int SampleRate, int Channels, long Samples, double Peak, double Rms);
 public sealed class AppSettings
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public RemoteQueueSettings? RemoteQueue { get; set; }
     public string Destination { get; set; } = "";
     public string Engine { get; set; } = "kokoro";
     public string Voice { get; set; } = "af_heart";

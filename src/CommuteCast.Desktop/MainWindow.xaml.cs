@@ -38,6 +38,7 @@ public partial class MainWindow : Window
         if (e.PropertyName is nameof(MainViewModel.Voice) or nameof(MainViewModel.Voices)) ScheduleVoiceSelection();
     }
     private void VoiceCatalogUpdated(object sender, DataTransferEventArgs e) => ScheduleVoiceSelection();
+    private void OpenRemoteQueue(object sender, RoutedEventArgs e) => new RemoteQueueWindow(model) { Owner = this }.ShowDialog();
     private void ScheduleVoiceSelection()
     {
         if (voiceSelectionPending) return;

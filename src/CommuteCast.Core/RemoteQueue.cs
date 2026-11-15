@@ -39,6 +39,9 @@ public sealed record RemoteJobStatus(string JobId, string WorkerId, DateTimeOffs
 
 public enum RemoteWorkerState { Starting, Ready, Busy, NeedsAttention, Stopped, Disabled, Offline }
 
+public sealed record RemoteQueueSettings(string Folder, bool EnableWorker, string WorkerName, string RegistrationId,
+    string[] FallbackPresets, bool AllowHosted = false);
+
 public sealed record RemoteWorkerStatus(string WorkerId, string Name, DateTimeOffset UpdatedUtc, RemoteWorkerState State,
     string[] Presets, int Version = 1)
 {

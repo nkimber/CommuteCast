@@ -10,14 +10,15 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
     private readonly Func<string, CloudSyncState> syncStatus = syncStatus ?? (path => CloudFileSync.ReadPath(path));
     private readonly SemaphoreSlim updates = new(1);
     private readonly Dictionary<string, RemoteJobStatus> lastStatus = new(StringComparer.Ordinal);
+    public event Action<RemoteJobStatus>? StatusChanged;
 
-    public async Task PollAsync(CancellationToken ct = default)
+    public async Task PollAsync(CancellationToken ct = default, bool acceptRequests = true)
     {
         await updates.WaitAsync(ct);
         try
         {
             await RecoverStatusesAsync(ct);
-            if (!queue.Paused && !queue.PowerSuspended && queue.PersistenceError.Length == 0)
+            if (acceptRequests && !queue.Paused && !queue.PowerSuspended && queue.PersistenceError.Length == 0)
                 await ImportAsync(ct);
         }
         finally { updates.Release(); }
@@ -136,6 +137,7 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
         status = status with { UpdatedUtc = now };
         await folder.WriteStatusAsync(status);
         lastStatus[status.JobId] = status;
+        StatusChanged?.Invoke(status);
     }
 
     private async Task<RemoteJobStatus?> ReadStatusAsync(string id, CancellationToken ct)
