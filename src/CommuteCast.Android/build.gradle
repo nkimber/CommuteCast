@@ -12,6 +12,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = '0.1.0'
+        testInstrumentationRunner = 'dev.kimber.commutecast.listener.PlaybackTestRunner'
     }
 
     compileOptions {
@@ -28,4 +29,6 @@ dependencies {
     compileOnly 'com.google.j2objc:j2objc-annotations:3.0.0'
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.json:json:20250517'
+    androidTestImplementation 'androidx.test:runner:1.7.0'
+    androidTestImplementation 'junit:junit:4.13.2'
 }

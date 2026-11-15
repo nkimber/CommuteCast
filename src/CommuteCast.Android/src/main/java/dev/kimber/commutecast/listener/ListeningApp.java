@@ -5,6 +5,9 @@ import android.content.SharedPreferences;
 
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaMetadata;
+import androidx.media3.common.util.UnstableApi;
+import androidx.media3.datasource.DataSource;
+import androidx.media3.datasource.DefaultHttpDataSource;
 
 import java.io.IOException;
 import java.net.URI;
@@ -17,7 +20,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-public final class ListeningApp extends Application {
+public class ListeningApp extends Application {
     record Track(String key, String account, OneDriveLibrary.Folder folder, OneDriveLibrary.Episode episode) {
         MediaItem mediaItem() {
             return new MediaItem.Builder().setMediaId(key)
@@ -88,10 +91,17 @@ public final class ListeningApp extends Application {
             String key = hash(account.key() + "/" + folder.drive() + "/" + episode.id());
             found.add(new Track(key, account.key(), folder, episode));
         }
-        synchronized (this) {
-            if (generation != revision) throw new IOException("The OneDrive settings changed. Refresh the library.");
-            catalog = Collections.unmodifiableList(found);
-        }
+        setCatalog(generation, found);
+    }
+
+    synchronized void setCatalog(long generation, List<Track> found) throws IOException {
+        if (generation != revision) throw new IOException("The OneDrive settings changed. Refresh the library.");
+        catalog = Collections.unmodifiableList(found);
+    }
+
+    @UnstableApi
+    DataSource.Factory audioSource() {
+        return new DefaultHttpDataSource.Factory().setConnectTimeoutMs(15_000).setReadTimeoutMs(20_000);
     }
 
     URI playbackUri(String key) throws Exception {

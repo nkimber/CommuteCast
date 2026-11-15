@@ -117,6 +117,7 @@ public final class ListenerActivity extends Activity {
         if (connecting != null) MediaController.releaseFuture(connecting);
         connecting = null;
         player = null;
+        render();
         super.onStop();
     }
 

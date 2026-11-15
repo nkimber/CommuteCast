@@ -12,7 +12,6 @@ import androidx.media3.common.ForwardingSimpleBasePlayer;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.datasource.ResolvingDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
@@ -47,8 +46,7 @@ public final class PlaybackService extends MediaSessionService {
     @Override public void onCreate() {
         super.onCreate();
         app = (ListeningApp) getApplication();
-        var http = new DefaultHttpDataSource.Factory().setConnectTimeoutMs(15_000).setReadTimeoutMs(20_000);
-        var source = new ResolvingDataSource.Factory(http, spec -> {
+        var source = new ResolvingDataSource.Factory(app.audioSource(), spec -> {
             if (!"commutecast".equals(spec.uri.getScheme()) || !"onedrive".equals(spec.uri.getHost()))
                 throw new IOException("The source is outside the listening library.");
             try {
