@@ -19,6 +19,12 @@ The optional web host lets you send pasted text from Chrome and follow the same 
 
 Open `/listen` in Chrome and use **Send a narration**, or go directly to `/remote`. Use the approved [web sign-in setup](Web-Application.md) for access away from home. The form offers Studio defaults and saved presets. Select a worker and a preset, enter the text, and send it. The browser request uses the worker's existing serial queue. Chrome can open both pages within the CommuteCast home-screen app.
 
+## Check both copies of the shared folder
+
+From the portable package, run `.\app\CommuteCast.Maintenance.exe inspect-remote --folder "<local copy of the shared folder>"` on each PC. Compare the worker IDs and check-in times. Add `--job <job ID>` to compare one request, its status, and its output metadata. The job ID is available under **Copy speech diagnostics** for a job that needs attention, or as the name of its request file in `Inbox`.
+
+The report only reads the roster, status, and file metadata. It excludes the request contents, worker names, titles, and local paths. `RegisteredCloudFilesRoot` means Windows recognizes a local sync provider for that path. Compare the worker and job IDs to verify that the two PCs actually share the same folder. [Windows sync root metadata](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfgetsyncrootinfobypath)
+
 For live acceptance, use a short synthetic script, close the work app after submission, and verify that the remote status advances when you reopen it. Check that the actual Android OneDrive account can open the completed MP3. Send a second narration from Chrome on Android and check that the same worker picks it up. Repeat with the basement app restarted after the first chunk and with a requested voice missing from its catalog. Check for one delivered file with the expected fallback notice. The automated restart test uses simulated speech, real FFmpeg, and a temporary Windows Cloud Files sync root. It exercises Windows in-sync metadata without connecting to an actual OneDrive account. [Windows Cloud Files confirmation](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfconverttoplaceholder)
 
 The automated batch test submits four requests through the desktop file protocol and the phone API, checks their rendering order and lack of overlap, and verifies four completed MP3s. It uses real FFmpeg with simulated speech and sync confirmation. The phone form was also exercised in Chrome at a 390-pixel viewport with an isolated queue.

@@ -92,6 +92,13 @@ public sealed class RemoteQueueWorkerTests
             var receipt = Assert.IsType<RemoteDelivery>(saved.Remote?.Delivery);
             Assert.Equal(status.OutputFile, receipt.OutputFile);
             Assert.Equal(saved.FinalHash, receipt.Hash);
+            var inspection = await reopenedFolder.InspectAsync(request.JobId);
+            Assert.True(inspection.RegisteredCloudFilesRoot);
+            Assert.NotNull(inspection.Job);
+            Assert.True(inspection.Job.RequestFileVisible);
+            Assert.Equal(RemoteJobState.Ready, inspection.Job.State);
+            Assert.Equal(id, inspection.Job.WorkerId);
+            Assert.Equal(CloudSyncState.InSync, inspection.Job.OutputSync);
             Assert.Equal(calls, speech.Syntheses);
         }
 

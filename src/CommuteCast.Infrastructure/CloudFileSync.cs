@@ -46,6 +46,14 @@ public static class CloudFileSync
         finally { RtlSetThreadPlaceholderCompatibilityMode(previousMode); }
     }
 
+    internal static bool HasRegisteredSyncRoot(string path)
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        const uint basicInfo = 0;
+        try { return CfGetSyncRootInfoByPath(path, basicInfo, out _, sizeof(long), IntPtr.Zero) == 0; }
+        catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException) { return false; }
+    }
+
     public static CloudSyncState FromPlaceholderState(uint state) => state == uint.MaxValue || (state & Placeholder) == 0
         ? CloudSyncState.Unknown : (state & InSync) != 0 ? CloudSyncState.InSync : CloudSyncState.NotInSync;
 
@@ -65,6 +73,8 @@ public static class CloudFileSync
     private static extern bool FindClose(IntPtr handle);
     [DllImport("cldapi.dll")]
     private static extern uint CfGetPlaceholderStateFromAttributeTag(uint attributes, uint reparseTag);
+    [DllImport("cldapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int CfGetSyncRootInfoByPath(string path, uint infoClass, out long syncRootFileId, uint bufferLength, IntPtr returnedLength);
     [DllImport("ntdll.dll", ExactSpelling = true)]
     private static extern sbyte RtlSetThreadPlaceholderCompatibilityMode(sbyte mode);
 }

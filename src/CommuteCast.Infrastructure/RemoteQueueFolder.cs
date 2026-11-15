@@ -96,6 +96,22 @@ public sealed class RemoteQueueFolder
         return workers.OrderBy(w => w.Name, StringComparer.CurrentCultureIgnoreCase).ThenBy(w => w.WorkerId).ToArray();
     }
 
+    public async Task<RemoteQueueInspection> InspectAsync(string? jobId = null, CancellationToken ct = default)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var workers = (await ReadWorkersAsync(ct)).Select(w => new RemoteWorkerInspection(w.WorkerId, w.StateAt(now), w.UpdatedUtc)).ToArray();
+        RemoteJobInspection? job = null;
+        if (jobId is not null)
+        {
+            var requestVisible = File.Exists(RecordPath("Inbox", jobId));
+            var status = await ReadStatusAsync(jobId, ct);
+            var output = status?.OutputFile is { } filename ? OutputPath(filename) : null;
+            job = new(jobId, requestVisible, status?.WorkerId, status?.State, status?.UpdatedUtc, status?.FallbackReason is not null,
+                output is not null && File.Exists(output), output is null ? null : CloudFileSync.ReadPath(output));
+        }
+        return new(CloudFileSync.HasRegisteredSyncRoot(Root), workers, job);
+    }
+
     public string OutputPath(string filename)
     {
         if (!IsOutputName(filename)) throw new ArgumentException("The shared output must be an MP3 filename.");
@@ -224,3 +240,8 @@ public sealed class RemoteQueueFolder
         }
     }
 }
+
+public sealed record RemoteQueueInspection(bool RegisteredCloudFilesRoot, IReadOnlyList<RemoteWorkerInspection> Workers, RemoteJobInspection? Job);
+public sealed record RemoteWorkerInspection(string WorkerId, RemoteWorkerState State, DateTimeOffset LastCheckInUtc);
+public sealed record RemoteJobInspection(string JobId, bool RequestFileVisible, string? WorkerId, RemoteJobState? State,
+    DateTimeOffset? UpdatedUtc, bool FallbackUsed, bool OutputFileVisible, CloudSyncState? OutputSync);

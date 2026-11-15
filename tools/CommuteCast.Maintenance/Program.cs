@@ -2,7 +2,7 @@ using CommuteCast.Infrastructure;
 using System.Text.Json;
 
 // Deliberately synchronous host: the compatibility mutex is released on its owning thread.
-var readOnly = args.Length == 0 || args[0] is "--help" or "check-setup" or "inspect-install" or "verify-package" or "validate-backup" or "review-setup-cache";
+var readOnly = args.Length == 0 || args[0] is "--help" or "check-setup" or "inspect-install" or "verify-package" or "validate-backup" or "review-setup-cache" or "inspect-remote";
 if (!readOnly) AppLogging.Start("maintenance");
 try { return Run(args); }
 finally { if (!readOnly) AppLogging.Stop(); }
@@ -14,11 +14,22 @@ static int Run(string[] arguments)
         Console.WriteLine("CommuteCast local maintenance 0.1.0\nClose CommuteCast before backup, restore or recovery.\n\nbackup [--root <private workspace>]\nvalidate-backup --backup <completed backup folder>\nrestore --backup <completed backup folder> --confirm-replace-local-data [--root <private workspace>]\nrecover [--root <private workspace>]\nseal-package --package <complete portable folder>\nverify-package --package <complete portable folder>\n\nPackage sealing is an explicit build action. Verification checks inventory/integrity, not publisher trust or corporate signing approval.\nBackups contain private source, draft, settings and job audio. They stay under the private workspace/backups folder. Restore retains previous local state and never modifies exported MP3s or Docker artifacts. Historical backups/recovery copies and provisioning models are excluded from a current-state backup.");
         Console.WriteLine("\nRead-only setup: check-setup [--root <private workspace>]\n\nInstallation commands (close the app first):\ninstall --package <complete portable folder> [--install-root <local folder>]\ninspect-install [--install-root <local folder>]\nlaunch-installed [--install-root <local folder>]\nrollback --confirm-replace-local-data [--install-root <local folder>]\nuninstall --confirm-uninstall [--local-data retain|remove] [--confirm-remove-local-data] [--install-root <local folder>]\nrecover-install [--install-root <local folder>]\n\nDefault binaries: %LOCALAPPDATA%\\Programs\\CommuteCast. Private data is bound to the installation and stays separate. --root is an explicit isolated-workspace override for installation testing. Uninstall preserves exports, Docker and provisioning models; unknown root files remain for inspection.");
         Console.WriteLine("\nSetup distribution cleanup:\nreview-setup-cache [--install-root <local folder>]\nclean-setup-cache --review-fingerprint <hash from review> --confirm-remove-setup-copies [--install-root <local folder>]\n\nThe active recovery kit, running sources and unrecognized entries are kept. After uninstall, run cleanup from a separate portable tool to reclaim all unused setup copies. Coordination ownership/use records remain; private narration, exports and installed releases are separate.");
+        Console.WriteLine("\nRead-only remote queue: inspect-remote --folder <local shared folder> [--job <job ID>]");
         return 0;
     }
     Mutex? legacy = null; var ownsLegacy = false; CachedSetupUse? cachedUse = null;
     try
     {
+        if (arguments[0] == "inspect-remote")
+        {
+            if (arguments.Length is not (3 or 5) || arguments[1] != "--folder" || arguments.Length == 5 && arguments[3] != "--job")
+                throw new ArgumentException("inspect-remote --folder <local shared folder> [--job <job ID>]");
+            var folder = new RemoteQueueFolder(arguments[2], new Workspace(createRoot: false));
+            var report = folder.InspectAsync(arguments.ElementAtOrDefault(4)).GetAwaiter().GetResult();
+            var json = new JsonSerializerOptions { WriteIndented = true, Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+            Console.WriteLine(JsonSerializer.Serialize(report, json));
+            return 0;
+        }
         cachedUse = SetupCache.AcquireHostUseAsync(AppContext.BaseDirectory).GetAwaiter().GetResult();
         var command = arguments[0];
         if (command == "check-setup")
