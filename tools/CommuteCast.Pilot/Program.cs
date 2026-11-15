@@ -15,6 +15,11 @@ if (args.FirstOrDefault() == "--queue-host-child")
     await QueueHostLossAcceptance.ChildAsync(args);
     return;
 }
+if (args.FirstOrDefault() == "--verify-remote-worker")
+{
+    await RemoteWorkerAcceptance.RunAsync(args);
+    return;
+}
 var engine = args.FirstOrDefault() ?? "kokoro";
 if (engine is not ("kokoro" or "piper")) throw new ArgumentException("Use kokoro or piper.");
 if (args.Length > 3 || args.Length == 3 && args[2] is not ("--verify-private-removal" or "--verify-audition" or "--verify-cancellation" or "--verify-stopped-recovery" or "--verify-active-service-loss" or "--verify-queue-host-loss" or "--verify-long-form" or "--verify-voices"))
