@@ -1,6 +1,9 @@
+param([string]$OutputDirectory)
+
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$release = Join-Path $projectRoot 'artifacts\release\CommuteCast-win-x64'
+$releaseRoot = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $projectRoot 'artifacts\release' }
+$release = Join-Path $releaseRoot 'CommuteCast-win-x64'
 $application = Join-Path $release 'app'
 & dotnet publish (Join-Path $projectRoot 'src\CommuteCast.Desktop') -c Release -r win-x64 --self-contained true -o $application
 if ($LASTEXITCODE -ne 0) { throw 'Portable publish failed.' }
@@ -8,7 +11,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Portable publish failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Maintenance publish failed.' }
 # The apphost embeds CommuteCast.Desktop.dll; a second inventoried entry-point name opens native setup.
 Copy-Item -LiteralPath (Join-Path $application 'CommuteCast.Desktop.exe') -Destination (Join-Path $application 'CommuteCast.Setup.exe') -Force
-$launcherOutput = Join-Path $projectRoot 'artifacts\launcher-publish'
+$launcherOutput = if ($OutputDirectory) { Join-Path $releaseRoot 'launcher-build' } else { Join-Path $projectRoot 'artifacts\launcher-publish' }
 & dotnet publish (Join-Path $projectRoot 'tools\CommuteCast.Launcher') -c Release -r win-x64 --self-contained true -o $launcherOutput
 if ($LASTEXITCODE -ne 0) { throw 'Stable launcher publish failed.' }
 Copy-Item -LiteralPath (Join-Path $launcherOutput 'CommuteCast.Launcher.exe') -Destination $application -Force
@@ -24,7 +27,7 @@ foreach ($speechFile in @('app.py', 'diagnostics.py', 'voice_library.py', 'Docke
 }
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Provision-Dictation.ps1') -Destination (Join-Path $release 'scripts')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Test-Dictation.ps1') -Destination (Join-Path $release 'scripts')
-Copy-Item -LiteralPath (Join-Path $projectRoot 'documents\Local-Dictation.md') -Destination (Join-Path $release 'documents')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'documents\Local-Dictation.md'), (Join-Path $projectRoot 'documents\Remote-Queue.md') -Destination (Join-Path $release 'documents')
 $dictationPackage = Join-Path $release 'services\whisper'
 New-Item -ItemType Directory -Force -Path $dictationPackage | Out-Null
 foreach ($dictationFile in @('app.py', 'Dockerfile', 'requirements.txt', 'requirements.lock.txt', 'test_app.py')) {
@@ -34,5 +37,5 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'documents\Acceptance.md') -Desti
 Copy-Item -LiteralPath (Join-Path $projectRoot 'documents\Implementation-Decisions.md'), (Join-Path $projectRoot 'documents\Verification-Matrix.md') -Destination (Join-Path $release 'documents')
 & (Join-Path $application 'CommuteCast.Maintenance.exe') seal-package --package $release
 if ($LASTEXITCODE -ne 0) { throw 'Release inventory or integrity verification failed.' }
-Compress-Archive -Path (Join-Path $release '*') -DestinationPath (Join-Path $projectRoot 'artifacts\release\CommuteCast-win-x64.zip') -Force
+Compress-Archive -Path (Join-Path $release '*') -DestinationPath (Join-Path $releaseRoot 'CommuteCast-win-x64.zip') -Force
 Write-Host "Portable application: $application"
