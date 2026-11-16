@@ -39,6 +39,7 @@ public sealed partial class MainViewModel
             settings.RemoteQueue = new(folder.Root, enabled, name, registration, fallbackNames, allowHosted);
             try { await SaveSettingsAsync(); }
             catch { settings.RemoteQueue = previous; throw; }
+            Raise(nameof(AdminFolders));
             await StopRemoteWorkerAsync(disable: previous?.EnableWorker == true && !enabled);
         }
         finally { changingRemoteSettings = false; OpenRemoteWorker(); }

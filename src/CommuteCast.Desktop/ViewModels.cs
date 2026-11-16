@@ -235,10 +235,13 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private readonly NarrationPreferences narrationPreferences;
     public string[] Engines { get; } = SpeechProviders.All.Select(p => p.Id).ToArray();
     public event Action? DraftQueued;
-    public string PageHeading => page switch { "library" => "Your listening library", "settings" => "Settle in. Set it up.", "codex" => "Write something worth hearing.", "prompt" => "Start with a good question.", _ => "Make time to listen." };
+    public string PageHeading => page switch { "library" => "Your listening library", "settings" => "Settle in. Set it up.", "admin" => "Admin", "codex" => "Write something worth hearing.", "prompt" => "Start with a good question.", _ => "Make time to listen." };
     public bool IsCompose => page == "compose";
     public bool IsLibrary => page == "library";
     public bool IsSettings => page == "settings";
+    public bool IsAdmin => page == "admin";
+    public IReadOnlyList<FolderLocation> AdminFolders => OneDriveFolders.Describe(settings.RemoteQueue?.Folder,
+        settings.Destination, Workspace.Root, AppLogging.DefaultDirectory);
     public bool IsCodex => page == "codex";
     public string Source
     {
@@ -422,7 +425,18 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         RestartDockerSpeechCommand = Command(_ => IsHosted ? throw new IOException("Docker Desktop recovery applies to local speech. Select Kokoro or Piper first.") : RepairSpeechAsync(restartDesktop: true));
         QueueCommand = Command(_ => SubmitAsync());
         ReviewCommand = Command(async _ => { var text = Source; var snapshot = CapturePreviewSettings(); var episode = PodcastMode ? CaptureEpisode() : null; var prepared = await Task.Run(() => episode is null ? TextPreparation.Prepare(text, snapshot.ExcludeCode, snapshot.Pronunciation, snapshot.Profile, shutdown.Token) : PodcastScript.Prepare(text, episode, snapshot).Prepared, shutdown.Token); ShowPreparation(prepared, text, snapshot, episode); });
-        ChooseFolderCommand = Command(async _ => { var path = ChooseFolder(); if (path is not null) { await publisher.TestDestinationAsync(path); settings.Destination = path; Raise(nameof(DestinationDisplay)); await SaveSettingsAsync(); StatusMessage = "Output folder saved. Only completed MP3s will be exported here."; } });
+        ChooseFolderCommand = Command(async _ =>
+        {
+            var path = ChooseFolder();
+            if (path is null) return;
+            await publisher.TestDestinationAsync(path);
+            var previous = settings.Destination;
+            settings.Destination = path;
+            try { await SaveSettingsAsync(); }
+            catch { settings.Destination = previous; throw; }
+            Raise(nameof(DestinationDisplay)); Raise(nameof(AdminFolders));
+            StatusMessage = "Output folder saved. Only completed MP3s will be exported here.";
+        });
         TestFolderCommand = Command(async _ => { await publisher.TestDestinationAsync(settings.Destination); StatusMessage = "Local write access passed. OneDrive cloud upload is still unknown."; });
         ReadinessCommand = Command(_ => CheckReadinessAsync(true));
         SetupCommand = Command(async _ => { await RefreshSetupAsync(); StatusMessage = "Setup inspection finished. Corporate approval and real narration acceptance remain separate."; });
@@ -496,7 +510,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         await operations.RunAsync(() => action(p));
         if (clearsError) { operationError = ""; RaiseAttention(); }
     }, e => ReportError(QueueCoordinator.FriendlyError(e)));
-    private void Navigate(string value) { if (value != "prompt") CancelGoalRecording(); page = value; Raise(nameof(IsCompose)); Raise(nameof(IsLibrary)); Raise(nameof(IsSettings)); Raise(nameof(IsCodex)); Raise(nameof(IsPromptBuilder)); Raise(nameof(PrimaryActionCommand)); Raise(nameof(PageHeading)); }
+    private void Navigate(string value) { if (value != "prompt") CancelGoalRecording(); page = value; Raise(nameof(IsCompose)); Raise(nameof(IsLibrary)); Raise(nameof(IsSettings)); Raise(nameof(IsAdmin)); Raise(nameof(IsCodex)); Raise(nameof(IsPromptBuilder)); Raise(nameof(PrimaryActionCommand)); Raise(nameof(PageHeading)); }
     private void SetSelectedSpeechResult(string id, string result) { checkedJobId = id; selectedSpeechResult = result; Raise(nameof(SelectedSpeechResult)); Raise(nameof(SelectedDetailsForCopy)); }
     private Job RequireSelected() => SelectedJob?.Job ?? throw new ArgumentException("Select a narration first.");
     private async Task ResumeAsync(Job job)

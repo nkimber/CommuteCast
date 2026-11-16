@@ -38,7 +38,7 @@ public class LayoutTests
             {
                 if (theme == 1) App.ToggleTheme();
                 foreach (var size in new[] { (Width: 1060, Height: 700), (Width: 1380, Height: 900) })
-                    foreach (var page in new[] { "compose", "library", "settings", "prompt" })
+                    foreach (var page in new[] { "compose", "library", "settings", "prompt", "admin" })
                     {
                         model.NavigateCommand.Execute(page);
                         await Dispatcher.Yield(DispatcherPriority.Background);
@@ -64,6 +64,13 @@ public class LayoutTests
                                 Assert.True(control.ActualWidth > 0 && control.ActualHeight > 0);
                                 Assert.True(bounds.Right <= size.Width && bounds.Bottom <= size.Height);
                             }
+                        }
+                        if (page == "admin")
+                        {
+                            var folders = (ItemsControl)window.FindName("AdminFolderList");
+                            Assert.True(folders.IsVisible || folders.Visibility == Visibility.Visible);
+                            Assert.Contains(model.AdminFolders, row => row.Label == "Private workspace" && row.Path == workspace.Root);
+                            Assert.Equal(model.AdminFolders.Count, folders.Items.Count);
                         }
                         var bitmap = new RenderTargetBitmap(size.Width, size.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(root);
                         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));

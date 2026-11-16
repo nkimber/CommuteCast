@@ -15,7 +15,7 @@ public sealed class RemoteQueueFolder
     };
 
     public string Root { get; }
-    public string OutputFolder => Path.Combine(Root, "Ready to Listen");
+    public string OutputFolder => Path.Combine(Root, OneDriveFolders.ListeningName);
 
     public RemoteQueueFolder(string root, Workspace workspace)
     {
@@ -31,7 +31,7 @@ public sealed class RemoteQueueFolder
     {
         request.Validate();
         ct.ThrowIfCancellationRequested();
-        var path = RecordPath("Inbox", request.JobId);
+        var path = RecordPath(OneDriveFolders.InboxName, request.JobId);
         var json = JsonSerializer.Serialize(request, Json);
         if (System.Text.Encoding.UTF8.GetByteCount(json) > MaximumRequestBytes)
             throw new ArgumentException("The remote request is too large for the shared queue.");
@@ -48,11 +48,11 @@ public sealed class RemoteQueueFolder
 
     internal bool MatchesRoot(string path) => Root.Equals(Path.TrimEndingDirectorySeparator(path), StringComparison.OrdinalIgnoreCase);
 
-    public IReadOnlyList<string> RequestIds() => ListIds("Inbox");
+    public IReadOnlyList<string> RequestIds() => ListIds(OneDriveFolders.InboxName);
 
     public async Task<RemoteRequest?> ReadRequestAsync(string id, CancellationToken ct = default)
     {
-        var request = await ReadAsync<RemoteRequest>("Inbox", id, MaximumRequestBytes, ct);
+        var request = await ReadAsync<RemoteRequest>(OneDriveFolders.InboxName, id, MaximumRequestBytes, ct);
         if (request is null) return null;
         request.Validate();
         if (request.JobId != id) throw new IOException("The request identity does not match its filename.");
@@ -62,12 +62,12 @@ public sealed class RemoteQueueFolder
     public Task WriteStatusAsync(RemoteJobStatus status)
     {
         ValidateStatus(status, status.JobId);
-        return WriteAsync("Status", status.JobId, status);
+        return WriteAsync(OneDriveFolders.StatusName, status.JobId, status);
     }
 
     public async Task<RemoteJobStatus?> ReadStatusAsync(string id, CancellationToken ct = default)
     {
-        var status = await ReadAsync<RemoteJobStatus>("Status", id, MaximumStatusBytes, ct);
+        var status = await ReadAsync<RemoteJobStatus>(OneDriveFolders.StatusName, id, MaximumStatusBytes, ct);
         if (status is not null) ValidateStatus(status, id);
         return status;
     }
@@ -75,18 +75,18 @@ public sealed class RemoteQueueFolder
     public Task WriteWorkerAsync(RemoteWorkerStatus worker)
     {
         ValidateWorker(worker, worker.WorkerId);
-        return WriteAsync("Workers", worker.WorkerId, worker);
+        return WriteAsync(OneDriveFolders.WorkersName, worker.WorkerId, worker);
     }
 
     public async Task<IReadOnlyList<RemoteWorkerStatus>> ReadWorkersAsync(CancellationToken ct = default)
     {
         var workers = new List<RemoteWorkerStatus>();
-        foreach (var id in ListIds("Workers"))
+        foreach (var id in ListIds(OneDriveFolders.WorkersName))
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                var worker = await ReadAsync<RemoteWorkerStatus>("Workers", id, MaximumStatusBytes, ct);
+                var worker = await ReadAsync<RemoteWorkerStatus>(OneDriveFolders.WorkersName, id, MaximumStatusBytes, ct);
                 if (worker is null) continue;
                 ValidateWorker(worker, id);
                 workers.Add(worker);
@@ -103,7 +103,7 @@ public sealed class RemoteQueueFolder
         RemoteJobInspection? job = null;
         if (jobId is not null)
         {
-            var requestVisible = File.Exists(RecordPath("Inbox", jobId));
+            var requestVisible = File.Exists(RecordPath(OneDriveFolders.InboxName, jobId));
             var status = await ReadStatusAsync(jobId, ct);
             var output = status?.OutputFile is { } filename ? OutputPath(filename) : null;
             job = new(jobId, requestVisible, status?.WorkerId, status?.State, status?.UpdatedUtc, status?.FallbackReason is not null,
@@ -143,7 +143,7 @@ public sealed class RemoteQueueFolder
         input.Position = 0;
 
         Directory.CreateDirectory(OutputFolder);
-        var temporary = Path.Combine(Root, "Staging", $".{job.Id}-{Guid.NewGuid():N}.partial");
+        var temporary = Path.Combine(Root, OneDriveFolders.StagingName, $".{job.Id}-{Guid.NewGuid():N}.partial");
         Guard(temporary);
         Directory.CreateDirectory(Path.GetDirectoryName(temporary)!);
         var created = false;
@@ -226,7 +226,7 @@ public sealed class RemoteQueueFolder
         catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { return null; }
     }
 
-    private static void Guard(string path)
+    internal static void Guard(string path)
     {
         for (var item = path; item is not null; item = Path.GetDirectoryName(item))
         {
