@@ -34,6 +34,14 @@ public class OneDriveLibraryTest {
         assertThrows(IllegalArgumentException.class, () -> new LibrarySettings(CLIENT, "", "", "drive", "..", false));
     }
 
+    @Test public void defaultsToTheSharedLibraryAndMigratesOnlyTheOldDefaultPath() {
+        var settings = new LibrarySettings(CLIENT, "", "", "", "", false);
+        assertEquals("CommuteCast/Ready to Listen", settings.path());
+        assertEquals(settings.path(), LibrarySettings.migrateLegacyPath("Ready to Listen", "", ""));
+        assertEquals("Ready to Listen", LibrarySettings.migrateLegacyPath("Ready to Listen", "drive", "folder"));
+        assertEquals("Archive/Audio", LibrarySettings.migrateLegacyPath("Archive/Audio", "", ""));
+    }
+
     @Test public void readsExistingMp3sAcrossGraphPagesAndDeduplicates() throws Exception {
         var first = file("old", "20261101-070000-Episode One-aedd81a92ad439ea9b628b1f130e1119.mp3");
         var second = file("new", "Episode Two.MP3").put("createdDateTime", "2026-11-15T20:00:00Z")

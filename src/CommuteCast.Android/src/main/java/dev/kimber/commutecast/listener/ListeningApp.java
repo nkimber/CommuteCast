@@ -49,9 +49,15 @@ public class ListeningApp extends Application {
         prefs = getSharedPreferences("listening", MODE_PRIVATE);
         if (prefs.contains("clientId")) {
             try {
+                String path = prefs.getString("path", "");
+                String driveId = prefs.getString("driveId", "");
+                String folderId = prefs.getString("folderId", "");
+                if (!prefs.getBoolean("sharedRootLayout", false))
+                    path = LibrarySettings.migrateLegacyPath(path, driveId, folderId);
                 settings = new LibrarySettings(prefs.getString("clientId", ""), prefs.getString("tenant", ""),
-                    prefs.getString("path", ""), prefs.getString("driveId", ""), prefs.getString("folderId", ""),
-                    prefs.getBoolean("shared", false));
+                    path, driveId, folderId, prefs.getBoolean("shared", false));
+                if (!prefs.getBoolean("sharedRootLayout", false))
+                    prefs.edit().putString("path", settings.path()).putBoolean("sharedRootLayout", true).apply();
             } catch (IllegalArgumentException ignored) { }
         }
     }
@@ -68,7 +74,7 @@ public class ListeningApp extends Application {
         clearCatalog();
         prefs.edit().putString("clientId", value.clientId()).putString("tenant", value.tenant())
             .putString("path", value.path()).putString("driveId", value.driveId()).putString("folderId", value.folderId())
-            .putBoolean("shared", value.shared()).apply();
+            .putBoolean("shared", value.shared()).putBoolean("sharedRootLayout", true).apply();
     }
 
     synchronized void clearCatalog() {

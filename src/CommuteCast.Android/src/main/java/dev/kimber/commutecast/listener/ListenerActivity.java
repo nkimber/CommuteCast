@@ -210,6 +210,9 @@ public final class ListenerActivity extends Activity {
         refresh = button("Refresh", GREEN, PAPER);
         refresh.setOnClickListener(v -> refresh());
         heading.addView(refresh);
+        Button admin = button("Admin", GREEN, PAPER);
+        admin.setOnClickListener(v -> showAdmin());
+        heading.addView(admin);
         body.addView(heading);
         showFinished = new CheckBox(this);
         showFinished.setText("Show finished");
@@ -227,6 +230,30 @@ public final class ListenerActivity extends Activity {
         body.addView(connect);
         rows = column();
         body.addView(rows);
+    }
+
+    private void showAdmin() {
+        LinearLayout fields = column();
+        fields.setPadding(dp(20), dp(8), dp(20), dp(10));
+        LibrarySettings configured = app.settings();
+        if (configured == null || configured.driveId().isEmpty()) {
+            folderLocation(fields, configured == null ? "Default OneDrive library" : "OneDrive library",
+                configured == null ? LibrarySettings.DEFAULT_PATH : configured.path());
+        } else {
+            folderLocation(fields, "OneDrive drive ID", configured.driveId());
+            folderLocation(fields, "OneDrive folder item ID", configured.folderId());
+        }
+        folderLocation(fields, "Private app data", getApplicationInfo().dataDir);
+        new AlertDialog.Builder(this).setTitle("Admin").setView(fields)
+            .setNeutralButton("Settings", (d, w) -> configuration()).setPositiveButton("Close", null).show();
+    }
+
+    private void folderLocation(LinearLayout fields, String name, String path) {
+        fields.addView(label(name, 14, INK, true));
+        TextView location = label(path, 16, MUTED, false);
+        location.setTextIsSelectable(true);
+        fields.addView(location);
+        space(fields, 10);
     }
 
     private void configuration() {

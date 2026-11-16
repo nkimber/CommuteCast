@@ -4,7 +4,7 @@ import java.util.Locale;
 import java.util.regex.Pattern;
 
 record LibrarySettings(String clientId, String tenant, String path, String driveId, String folderId, boolean shared) {
-    static final String DEFAULT_PATH = "Ready to Listen";
+    static final String DEFAULT_PATH = "CommuteCast/Ready to Listen";
     private static final Pattern GUID = Pattern.compile("[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}");
     private static final Pattern ITEM_ID = Pattern.compile("[A-Za-z0-9!_.-]{1,250}");
 
@@ -34,6 +34,11 @@ record LibrarySettings(String clientId, String tenant, String path, String drive
 
     static boolean validItemId(String id) {
         return id != null && ITEM_ID.matcher(id).matches() && !id.equals(".") && !id.equals("..");
+    }
+
+    static String migrateLegacyPath(String path, String driveId, String folderId) {
+        return path.equalsIgnoreCase("Ready to Listen") && driveId.isEmpty() && folderId.isEmpty()
+            ? DEFAULT_PATH : path;
     }
 
     String scope() {

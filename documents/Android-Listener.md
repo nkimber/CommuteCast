@@ -1,6 +1,6 @@
 # CommuteCast for Android
 
-The native Android listener opens from its launcher icon and reads MP3s directly from OneDrive over Microsoft Graph. Use the **Ready to Listen** folder from the Windows remote queue or another folder with your finished MP3s. Once an MP3 has finished syncing, the phone can play it with the Windows PC off. The phone needs an internet connection to stream audio from OneDrive.
+The native Android listener opens from its launcher icon and reads MP3s directly from OneDrive over Microsoft Graph. The default library in your signed-in OneDrive is **CommuteCast → Ready to Listen**. Once an MP3 has finished syncing, the phone can play it with the Windows PC off. The phone needs an internet connection to stream audio from OneDrive.
 
 ## Build and install
 
@@ -24,6 +24,8 @@ The debug APK is suitable for validating an installation with your phone. Keep t
 
 The Android app uses Microsoft sign-in and delegated read access. A CommuteCast web server, DNS entry, anonymous sharing link, and publishing secret are unnecessary for this workflow.
 
+An upgrade moves the original `Ready to Listen` default to `CommuteCast/Ready to Listen` on first launch. Custom paths and explicit folder IDs keep their saved values. Open **Admin** in the library header to see the folder or IDs the listener uses and the app’s private data folder on the phone.
+
 ## Listen on the commute
 
 Tap the CommuteCast icon and use **Resume** at the top for the most recently played unfinished episode. The player keeps each episode's exact position and rewinds 20 seconds on resume, stopping at the beginning if less than 20 seconds have played. The **In progress** and **Unplayed** sections are visible by default. Enable **Show finished** to replay a completed MP3. Bookmarks live on the phone under the current account and drive item.
@@ -32,6 +34,6 @@ Android Media3 provides playback when the app is in the background, including me
 
 For the live commute check, sign in on the target phone and play a synced MP3 over mobile data. Lock the screen, pause with the car's Bluetooth control, then reopen CommuteCast by tapping its icon. Check the saved time and listen for the 20-second rewind. Switch between two episodes to verify each bookmark, and let one play through the end to verify the finished filter.
 
-The debug APK builds and passes Android lint with zero errors. Six JVM tests cover folder paths and IDs, paginated MP3 filtering and titles, playback URL validation, and the 20-second rewind. Live OneDrive sign-in and the phone and car checks require the registered app and target devices.
+The debug APK builds and passes Android lint with zero errors. JVM tests cover folder paths and IDs, migration of the previous default, paginated MP3 filtering and titles, playback URL validation, and the 20-second rewind. Live OneDrive sign-in and the phone and car checks require the registered app and target devices.
 
 The playback test passes on an isolated Android 16 emulator using generated audio. It confirms that playback advances with the screen locked, Android media keys pause and rewind on resume, each episode retains its own saved time, and reopening the app restores the last unfinished episode. It also confirms that a completed episode stays hidden until **Show finished** is checked. Run `connectedDebugAndroidTest` with an isolated emulator selected in `ANDROID_SERIAL`.
