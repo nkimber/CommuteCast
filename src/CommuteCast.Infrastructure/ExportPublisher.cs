@@ -20,10 +20,6 @@ public sealed class ExportPublisher(Workspace workspace, IJobStore store, IExpor
         ct.ThrowIfCancellationRequested();
         if (job.CancellationRequested || job.DeletionRequested) throw new OperationCanceledException("Publication was cancelled.", ct);
     }
-    private static void RejectFileLink(string path)
-    {
-        if (File.Exists(path) && File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint)) throw new IOException("An export file is a symbolic link. The file was preserved.");
-    }
     public static string Filename(Job job)
     {
         var title = new string(job.Title.Select(c => c < 32 || "<>:\"/\\|?*".Contains(c) ? '-' : c).ToArray()).Trim(' ', '.');
@@ -67,7 +63,7 @@ public sealed class ExportPublisher(Workspace workspace, IJobStore store, IExpor
         if (string.IsNullOrWhiteSpace(job.FinalHash)) throw new IOException("No validated finished audio is available for export.");
         var source = workspace.FinalPath(job);
         Workspace.RejectReparsePoints(Path.GetDirectoryName(source)!);
-        RejectFileLink(source);
+        Workspace.RejectFileReparsePoint(source);
         // Keep the exact validated source locked through copying so it cannot change after hashing.
         await using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
         if (Convert.ToHexString(await SHA256.HashDataAsync(input, ct)) != job.FinalHash) throw new IOException("The generated MP3 changed. Retry generation before exporting.");
@@ -84,7 +80,7 @@ public sealed class ExportPublisher(Workspace workspace, IJobStore store, IExpor
         await ReachedAsync(ExportCheckpoint.IntentSaved, ct);
         ThrowIfStopped(job, ct);
         workspace.GuardLocalDestination(job.Destination);
-        RejectFileLink(final);
+        CloudFileSync.GuardPath(final);
         if (File.Exists(final))
         {
             if (await Workspace.HashFileAsync(final, ct) != job.ExportHash) throw new IOException("An unrelated or changed file occupies the export name. Nothing was overwritten.");
@@ -171,7 +167,7 @@ public sealed class ExportPublisher(Workspace workspace, IJobStore store, IExpor
         var final = Path.Combine(job.Destination, job.ExportName);
         if (!Directory.Exists(job.Destination)) return; // Preserve history for a moved/missing destination.
         workspace.GuardLocalDestination(job.Destination);
-        RejectFileLink(final);
+        CloudFileSync.GuardPath(final);
         if (File.Exists(final) && await Workspace.HashFileAsync(final, ct) == job.ExportHash)
         {
             job.ExportCommitted = true;
@@ -192,7 +188,7 @@ public sealed class ExportPublisher(Workspace workspace, IJobStore store, IExpor
         if (job.ExportHash.Length == 0)
         { if (File.Exists(final)) throw new IOException("The exported file has no recorded identity. It was preserved."); }
         else
-            await OwnedFileRemoval.DeleteByHashAsync(job.Destination, job.ExportName, job.ExportHash,
+            await OwnedFileRemoval.DeleteExportByHashAsync(job.Destination, job.ExportName, job.ExportHash,
                 observer is null ? null : new RemovalObserver(this), ct);
         var temporary = Path.Combine(job.Destination, $".commutecast-{job.Id}.partial");
         await RemoveStagingAsync(job, temporary, ct);
@@ -244,7 +240,8 @@ public sealed class ExportPublisher(Workspace workspace, IJobStore store, IExpor
         if (job.ExportStagingIdentity is null) return false;
         if (validatedSource is not null) return await staging.IsSourcePrefixAsync(validatedSource, ct);
         var source = workspace.FinalPath(job);
-        Workspace.RejectReparsePoints(Path.GetDirectoryName(source)!); RejectFileLink(source);
+        Workspace.RejectReparsePoints(Path.GetDirectoryName(source)!);
+        Workspace.RejectFileReparsePoint(source);
         if (!File.Exists(source)) return false;
         await using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
         if (Convert.ToHexString(await SHA256.HashDataAsync(input, ct)) != job.ExportHash) return false;

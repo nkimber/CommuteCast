@@ -17,7 +17,7 @@ On Windows, test first with CommuteCast and OneDrive running under the signed-in
 
 ## Send from Android
 
-The optional web host lets you send pasted text from Chrome and follow the same remote job list. Run it under an account with access to the shared OneDrive folder and give it its own private workspace. Set `RemoteQueue__Folder` to the folder's absolute local path on the web host. Set `RemoteQueue__ListeningFolderUrl` if you want a link to the `Ready to Listen` folder in OneDrive. Use an HTTPS link that keeps your intended Microsoft account permissions.
+The optional web host lets you send pasted text from Chrome and follow the same remote job list. Run it under an account with access to the shared OneDrive folder and give it its own private workspace. It discovers the personal OneDrive `CommuteCast` folder by default. To select another folder, set `RemoteQueue__Folder` to its absolute local path on the web host. Set `RemoteQueue__ListeningFolderUrl` if you want a link to the `Ready to Listen` folder in OneDrive. Use an HTTPS link that keeps your intended Microsoft account permissions.
 
 Open `/listen` in Chrome and use **Send a narration**, or go directly to `/remote`. Use the approved [web sign-in setup](Web-Application.md) for access away from home. The form offers Studio defaults and saved presets. Select a worker and a preset, enter the text, and send it. The browser request uses the worker's existing serial queue. Chrome can open both pages within the CommuteCast home-screen app.
 

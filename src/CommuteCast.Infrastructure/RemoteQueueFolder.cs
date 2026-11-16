@@ -226,19 +226,7 @@ public sealed class RemoteQueueFolder
         catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { return null; }
     }
 
-    internal static void Guard(string path)
-    {
-        for (var item = path; item is not null; item = Path.GetDirectoryName(item))
-        {
-            try
-            {
-                if (File.GetAttributes(item).HasFlag(FileAttributes.ReparsePoint) &&
-                    CloudFileSync.ReadPath(item, allowDirectory: true) is not (CloudSyncState.InSync or CloudSyncState.NotInSync))
-                    throw new IOException("Only ordinary local paths and cloud sync placeholders are supported in the shared queue.");
-            }
-            catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { }
-        }
-    }
+    private static void Guard(string path) => CloudFileSync.GuardPath(path);
 }
 
 public sealed record RemoteQueueInspection(bool RegisteredCloudFilesRoot, IReadOnlyList<RemoteWorkerInspection> Workers, RemoteJobInspection? Job);

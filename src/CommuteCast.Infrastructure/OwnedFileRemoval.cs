@@ -19,31 +19,46 @@ public static class OwnedFileRemoval
     }
     public static string Resolve(string root, string relative)
     {
+        var path = ResolveContainedPath(root, relative);
+        SqliteSchema.RejectLink(path);
+        return path;
+    }
+
+    private static string ResolveContainedPath(string root, string relative)
+    {
         ValidateRelativePath(relative);
         var path = Path.GetFullPath(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
         if (!Workspace.IsWithin(root, path)) throw new IOException("A managed removal path escapes its recorded root. Files were preserved.");
-        SqliteSchema.RejectLink(path); return path;
+        return path;
     }
     public static Task<bool> DeleteAsync(string root, ReleaseFile receipt, IFileRemovalObserver? observer = null, CancellationToken ct = default) =>
-        DeleteCoreAsync(root, receipt.RelativePath, receipt.Sha256, receipt.Bytes, observer, ct);
+        DeleteCoreAsync(root, receipt.RelativePath, receipt.Sha256, receipt.Bytes, observer, ct, allowCloudFiles: false);
 
     public static Task<bool> DeleteByHashAsync(string root, string relativePath, string sha256, IFileRemovalObserver? observer = null, CancellationToken ct = default) =>
-        DeleteCoreAsync(root, relativePath, sha256, null, observer, ct);
+        DeleteCoreAsync(root, relativePath, sha256, null, observer, ct, allowCloudFiles: false);
 
-    private static async Task<bool> DeleteCoreAsync(string root, string relativePath, string sha256, long? bytes, IFileRemovalObserver? observer, CancellationToken ct)
+    internal static Task<bool> DeleteExportByHashAsync(string root, string relativePath, string sha256, IFileRemovalObserver? observer, CancellationToken ct) =>
+        DeleteCoreAsync(root, relativePath, sha256, null, observer, ct, allowCloudFiles: true);
+
+    private static async Task<bool> DeleteCoreAsync(string root, string relativePath, string sha256, long? bytes, IFileRemovalObserver? observer, CancellationToken ct, bool allowCloudFiles)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Managed file removal requires Windows.");
         ct.ThrowIfCancellationRequested();
         if (sha256.Length != 64 || !sha256.All(Uri.IsHexDigit) || bytes < 0) throw new IOException("The recorded file identity is invalid. Files were preserved.");
-        var path = Resolve(root, relativePath);
+        var path = ResolveContainedPath(root, relativePath);
         if (path.StartsWith("\\\\", StringComparison.Ordinal)) throw new IOException("Managed file removal requires a local file.");
+        if (allowCloudFiles) CloudFileSync.GuardPath(path);
+        else SqliteSchema.RejectLink(path);
         using var handle = CreateFile("\\\\?\\" + path, 0x80010000, 1, IntPtr.Zero, 3, 0x00200080, IntPtr.Zero); // READ|DELETE; share READ; open the reparse point itself, including long paths.
         if (handle.IsInvalid)
         {
             var error = Marshal.GetLastWin32Error(); if (error is 2 or 3) return false;
             throw new IOException("A managed file is locked or inaccessible. Removal is incomplete; retry after closing the application using it.", new Win32Exception(error));
         }
-        if (!GetFileInformationByHandleEx(handle, 9, out var attributes, 8) || (attributes.Attributes & (0x400 | 0x10)) != 0)
+        if (!GetFileInformationByHandleEx(handle, 9, out var attributes, 8) ||
+            (attributes.Attributes & (uint)FileAttributes.Directory) != 0 ||
+            (attributes.Attributes & (uint)FileAttributes.ReparsePoint) != 0 &&
+            !(allowCloudFiles && CloudFileSync.IsPlaceholder(attributes.Attributes, attributes.ReparseTag)))
             throw new IOException("A managed removal item is a directory or reparse point. Files were preserved.");
         await using var input = new FileStream(handle, FileAccess.Read, 81920, false);
         if ((bytes is not null && input.Length != bytes) || Convert.ToHexString(await SHA256.HashDataAsync(input, ct)) != sha256)

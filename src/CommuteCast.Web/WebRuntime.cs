@@ -10,6 +10,7 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
     public Workspace Workspace { get; private set; } = null!;
     public AppSettings Settings { get; private set; } = null!;
     public WebSettings WebSettings { get; private set; } = WebSettings.Empty;
+    public string? SharedQueueRoot { get; private set; }
     public QueueCoordinator Queue { get; private set; } = null!;
     public ISpeechService Speech { get; private set; } = null!;
     public DraftStore Drafts { get; private set; } = null!;
@@ -39,8 +40,12 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
             Settings.NarrationDefaults = narrationDefaults;
             foreach (var (engine, info) in Settings.Providers) providerCatalog[engine] = info;
             if (File.Exists(ConfigPath)) WebSettings = JsonSerializer.Deserialize<WebSettings>(await File.ReadAllTextAsync(ConfigPath, ct)) ?? WebSettings.Empty;
+            var queueOverride = configuration["RemoteQueue:Folder"];
+            SharedQueueRoot = queueOverride is null ? DefaultSharedQueueRoot()
+                : string.IsNullOrWhiteSpace(queueOverride) ? null : queueOverride;
             // Server-managed local exports are never in wwwroot and never exposed through HTTP.
-            Settings.Destination = Path.GetFullPath(configuration["CommuteCast:Exports"] ?? Workspace.Root.TrimEnd(Path.DirectorySeparatorChar) + "-exports");
+            Settings.Destination = Path.GetFullPath(configuration["CommuteCast:Exports"] ?? SharedListeningFolder()
+                ?? Workspace.Root.TrimEnd(Path.DirectorySeparatorChar) + "-exports");
             Directory.CreateDirectory(Settings.Destination);
             Workspace.GuardLocalDestination(Settings.Destination);
             var store = new SqliteJobStore(Workspace);
@@ -71,9 +76,46 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
         }
     }
 
+    private string? DefaultSharedQueueRoot()
+    {
+        try { return OneDriveFolders.PrepareDefault(Workspace, OneDriveFolders.PersonalSyncRoot())?.Root; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            logger.LogWarning("The default personal OneDrive queue is unavailable.");
+            return null;
+        }
+    }
+
+    private string? SharedListeningFolder()
+    {
+        if (SharedQueueRoot is null || !Directory.Exists(SharedQueueRoot)) return null;
+        try
+        {
+            var path = new RemoteQueueFolder(SharedQueueRoot, Workspace).OutputFolder;
+            Directory.CreateDirectory(path);
+            Workspace.GuardLocalDestination(path);
+            return path;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            logger.LogWarning("The shared listening folder is unavailable for Studio exports.");
+            return null;
+        }
+    }
+
+    private IReadOnlyList<FolderLocation> AdminFolders()
+    {
+        var folders = OneDriveFolders.Describe(SharedQueueRoot, Settings.Destination, Workspace.Root, Path.Combine(Workspace.Root, "logs"));
+        var publishing = WebSettings;
+        if (!publishing.Destination.Configured) return folders;
+        var target = string.IsNullOrWhiteSpace(publishing.FolderName)
+            ? $"Drive {publishing.Destination.DriveId} · folder {publishing.Destination.FolderId}" : publishing.FolderName;
+        return [.. folders, new("Microsoft 365 publishing folder", target)];
+    }
+
     public object State() => new
     {
-        paused = Queue.Paused, error = Queue.PersistenceError, publishing = new
+        paused = Queue.Paused, error = Queue.PersistenceError, folders = AdminFolders(), publishing = new
         {
             configured = WebSettings.Destination.Configured, WebSettings.AutoPublish, WebSettings.FolderName, WebSettings.FolderUrl,
             destination = WebSettings.Destination, hasSecret = WebSettings.Destination.Configured && WindowsWebSecrets.Get(WindowsWebSecrets.Target(WebSettings.Destination)) is not null

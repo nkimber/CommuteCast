@@ -54,6 +54,23 @@ public static class CloudFileSync
         catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException) { return false; }
     }
 
+    internal static void GuardPath(string path)
+    {
+        for (var item = path; item is not null; item = Path.GetDirectoryName(item))
+        {
+            try
+            {
+                if (File.GetAttributes(item).HasFlag(FileAttributes.ReparsePoint) &&
+                    ReadPath(item, allowDirectory: true) is not (CloudSyncState.InSync or CloudSyncState.NotInSync))
+                    throw new IOException("Directory junctions and symbolic links are not supported in synced CommuteCast folders.");
+            }
+            catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { }
+        }
+    }
+
+    internal static bool IsPlaceholder(uint attributes, uint reparseTag) =>
+        FromPlaceholderState(CfGetPlaceholderStateFromAttributeTag(attributes, reparseTag)) is CloudSyncState.InSync or CloudSyncState.NotInSync;
+
     public static CloudSyncState FromPlaceholderState(uint state) => state == uint.MaxValue || (state & Placeholder) == 0
         ? CloudSyncState.Unknown : (state & InSync) != 0 ? CloudSyncState.InSync : CloudSyncState.NotInSync;
 

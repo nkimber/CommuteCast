@@ -116,6 +116,41 @@ public class CloudFileSyncTests
         finally { Marshal.ThrowExceptionForHR(Native.CfUnregisterSyncRoot(test.Destination)); }
     }
 
+    [Fact]
+    public async Task PublishReconcileAndRemoveInCloudPlaceholderDirectory()
+    {
+        using var test = new TestWorkspace();
+        using var sync = new TestSyncRoot(test.Destination);
+        var destination = sync.CreateFolder("Ready to Listen");
+        var previous = Native.RtlSetThreadPlaceholderCompatibilityMode(2);
+        try
+        {
+            Assert.Equal(CloudSyncState.InSync, CloudFileSync.ReadPath(destination, allowDirectory: true));
+            Assert.Throws<IOException>(() => Workspace.RejectReparsePoints(destination));
+            test.Workspace.GuardLocalDestination(destination);
+        }
+        finally { Native.RtlSetThreadPlaceholderCompatibilityMode(previous); }
+
+        var store = new SqliteJobStore(test.Workspace);
+        var publisher = new ExportPublisher(test.Workspace, store);
+        var job = new Job { Destination = destination, Title = "Cloud export test" };
+        var source = test.Workspace.FinalPath(job);
+        Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+        await File.WriteAllBytesAsync(source, [1, 2, 3, 4]);
+        job.FinalHash = await Workspace.HashFileAsync(source);
+
+        await publisher.TestDestinationAsync(destination);
+        await publisher.PublishAsync(job, default);
+        var output = Path.Combine(destination, job.ExportName);
+        sync.ConfirmFile(output);
+        Assert.Equal(CloudSyncState.InSync, CloudFileSync.Read(job));
+        job.ExportCommitted = false;
+        await publisher.ReconcileAsync(job, default);
+        Assert.True(job.ExportCommitted);
+        await publisher.RemoveManagedExportAsync(job, default);
+        Assert.False(File.Exists(output));
+    }
+
     internal sealed class TestSyncRoot : IDisposable
     {
         private readonly string path;
@@ -137,6 +172,16 @@ public class CloudFileSyncTests
             using var handle = File.OpenHandle(file, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
             const uint markInSync = 1;
             Marshal.ThrowExceptionForHR(Native.CfConvertToPlaceholder(handle, IntPtr.Zero, 0, markInSync, IntPtr.Zero, IntPtr.Zero));
+        }
+
+        public string CreateFolder(string name)
+        {
+            var folder = Directory.CreateDirectory(Path.Combine(path, name)).FullName;
+            const uint readWrite = 0xC0000000, shareAll = 7, openExisting = 3, backupSemantics = 0x02000000, markInSync = 1;
+            using var handle = Native.CreateFile(folder, readWrite, shareAll, IntPtr.Zero, openExisting, backupSemantics, IntPtr.Zero);
+            Assert.False(handle.IsInvalid, $"CreateFile failed: {Marshal.GetLastWin32Error()}");
+            Marshal.ThrowExceptionForHR(Native.CfConvertToPlaceholder(handle, IntPtr.Zero, 0, markInSync, IntPtr.Zero, IntPtr.Zero));
+            return folder;
         }
 
         public void Dispose() => Marshal.ThrowExceptionForHR(Native.CfUnregisterSyncRoot(path));
@@ -183,6 +228,8 @@ public class CloudFileSyncTests
         }
         [DllImport("kernel32.dll", EntryPoint = "FindFirstFileW", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr FindFirstFile(string path, out FindData data);
         [DllImport("kernel32.dll")] public static extern bool FindClose(IntPtr handle);
+        [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
         [DllImport("cldapi.dll")] public static extern uint CfGetPlaceholderStateFromAttributeTag(uint attributes, uint tag);
         [DllImport("cldapi.dll")] public static extern int CfConvertToPlaceholder(SafeFileHandle handle, IntPtr identity, uint size, uint flags, IntPtr usn, IntPtr overlapped);
         [DllImport("ntdll.dll", ExactSpelling = true)] public static extern sbyte RtlSetThreadPlaceholderCompatibilityMode(sbyte mode);

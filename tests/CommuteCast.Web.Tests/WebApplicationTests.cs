@@ -25,6 +25,21 @@ namespace CommuteCast.Web.Tests;
 public sealed class WebApplicationTests
 {
     [Fact]
+    public async Task AdminShowsTheEffectiveSharedQueueAndExportFolders()
+    {
+        await using var host = new StudioFactory(remoteQueue: true, sharedExports: true);
+        using var client = await host.OwnerClientAsync();
+        Assert.Contains("id=\"page-admin\"", await client.GetStringAsync("/"));
+        var state = await client.GetFromJsonAsync<JsonElement>("/api/state");
+        var folders = state.GetProperty("folders").EnumerateArray()
+            .ToDictionary(x => x.GetProperty("label").GetString()!, x => x.GetProperty("path").GetString());
+        Assert.Equal(host.SharedQueue, folders["Shared queue root"]);
+        Assert.Equal(Path.Combine(host.SharedQueue, "Status"), folders["Job status"]);
+        Assert.Equal(Path.Combine(host.SharedQueue, "Ready to Listen"), folders["Local generation MP3 exports"]);
+        Assert.True(Directory.Exists(folders["Local generation MP3 exports"]));
+    }
+
+    [Fact]
     public async Task RendersStudioAndNeverExposesAudioOrWorkspaceFiles()
     {
         await using var host = new StudioFactory(); using var client = await host.OwnerClientAsync();
@@ -421,25 +436,25 @@ public sealed class WebApplicationTests
     private sealed class StudioFactory : WebApplicationFactory<Program>
     {
         private readonly string parent;
-        private readonly bool ownsParent, cloudflare, remoteQueue;
+        private readonly bool ownsParent, cloudflare, remoteQueue, sharedExports;
         private readonly IPAddress remote;
         private readonly RSA rsa = RSA.Create(2048);
         public SyntheticSpeech Speech { get; } = new();
         public SyntheticPublishing Publishing { get; } = new();
         public string SharedQueue => Path.Combine(parent, "shared");
-        public StudioFactory(string? parent = null, IPAddress? remoteAddress = null, bool cloudflare = false, bool remoteQueue = false)
+        public StudioFactory(string? parent = null, IPAddress? remoteAddress = null, bool cloudflare = false, bool remoteQueue = false, bool sharedExports = false)
         {
             ownsParent = parent is null; this.parent = parent ?? Path.Combine(Path.GetTempPath(), "CommuteCast-Web-tests-" + Guid.NewGuid().ToString("N"));
-            remote = remoteAddress ?? IPAddress.Loopback; this.cloudflare = cloudflare; this.remoteQueue = remoteQueue;
+            remote = remoteAddress ?? IPAddress.Loopback; this.cloudflare = cloudflare; this.remoteQueue = remoteQueue; this.sharedExports = sharedExports;
             if (remoteQueue) Directory.CreateDirectory(SharedQueue);
         }
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["CommuteCast:Workspace"] = Path.Combine(parent, "private"), ["CommuteCast:Exports"] = Path.Combine(parent, "exports"),
+                ["CommuteCast:Workspace"] = Path.Combine(parent, "private"), ["CommuteCast:Exports"] = sharedExports ? null : Path.Combine(parent, "exports"),
                 ["CommuteCast:OperationalLogging"] = "false",
-                ["RemoteQueue:Folder"] = remoteQueue ? SharedQueue : null,
+                ["RemoteQueue:Folder"] = remoteQueue ? SharedQueue : "",
                 ["RemoteQueue:ListeningFolderUrl"] = remoteQueue ? "https://tenant.sharepoint.com/ready" : null,
                 ["Cloudflare:TeamDomain"] = cloudflare ? "test.cloudflareaccess.com" : "", ["Cloudflare:Audience"] = "correct-audience", ["Cloudflare:AllowedEmail"] = "owner@example.com"
             }));

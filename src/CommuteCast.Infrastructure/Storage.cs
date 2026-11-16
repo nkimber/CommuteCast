@@ -30,7 +30,7 @@ public sealed class Workspace
         if (!Directory.Exists(path)) throw new IOException("The output folder is missing. Choose an existing local OneDrive folder.");
         if (path.StartsWith("\\\\", StringComparison.Ordinal)) throw new IOException("Choose a local synced folder, not a network share.");
         if (IsWithin(Root, path) || IsWithin(path, Root)) throw new IOException("Output must be separate from CommuteCast's private data folder.");
-        RejectReparsePoints(path);
+        CloudFileSync.GuardPath(path);
     }
     public static bool IsWithin(string parent, string child)
     {

@@ -1,4 +1,13 @@
 @charset "UTF-8";
+#admin-folders dt {
+  margin-top: 16px;
+  font-weight: 700;
+}
+#admin-folders dd {
+  margin: 5px 0 0;
+  font-family: "Consolas", monospace;
+  overflow-wrap: anywhere;
+}
 :root {
   --paper: #f8f8f2;
   --ink: #233c34;

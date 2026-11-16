@@ -77,7 +77,7 @@ public sealed class WebRemoteQueue(IConfiguration configuration, WebRuntime runt
 
     private RemoteQueueFolder? OpenFolder()
     {
-        var path = configuration["RemoteQueue:Folder"];
+        var path = runtime.SharedQueueRoot;
         return string.IsNullOrWhiteSpace(path) ? null : new(path, runtime.Workspace);
     }
 

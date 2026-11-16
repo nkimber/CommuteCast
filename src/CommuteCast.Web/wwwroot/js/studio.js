@@ -19,6 +19,7 @@ const pageNames = {
   library: "Your library",
   prompt: "Prompt builder",
   settings: "Settings",
+  admin: "Admin",
 };
 function node(tag, className, text) {
   const n = document.createElement(tag);
@@ -634,6 +635,9 @@ async function refresh() {
     state = await api("state");
     renderJobs();
     folderLinks();
+    $("admin-folders").replaceChildren(...(state.folders || []).flatMap(folder => [
+      node("dt", "", folder.label), node("dd", "", folder.path),
+    ]));
     $("connection").className = "connection connected";
     $("connection").replaceChildren(
       node("span", "status-dot"),

@@ -58,7 +58,7 @@ public sealed record OneDriveFolders(string Root)
         var folders = new OneDriveFolders(Path.Combine(Path.GetFullPath(personalSyncRoot), RootName));
         if (Workspace.IsWithin(workspace.Root, folders.Root) || Workspace.IsWithin(folders.Root, workspace.Root))
             throw new IOException("The shared OneDrive folder must be separate from the private workspace.");
-        RemoteQueueFolder.Guard(folders.Listening);
+        CloudFileSync.GuardPath(folders.Listening);
         Directory.CreateDirectory(folders.Listening);
         return folders;
     }
@@ -74,7 +74,7 @@ public sealed record OneDriveFolders(string Root)
         settings.RemoteQueue ??= new(folders.Root, false, Environment.MachineName, "", []);
         if (string.IsNullOrWhiteSpace(settings.Destination))
         {
-            RemoteQueueFolder.Guard(folders.Listening);
+            CloudFileSync.GuardPath(folders.Listening);
             Directory.CreateDirectory(folders.Listening);
             workspace.GuardLocalDestination(folders.Listening);
             settings.Destination = folders.Listening;
