@@ -71,10 +71,11 @@ public partial class RemoteQueueWindow : Window
 
     private async void SendDraft(object sender, RoutedEventArgs e)
     {
-        if (Workers.SelectedItem is not WorkerChoice worker) return;
+        if (Workers.SelectedItem is not WorkerChoice { CanReceive: true } worker) return;
         await WriteAsync(async () =>
         {
-            selectedJob = await model.SubmitRemoteDraftAsync(worker.Id, lifetime.Token);
+            selectedJob = await model.SubmitRemoteDraftAsync(worker.Id, AllowHostedFallback.IsChecked == true, lifetime.Token);
+            AllowHostedFallback.IsChecked = false;
             Feedback.Text = $"Request saved for {worker.Name}. The worker will acknowledge it after sync.";
         });
     }
@@ -109,10 +110,11 @@ public partial class RemoteQueueWindow : Window
             var previousWorker = Workers.SelectedValue;
             Workers.ItemsSource = workers;
             Workers.SelectedValue = previousWorker;
-            if (Workers.SelectedIndex < 0) Workers.SelectedItem = workers.FirstOrDefault(w => w.State != RemoteWorkerState.Disabled);
-            RosterSummary.Text = workers.Any(w => w.State is RemoteWorkerState.Ready or RemoteWorkerState.Busy)
+            if (Workers.SelectedIndex < 0) Workers.SelectedItem = workers.FirstOrDefault(w => w.CanReceive);
+            RosterSummary.Text = workers.Any(w => w.CanReceive && w.State is RemoteWorkerState.Ready or RemoteWorkerState.Busy)
                 ? "Each worker generates one narration at a time."
-                : "No workers ready right now. You can queue a narration for a registered worker to pick up later.";
+                : workers.Any(w => w.CanReceive) ? "No workers ready right now. You can queue a narration for a registered worker to pick up later."
+                : "Register or update a worker to send narrations with hosted fallback consent.";
             var previousJob = selectedJob ?? JobList.SelectedValue as string;
             JobList.ItemsSource = snapshot.Jobs;
             JobList.SelectedValue = previousJob;
@@ -161,7 +163,10 @@ public partial class RemoteQueueWindow : Window
 
     private void UpdateSend()
     {
-        if (SendButton is not null) SendButton.IsEnabled = !writing && model.CanSubmitRemote && Workers.SelectedItem is WorkerChoice { State: not RemoteWorkerState.Disabled };
+        if (SendButton is null || AllowHostedFallback is null) return;
+        var canSend = !writing && model.CanSubmitRemote && Workers.SelectedItem is WorkerChoice { CanReceive: true };
+        SendButton.IsEnabled = canSend;
+        AllowHostedFallback.IsEnabled = canSend;
     }
 
     private void JobSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -225,7 +230,9 @@ public partial class RemoteQueueWindow : Window
         public string Id => worker.WorkerId;
         public string Name => worker.Name;
         public RemoteWorkerState State => worker.StateAt(now);
-        public string Label => $"{Name} · {StateName(State)} · checked in {worker.UpdatedUtc.ToLocalTime():g}";
+        public string Label => $"{Name} · {(SupportsConsent ? StateName(State) : "Update required")} · checked in {worker.UpdatedUtc.ToLocalTime():g}";
+        private bool SupportsConsent => worker.RequestVersion >= RemoteRequest.CurrentVersion;
+        public bool CanReceive => SupportsConsent && State != RemoteWorkerState.Disabled;
         public int Preference => State switch { RemoteWorkerState.Ready => 0, RemoteWorkerState.Busy => 1, RemoteWorkerState.Starting => 2, RemoteWorkerState.Disabled => 4, _ => 3 };
         private static string StateName(RemoteWorkerState state) => state == RemoteWorkerState.NeedsAttention ? "Needs attention" : state.ToString();
     }

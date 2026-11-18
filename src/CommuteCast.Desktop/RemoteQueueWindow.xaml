@@ -28,6 +28,9 @@
                 <Button x:Name="SendButton" DockPanel.Dock="Right" Content="Send current narration" Click="SendDraft" IsEnabled="False"/>
                 <ComboBox x:Name="Workers" DisplayMemberPath="Label" SelectedValuePath="Id" SelectionChanged="WorkerSelectionChanged" MinWidth="210"/>
             </DockPanel>
+            <CheckBox x:Name="AllowHostedFallback" Content="Allow hosted speech as a fallback for this narration" Margin="0,8,0,0" IsEnabled="False"
+                      AutomationProperties.HelpText="If your chosen voice is unavailable, the worker may send the spoken script to one of its hosted speech providers."/>
+            <TextBlock TextWrapping="Wrap" Margin="0,4,0,0">If your chosen voice is unavailable, the worker may send the spoken script to one of its hosted speech providers.</TextBlock>
             <TextBlock x:Name="RosterSummary" TextWrapping="Wrap" Margin="0,6,0,0" AutomationProperties.LiveSetting="Polite"/>
         </StackPanel>
         <Grid Grid.Row="2">

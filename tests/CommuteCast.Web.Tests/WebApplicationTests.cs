@@ -339,37 +339,50 @@ public sealed class WebApplicationTests
         Assert.True(host.Services.GetRequiredService<WebRuntime>().Queue.Paused);
     }
 
-    [Fact]
-    public async Task AndroidPageQueuesOneRequestForTheChosenWorkerAndReportsPublicProgressWithoutSource()
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public async Task AndroidPageQueuesOneRequestForTheChosenWorkerAndReportsPublicProgressWithoutSource(bool consent)
     {
         await using var host = new StudioFactory(cloudflare: true, remoteQueue: true);
         using var client = host.CreateClient();
         client.DefaultRequestHeaders.Add("Cf-Access-Jwt-Assertion", host.Token("owner@example.com", "correct-audience", false));
         var html = await client.GetStringAsync("/remote");
         Assert.Contains("Send to worker", html);
+        Assert.Contains("Allow hosted speech as a fallback for this narration", html);
         Assert.Contains("/js/remote.js", html);
         var runtime = host.Services.GetRequiredService<WebRuntime>();
         var folder = new RemoteQueueFolder(host.SharedQueue, runtime.Workspace);
         var worker = Guid.NewGuid().ToString("N");
-        await folder.WriteWorkerAsync(new(worker, "Basement", DateTimeOffset.UtcNow.AddMinutes(-10), RemoteWorkerState.Ready, ["Kokoro"]));
+        var roster = new RemoteWorkerStatus(worker, "Basement", DateTimeOffset.UtcNow.AddMinutes(-10), RemoteWorkerState.Ready, ["Kokoro"]);
+        await folder.WriteWorkerAsync(roster);
         var state = await client.GetFromJsonAsync<JsonElement>("/api/remote");
         var preset = state.GetProperty("presets")[0];
         Assert.Equal("https://tenant.sharepoint.com/ready", state.GetProperty("listeningFolderUrl").GetString());
-        Assert.Equal("Offline", Assert.Single(state.GetProperty("workers").EnumerateArray()).GetProperty("state").GetString());
+        var registered = Assert.Single(state.GetProperty("workers").EnumerateArray());
+        Assert.Equal("Offline", registered.GetProperty("state").GetString());
+        Assert.False(registered.GetProperty("acceptsCurrentRequests").GetBoolean());
         var request = new WebRemoteSubmission(Guid.NewGuid().ToString("N"), worker, DateTimeOffset.UtcNow,
-            "Morning reading", "Private synthetic narration for the worker.", preset.GetProperty("id").GetString()!);
+            "Morning reading", "Private synthetic narration for the worker.", preset.GetProperty("id").GetString()!, consent);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/remote/jobs", request)).StatusCode);
         Assert.Empty(folder.RequestIds());
 
         client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", Regex.Match(html, "name=\"csrf-token\" content=\"([^\"]+)\"").Groups[1].Value);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/remote/jobs", request with { TargetWorkerId = Guid.NewGuid().ToString("N") })).StatusCode);
+        using var incompatible = await client.PostAsJsonAsync("/api/remote/jobs", request);
+        Assert.Equal(HttpStatusCode.BadRequest, incompatible.StatusCode);
+        Assert.Contains("Update the selected worker", await incompatible.Content.ReadAsStringAsync());
+        Assert.Empty(folder.RequestIds());
+
+        await folder.WriteWorkerAsync(roster with { RequestVersion = RemoteRequest.CurrentVersion });
         (await client.PostAsJsonAsync("/api/remote/jobs", request)).EnsureSuccessStatusCode();
         (await client.PostAsJsonAsync("/api/remote/jobs", request)).EnsureSuccessStatusCode();
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/remote/jobs", request with { Text = "Changed." })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/remote/jobs", request with { AllowHostedFallback = !consent })).StatusCode);
         Assert.Equal(request.JobId, Assert.Single(folder.RequestIds()));
         var saved = Assert.IsType<RemoteRequest>(await folder.ReadRequestAsync(request.JobId));
         Assert.Equal(worker, saved.TargetWorkerId);
         Assert.Equal(request.Text, saved.Text);
+        Assert.Equal(RemoteRequest.CurrentVersion, saved.Version);
+        Assert.Equal(consent, saved.AllowHostedFallback);
         Assert.Equal(0, host.Speech.Calls);
         Assert.Empty(runtime.Queue.Snapshot());
 

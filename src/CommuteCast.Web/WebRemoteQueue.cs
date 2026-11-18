@@ -6,7 +6,7 @@ using CommuteCast.Infrastructure;
 namespace CommuteCast.Web;
 
 public sealed record WebRemoteSubmission(string JobId, string TargetWorkerId, DateTimeOffset CreatedUtc,
-    string Title, string Text, string PresetId);
+    string Title, string Text, string PresetId, bool AllowHostedFallback = false);
 
 public sealed class WebRemoteQueue(IConfiguration configuration, WebRuntime runtime)
 {
@@ -43,7 +43,8 @@ public sealed class WebRemoteQueue(IConfiguration configuration, WebRuntime runt
         {
             configured = true,
             listeningFolderUrl = ListeningFolderUrl(),
-            workers = registered.Select(w => new { w.WorkerId, w.Name, w.UpdatedUtc, state = w.StateAt(now), w.Presets }),
+            workers = registered.Select(w => new { w.WorkerId, w.Name, w.UpdatedUtc, state = w.StateAt(now), w.Presets,
+                acceptsCurrentRequests = w.RequestVersion >= RemoteRequest.CurrentVersion }),
             presets = Choices().Select(p => new { p.Id, p.Name, voice = RemoteVoice.From(p.Options) }),
             jobs = jobs.OrderByDescending(j => j.CreatedUtc).ThenBy(j => j.Id, StringComparer.Ordinal)
         };
@@ -60,7 +61,8 @@ public sealed class WebRemoteQueue(IConfiguration configuration, WebRuntime runt
         if (await folder.ReadRequestAsync(submission.JobId, ct) is { } existing)
         {
             if (existing.TargetWorkerId == submission.TargetWorkerId && existing.CreatedUtc == submission.CreatedUtc &&
-                existing.Title == title && existing.Text == submission.Text && ChoiceId(existing.Preset, existing.Options) == submission.PresetId)
+                existing.Title == title && existing.Text == submission.Text && existing.AllowHostedFallback == submission.AllowHostedFallback &&
+                ChoiceId(existing.Preset, existing.Options) == submission.PresetId)
                 return existing.JobId;
             throw new ArgumentException("This job ID already belongs to a different narration. Refresh to send a separate request.");
         }
@@ -68,10 +70,12 @@ public sealed class WebRemoteQueue(IConfiguration configuration, WebRuntime runt
         var worker = (await folder.ReadWorkersAsync(ct)).SingleOrDefault(w => w.WorkerId == submission.TargetWorkerId);
         if (worker is null || worker.State == RemoteWorkerState.Disabled)
             throw new ArgumentException("Choose a registered worker that accepts remote requests.");
+        if (worker.RequestVersion < RemoteRequest.CurrentVersion)
+            throw new ArgumentException("Update the selected worker before sending new remote requests.");
         var choice = Choices().FirstOrDefault(p => p.Id == submission.PresetId)
             ?? throw new ArgumentException("The selected voice preset changed. Refresh and choose the preset again.");
         await folder.SubmitAsync(new(submission.JobId, worker.WorkerId, submission.CreatedUtc, title, submission.Text,
-            choice.Options, Preset: choice.Name), ct);
+            choice.Options, Version: RemoteRequest.CurrentVersion, Preset: choice.Name, AllowHostedFallback: submission.AllowHostedFallback), ct);
         return submission.JobId;
     }
 

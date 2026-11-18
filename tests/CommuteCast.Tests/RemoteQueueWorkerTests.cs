@@ -5,6 +5,83 @@ namespace CommuteCast.Tests;
 
 public sealed class RemoteQueueWorkerTests
 {
+    [Theory]
+    [InlineData(1, false, true, false)]
+    [InlineData(RemoteRequest.CurrentVersion, false, true, false)]
+    [InlineData(RemoteRequest.CurrentVersion, true, false, false)]
+    [InlineData(RemoteRequest.CurrentVersion, true, true, true)]
+    public async Task HostedFallbackRequiresRequestConsentAndWorkerPermission(int version, bool consent, bool workerAllowsHosted, bool usesHosted)
+    {
+        using var test = new TestWorkspace();
+        var probes = new List<string>();
+        var hosted = new NarrationOptions("openai", "alloy", 1, false, "", new(), Speech: new("gpt-4o-mini-tts"));
+        var local = new NarrationOptions("piper", "en_US-lessac-medium", 1, false, "", new());
+        var worker = Guid.NewGuid().ToString("N");
+        var folder = new RemoteQueueFolder(test.Destination, test.Workspace);
+        var request = new RemoteRequest(Guid.NewGuid().ToString("N"), worker, DateTimeOffset.UtcNow, "Commute",
+            "A synthetic narration.", local with { Voice = "en_US-missing" }, Version: version, AllowHostedFallback: consent);
+        await folder.SubmitAsync(request);
+        var saved = Assert.IsType<RemoteRequest>(await folder.ReadRequestAsync(request.JobId));
+        var planner = new RemoteRenderPlanner((snapshot, _) =>
+        {
+            probes.Add(snapshot.Engine);
+            var settings = snapshot.Engine == hosted.Engine ? hosted : local;
+            return Task.FromResult(new ProviderInfo(settings.Engine, settings.Speech?.Identity(settings.Engine) ?? "fixture-piper", [settings.Voice], "ready", 0));
+        }, [new("Hosted substitute", hosted), new("Local substitute", local)], workerAllowsHosted);
+
+        var job = await planner.PrepareAsync(saved, worker, folder.Root, default);
+
+        Assert.Equal(usesHosted ? "openai" : "piper", job.Settings.Engine);
+        Assert.Equal(consent, job.Remote!.AllowHostedFallback);
+        Assert.Contains("unavailable", job.Remote.FallbackReason);
+        Assert.Equal(usesHosted ? ["piper", "openai"] : new[] { "piper", "piper" }, probes);
+
+        if (workerAllowsHosted)
+        {
+            var direct = await planner.PrepareAsync(request with { Options = hosted, AllowHostedFallback = false }, worker, folder.Root, default);
+            Assert.Equal(hosted.Engine, direct.Settings.Engine);
+            Assert.Null(direct.Remote!.FallbackReason);
+        }
+    }
+
+    [Fact]
+    public async Task RestartedQueueDoesNotRequestHostedSpeechForALegacyFallbackWithoutConsent()
+    {
+        using var test = new TestWorkspace();
+        var store = new SqliteJobStore(test.Workspace);
+        var speech = new RestartableSpeech();
+        var workerId = Guid.NewGuid().ToString("N");
+        var folder = new RemoteQueueFolder(test.Destination, test.Workspace);
+        var options = new NarrationOptions("kokoro", "af_missing", 1, false, "", new());
+        var request = new RemoteRequest(Guid.NewGuid().ToString("N"), workerId, DateTimeOffset.UtcNow, "Commute", "Some text.", options);
+        var hosted = new SpeechConfiguration("gpt-4o-mini-tts");
+        var fingerprint = hosted.Identity("openai");
+        var job = new Job
+        {
+            Id = request.JobId, Title = request.Title, Source = request.Text, Stage = JobStage.Queued,
+            Prepared = TextPreparation.Prepare(request.Text, profile: options.Profile),
+            Settings = new("openai", "alloy", 1, false, "", fingerprint, options.Profile, Speech: hosted),
+            Remote = new(workerId, folder.Root, RemoteQueueFolder.Fingerprint(request), RemoteVoice.From(options),
+                new("openai", "alloy", 1, hosted.Model), "Requested voice unavailable.")
+        };
+        await store.SaveAsync(job);
+        await folder.SubmitAsync(request);
+        await using var queue = OpenQueue(test.Workspace, store, speech);
+        await queue.InitializeAsync();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        while (queue.Snapshot().Single().Stage != JobStage.Failed) await Task.Delay(25, timeout.Token);
+        var worker = new RemoteQueueWorker(workerId, "Basement", folder, test.Workspace, queue,
+            new((settings, ct) => speech.ReadyAsync(settings.Engine, ct), []));
+        await worker.PollAsync(timeout.Token);
+
+        var status = Assert.IsType<RemoteJobStatus>(await folder.ReadStatusAsync(job.Id, timeout.Token));
+        Assert.Equal(RemoteJobState.NeedsAttention, status.State);
+        Assert.Contains("sender's permission", status.Attention);
+        Assert.Equal(0, speech.ReadinessChecks);
+        Assert.Equal(0, speech.Syntheses);
+    }
+
     [Fact]
     public async Task AssignedWorkerResumesSavedChunksAndPublishesTheFallbackOnlyOnce()
     {
@@ -168,10 +245,15 @@ public sealed class RemoteQueueWorkerTests
         public bool BlockSecondChunk { get; set; } = true;
         public string[] KokoroVoices { get; set; } = ["af_heart"];
         public int Syntheses { get; private set; }
+        public int ReadinessChecks { get; private set; }
         public TaskCompletionSource SecondChunk { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct) => Task.FromResult(new ProviderInfo(
-            engine, "fixture-" + engine, engine == "kokoro" ? KokoroVoices : ["en_US-lessac-medium"], "ready", 0));
+        public Task<ProviderInfo> ReadyAsync(string engine, CancellationToken ct)
+        {
+            ReadinessChecks++;
+            return Task.FromResult(new ProviderInfo(engine, "fixture-" + engine,
+                engine == "kokoro" ? KokoroVoices : ["en_US-lessac-medium"], "ready", 0));
+        }
 
         public async Task SynthesizeAsync(NarrationSettings settings, string text, string output, CancellationToken ct)
         {

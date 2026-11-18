@@ -40,6 +40,12 @@
                 <label for="text">Narration text</label>
                 <textarea id="text" maxlength="250000" rows="7" required></textarea>
 
+                <label class="hosted-fallback">
+                    <input id="hosted-fallback" type="checkbox" aria-describedby="hosted-fallback-detail" />
+                    <span>Allow hosted speech as a fallback for this narration</span>
+                </label>
+                <small id="hosted-fallback-detail">If your chosen voice is unavailable, the worker may send the spoken script to one of its hosted speech providers.</small>
+
                 <button class="primary" id="send" type="submit" disabled>Send to worker</button>
             </form>
             <p id="result" role="status"></p>

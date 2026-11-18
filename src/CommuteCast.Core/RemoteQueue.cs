@@ -1,11 +1,17 @@
+using System.Text.Json.Serialization;
+
 namespace CommuteCast.Core;
 
 public sealed record RemoteRequest(string JobId, string TargetWorkerId, DateTimeOffset CreatedUtc, string Title, string Text,
-    NarrationOptions Options, int Version = 1, string? Preset = null)
+    NarrationOptions Options, int Version = 1, string? Preset = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool AllowHostedFallback = false)
 {
+    public const int CurrentVersion = 2;
+
     public void Validate()
     {
-        if (Version != 1 || !RemoteIdentity.IsValid(JobId) || !RemoteIdentity.IsValid(TargetWorkerId) || CreatedUtc == default)
+        if (Version is not (1 or CurrentVersion) || Version == 1 && AllowHostedFallback ||
+            !RemoteIdentity.IsValid(JobId) || !RemoteIdentity.IsValid(TargetWorkerId) || CreatedUtc == default)
             throw new ArgumentException("The remote request version or identity is invalid.");
         if (string.IsNullOrWhiteSpace(Title) || Title.Length > 200 || string.IsNullOrWhiteSpace(Text) ||
             Text.Length > TextPreparation.MaximumCharacters || Options?.Profile is null || Options.Pronunciation is null ||
@@ -30,7 +36,8 @@ public sealed record RemoteVoice(string Engine, string Voice, double Speed, stri
 
 // Stored alongside the accepted narration in the worker's private queue.
 public sealed record RemoteRender(string WorkerId, string QueueRoot, string RequestFingerprint,
-    RemoteVoice RequestedVoice, RemoteVoice ActualVoice, string? FallbackReason, RemoteDelivery? Delivery = null);
+    RemoteVoice RequestedVoice, RemoteVoice ActualVoice, string? FallbackReason, RemoteDelivery? Delivery = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool AllowHostedFallback = false);
 
 public sealed record RemoteDelivery(string OutputFile, string Hash, DateTimeOffset ConfirmedUtc);
 
@@ -47,6 +54,8 @@ public sealed record RemoteQueueSettings(string Folder, bool EnableWorker, strin
 public sealed record RemoteWorkerStatus(string WorkerId, string Name, DateTimeOffset UpdatedUtc, RemoteWorkerState State,
     string[] Presets, int Version = 1)
 {
+    public int RequestVersion { get; init; } = 1;
+
     public static TimeSpan CheckInInterval { get; } = TimeSpan.FromMinutes(1);
     public static TimeSpan OfflineAfter { get; } = TimeSpan.FromMinutes(4);
 

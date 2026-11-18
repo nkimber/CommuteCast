@@ -105,7 +105,7 @@ public sealed partial class MainViewModel
     internal Task<bool> RetryRemoteAsync(string workerId, string id, CancellationToken ct) => CanRetryRemote(workerId)
         ? remoteHost!.RetryAsync(id, ct) : throw new ArgumentException("Retry this narration on its assigned worker.");
 
-    internal async Task<string> SubmitRemoteDraftAsync(string workerId, CancellationToken ct)
+    internal async Task<string> SubmitRemoteDraftAsync(string workerId, bool allowHostedFallback, CancellationToken ct)
     {
         if (!CanSubmitRemote) throw new ArgumentException("Paste a narration in New narration before sending it to a worker. Podcast dialogue uses local creation.");
         if (RemoteFolderNeedsConfirmation)
@@ -116,8 +116,10 @@ public sealed partial class MainViewModel
         var choices = narrationPreferences.Current with { Profile = CaptureProfile() };
         var preset = RemotePresets.FirstOrDefault(p => p.Options == choices)?.Name;
         var request = pendingRemoteSubmission;
-        if (request is null || request.TargetWorkerId != workerId || request.Text != source || request.Title != title || request.Options != choices)
-            request = new(Guid.NewGuid().ToString("N"), workerId, DateTimeOffset.UtcNow, title, source, choices, Preset: preset);
+        if (request is null || request.TargetWorkerId != workerId || request.Text != source || request.Title != title ||
+            request.Options != choices || request.AllowHostedFallback != allowHostedFallback)
+            request = new(Guid.NewGuid().ToString("N"), workerId, DateTimeOffset.UtcNow, title, source, choices,
+                Version: RemoteRequest.CurrentVersion, Preset: preset, AllowHostedFallback: allowHostedFallback);
         pendingRemoteSubmission = request;
         await folder.SubmitAsync(request, ct);
         pendingRemoteSubmission = null;

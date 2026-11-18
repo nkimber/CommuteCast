@@ -28,7 +28,8 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
 
     // The host can check in independently of a slow provider readiness check or an upload.
     public Task CheckInAsync(RemoteWorkerState state, IEnumerable<string> presets) => folder.WriteWorkerAsync(new(workerId, name,
-        clock.GetUtcNow(), state, presets.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()));
+        clock.GetUtcNow(), state, presets.Distinct(StringComparer.OrdinalIgnoreCase).ToArray())
+    { RequestVersion = RemoteRequest.CurrentVersion });
 
     public async Task<bool> RetryAsync(string jobId, CancellationToken ct = default)
     {
@@ -198,7 +199,8 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
             FallbackReason: remote.FallbackReason);
     }
 
-    private static string FailureGuidance(Job job) => job.FailureCategory switch
+    private static string FailureGuidance(Job job) => job.Error == RemoteRenderPlanner.HostedFallbackConsentRequired
+        ? job.Error : job.FailureCategory switch
     {
         FailureCategory.ServiceConnection or FailureCategory.ServiceContract or FailureCategory.Prerequisite =>
             "Check the selected speech service on the worker, then retry the saved narration.",

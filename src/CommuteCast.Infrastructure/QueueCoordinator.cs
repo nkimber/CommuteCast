@@ -379,6 +379,8 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
             job.FinalHash = "";
             if (valid.Count != job.Chunks.Count)
             {
+                if (job.Remote is { FallbackReason: not null, AllowHostedFallback: false } && SpeechProviders.IsHosted(job.Settings.Engine))
+                    throw new ArgumentException(RemoteRenderPlanner.HostedFallbackConsentRequired);
                 job.Activity.Update("Waiting for other local audio work to finish", true);
                 await InferenceGate.WaitAsync(ct);
                 try

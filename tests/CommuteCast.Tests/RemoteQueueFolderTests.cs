@@ -1,5 +1,7 @@
 using CommuteCast.Core;
 using CommuteCast.Infrastructure;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CommuteCast.Tests;
 
@@ -23,6 +25,27 @@ public sealed class RemoteQueueFolderTests : IDisposable
         File.WriteAllText(Path.Combine(folder.Root, "Inbox", Id() + ".json.tmp"), "incomplete");
         Assert.Equal(request.JobId, Assert.Single(Open().RequestIds()));
         Assert.Equal(request, await Open().ReadRequestAsync(request.JobId));
+    }
+
+    [Fact]
+    public async Task LegacyRequestsKeepTheirFingerprintAndCannotCarryHostedConsent()
+    {
+        var folder = Open();
+        var request = new RemoteRequest(Id(), Id(), DateTimeOffset.UtcNow, "Morning", "Listen to this.",
+            new("kokoro", "af_heart", 1, false, "", new()));
+        var json = JsonSerializer.Serialize(new { request.JobId, request.TargetWorkerId, request.CreatedUtc, request.Title,
+            request.Text, request.Options, request.Version, request.Preset }, new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            WriteIndented = true,
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false) }
+        });
+        await File.WriteAllTextAsync(Path.Combine(Directory.CreateDirectory(Path.Combine(folder.Root, "Inbox")).FullName, request.JobId + ".json"), json);
+
+        var saved = Assert.IsType<RemoteRequest>(await folder.ReadRequestAsync(request.JobId));
+        Assert.False(saved.AllowHostedFallback);
+        Assert.Equal(Job.Hash(json), RemoteQueueFolder.Fingerprint(saved));
+        await Assert.ThrowsAsync<ArgumentException>(() => folder.SubmitAsync(saved with { AllowHostedFallback = true }));
+        await Assert.ThrowsAsync<IOException>(() => folder.SubmitAsync(saved with { Version = RemoteRequest.CurrentVersion }));
     }
 
     [Fact]

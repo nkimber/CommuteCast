@@ -33,14 +33,17 @@ public sealed class RemoteQueueTests
         Assert.Equal(RemoteWorkerState.Disabled, retired.State);
     });
 
-    [Fact]
-    public Task DesktopSubmitsToTheSelectedWorkerWithoutLocalSpeechAndDisplaysTheFinishedFallback() => DesktopHost.Run(async () =>
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public Task DesktopSubmitsToTheSelectedWorkerWithoutLocalSpeechAndDisplaysTheFinishedFallback(bool consent) => DesktopHost.Run(async () =>
     {
         var workspace = DesktopHost.Workspace();
         var shared = Directory.CreateDirectory(workspace.Root + "-shared").FullName;
         var folder = new RemoteQueueFolder(shared, workspace);
         var worker = Guid.NewGuid().ToString("N");
-        await folder.WriteWorkerAsync(new(worker, "Basement", DateTimeOffset.UtcNow, RemoteWorkerState.Ready, ["Auditioned fallback"]));
+        var oldWorker = Guid.NewGuid().ToString("N");
+        await folder.WriteWorkerAsync(new(worker, "Basement", DateTimeOffset.UtcNow, RemoteWorkerState.Ready, ["Auditioned fallback"])
+        { RequestVersion = RemoteRequest.CurrentVersion });
+        await folder.WriteWorkerAsync(new(oldWorker, "Old worker", DateTimeOffset.UtcNow, RemoteWorkerState.Ready, []));
         var settings = new AppSettings { RemoteQueue = new(shared, false, "Work laptop", "", []) };
         await using var model = new MainViewModel(settings, workspace, powerEvents: new LifecycleTests.Events(), notifications: new LifecycleTests.Notifications());
         model.Source = "A synthetic narration for the desktop queue test.";
@@ -54,12 +57,22 @@ public sealed class RemoteQueueTests
             await ObserveAsync(() => send.IsEnabled);
             var workers = (ComboBox)window.FindName("Workers");
             Assert.Equal(worker, workers.SelectedValue);
+            var allowHostedFallback = (CheckBox)window.FindName("AllowHostedFallback");
+            Assert.False(allowHostedFallback.IsChecked);
+            workers.SelectedValue = oldWorker;
+            Assert.False(send.IsEnabled);
+            Assert.False(allowHostedFallback.IsEnabled);
+            workers.SelectedValue = worker;
+            Assert.True(send.IsEnabled);
+            allowHostedFallback.IsChecked = consent;
             send.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await ObserveAsync(() => model.Source.Length == 0);
             var id = Assert.Single(folder.RequestIds());
             var request = Assert.IsType<RemoteRequest>(await folder.ReadRequestAsync(id));
             Assert.Equal(worker, request.TargetWorkerId);
             Assert.Equal("Morning request", request.Title);
+            Assert.Equal(RemoteRequest.CurrentVersion, request.Version);
+            Assert.Equal(consent, request.AllowHostedFallback);
             Assert.Empty(model.Jobs);
             var jobs = (DataGrid)window.FindName("JobList");
             await folder.WriteStatusAsync(new(id, worker, DateTimeOffset.UtcNow, RemoteJobState.Ready,
@@ -67,6 +80,7 @@ public sealed class RemoteQueueTests
                 OutputFile: id + ".mp3", FallbackReason: "Requested voice unavailable."));
             var details = (TextBox)window.FindName("JobDetails");
             await ObserveAsync(() => jobs.Items.Count == 1 && details.Text.Contains("Requested voice unavailable.", StringComparison.Ordinal));
+            Assert.False(allowHostedFallback.IsChecked);
             Assert.Contains("Used: piper · en_US-lessac-medium · Auditioned fallback", details.Text);
             Assert.True(((Button)window.FindName("PlayButton")).IsEnabled);
             Assert.True(((Button)window.FindName("DiagnosticsButton")).IsEnabled);

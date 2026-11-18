@@ -8,6 +8,8 @@ public sealed class RemoteRenderPlanner(
     Func<NarrationSettings, CancellationToken, Task<ProviderInfo>> checkSpeech,
     IReadOnlyList<NarrationPreset> fallbacks, bool allowHosted = false)
 {
+    internal const string HostedFallbackConsentRequired = "Hosted fallback needs the sender's permission. Submit a new request with an available voice or allow hosted fallback on that request.";
+
     public async Task<bool> IsAvailableAsync(NarrationOptions options, CancellationToken ct) =>
         (await TrySettingsAsync(options, ct)).Settings is not null;
 
@@ -26,10 +28,16 @@ public sealed class RemoteRenderPlanner(
         var requestedVoice = RemoteVoice.From(requested, request.Preset);
         var actualVoice = requestedVoice;
         var reason = selection.Reason;
+        var skippedHosted = false;
         if (selection.Settings is null)
         {
             foreach (var preset in fallbacks)
             {
+                if (allowHosted && !request.AllowHostedFallback && SpeechProviders.IsHosted(preset.Options.Engine))
+                {
+                    skippedHosted = true;
+                    continue;
+                }
                 var options = requested with
                 {
                     Engine = preset.Options.Engine, Voice = preset.Options.Voice,
@@ -45,13 +53,16 @@ public sealed class RemoteRenderPlanner(
             }
         }
         if (selection.Settings is not { } settings)
-            throw new RemoteSpeechUnavailableException(reason + " None of this worker's configured fallbacks is usable. Check the speech setup on the worker.");
+            throw new RemoteSpeechUnavailableException(reason + (skippedHosted ? " " + HostedFallbackConsentRequired :
+                " None of this worker's configured fallbacks is usable. Check the speech setup on the worker."));
 
         var prepared = TextPreparation.Prepare(request.Text, requested.ExcludeCode, requested.Pronunciation, requested.Profile, ct);
         var job = new Job
         {
             Id = request.JobId, CreatedUtc = request.CreatedUtc, Title = request.Title, Source = request.Text, Prepared = prepared,
-            Settings = settings, Remote = new(workerId, queueRoot, RemoteQueueFolder.Fingerprint(request), requestedVoice, actualVoice, reason)
+            Settings = settings,
+            Remote = new(workerId, queueRoot, RemoteQueueFolder.Fingerprint(request), requestedVoice, actualVoice, reason,
+                AllowHostedFallback: request.AllowHostedFallback)
         };
         NaturalChunker.ConfigureNew(job);
         return job;

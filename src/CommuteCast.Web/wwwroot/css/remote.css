@@ -21,6 +21,8 @@
 }
 .request textarea { resize: vertical; line-height: 1.45; }
 .request small { display: inline-block; color: var(--muted); line-height: 1.4; margin-top: 5px; }
+.request .hosted-fallback { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+.request .hosted-fallback input { width: 20px; height: 20px; min-height: 0; flex: none; }
 .request .primary { width: 100%; margin-top: 16px; }
 .remote-job { display: block; }
 .remote-job p { margin: 6px 0 0; color: var(--muted); line-height: 1.4; overflow-wrap: anywhere; }

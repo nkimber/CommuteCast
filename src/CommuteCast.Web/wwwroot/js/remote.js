@@ -36,6 +36,10 @@ function statusLabel(state) {
     return state === "NeedsAttention" ? "Needs attention" : state;
 }
 
+function canReceive(worker) {
+    return worker.acceptsCurrentRequests && worker.state !== "Disabled";
+}
+
 function updateSelect(select, items, getKey, getLabel, fallbackKey, permitted = () => true) {
     const prior = select.value;
     const options = [new Option("Choose…", "")];
@@ -59,7 +63,9 @@ function updateDetails() {
         worker.presets.length ? `Verified choices: ${worker.presets.join(", ")}` : ""
     ].filter(Boolean).join(" · ") : "";
     $("voice-detail").textContent = voiceText(preset?.voice);
-    $("send").disabled = !available || sending || !worker || worker.state === "Disabled" || !preset;
+    const canSend = available && !sending && worker && canReceive(worker) && preset;
+    $("send").disabled = !canSend;
+    $("hosted-fallback").disabled = !canSend;
 }
 
 function element(tag, text, className) {
@@ -106,17 +112,19 @@ async function refresh(force = false) {
         }
         workers = state.workers;
         presets = state.presets;
-        const preferred = workers.find((worker) => worker.state === "Ready") ||
-            workers.find((worker) => worker.state === "Busy") || workers.find((worker) => worker.state !== "Disabled");
+        const supported = workers.filter(canReceive);
+        const preferred = supported.find((worker) => worker.state === "Ready") ||
+            supported.find((worker) => worker.state === "Busy") || supported[0];
         if (document.activeElement !== $("worker") || $("worker").options.length === 0) {
-            updateSelect($("worker"), workers, (worker) => worker.workerId, (worker) => `${worker.name} · ${statusLabel(worker.state)}`,
-                preferred?.workerId, (worker) => worker.state !== "Disabled");
+            updateSelect($("worker"), workers, (worker) => worker.workerId,
+                (worker) => `${worker.name} · ${worker.acceptsCurrentRequests ? statusLabel(worker.state) : "Update required"}`,
+                preferred?.workerId, canReceive);
         }
         if (document.activeElement !== $("preset") || $("preset").options.length === 0) {
             updateSelect($("preset"), presets, (preset) => preset.id, (preset) => preset.name, presets[0]?.id);
         }
-        $("connection").textContent = workers.some((worker) => worker.state === "Ready" || worker.state === "Busy") ? "" :
-            preferred ? "No worker is ready now. You can still queue a narration for later." : "Register a worker from the Windows app.";
+        $("connection").textContent = supported.some((worker) => worker.state === "Ready" || worker.state === "Busy") ? "" :
+            preferred ? "No worker is ready now. You can still queue a narration for later." : "Register or update a worker to send narrations with hosted fallback consent.";
         $("folder").hidden = !state.listeningFolderUrl;
         if (state.listeningFolderUrl) $("folder").href = state.listeningFolderUrl;
         const expanded = new Set(Array.from($("jobs").querySelectorAll("details[open]"), (detail) => detail.parentNode.dataset.id));
@@ -138,7 +146,8 @@ async function refresh(force = false) {
 $("request-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     if (sending || $("send").disabled) return;
-    const form = { targetWorkerId: $("worker").value, presetId: $("preset").value, title: $("title").value, text: $("text").value };
+    const form = { targetWorkerId: $("worker").value, presetId: $("preset").value, title: $("title").value, text: $("text").value,
+        allowHostedFallback: $("hosted-fallback").checked };
     const key = JSON.stringify(form);
     if (!pending || pending.key !== key) pending = { key, body: { ...form, jobId: crypto.randomUUID().replaceAll("-", ""), createdUtc: new Date().toISOString() } };
     sending = true;
@@ -148,6 +157,7 @@ $("request-form").addEventListener("submit", async (event) => {
         pending = undefined;
         if ($("title").value === form.title) $("title").value = "";
         if ($("text").value === form.text) $("text").value = "";
+        $("hosted-fallback").checked = false;
         $("result").textContent = "Request saved. Check Remote narrations for worker pickup and progress.";
     } catch (error) {
         $("result").textContent = error.message;
