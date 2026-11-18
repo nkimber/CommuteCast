@@ -44,7 +44,9 @@ public sealed class SpeechProviderService(Workspace workspace, AppSettings setti
     {
         if (job.Episode is null) return SynthesizeAsync(job, job.Settings, unit.Text, output, checkpoint, ct);
         PodcastScript.ValidateManifest(job);
-        var turns = unit.Turns!; var speaker = job.Episode.Speakers.Single(s => s.Name == turns[0].Speaker);
+        var turns = unit.Turns!.Where(turn => !string.IsNullOrWhiteSpace(turn.Text)).ToArray();
+        if (turns.Length == 0) throw new ArgumentException("This dialogue block contains no spoken content.");
+        var speaker = job.Episode.Speakers.Single(s => s.Name == turns[0].Speaker);
         var speech = job.Settings.Speech is { } config ? config with { Delivery = speaker.Delivery, Emotion = speaker.Emotion } : null;
         var snapshot = job.Settings with { Voice = speaker.Voice, Speed = speaker.Speed, Speech = speech, LocalVoice = PodcastScript.LocalDelivery(speaker, job.Settings) };
         if (SpeechProviders.IsHosted(snapshot.Engine))
@@ -54,11 +56,11 @@ public sealed class SpeechProviderService(Workspace workspace, AppSettings setti
                 var member = job.Episode.Speakers.Single(s => s.Name == name);
                 HostedSpeechProvider.ValidateSettings(snapshot with { Voice = member.Voice, Speed = member.Speed, Speech = speech! with { Delivery = member.Delivery, Emotion = member.Emotion } });
             }
-            if (turns.Count > 1 && (!job.Episode.Dialogue || !speech!.Dialogue || SpeechProviders.Capabilities(snapshot.Engine, speech.Model).DialogueSpeakers < job.Episode.Speakers.Count || job.Episode.Speakers.Any(s => s.Speed != 1)))
+            if (turns.Length > 1 && (!job.Episode.Dialogue || !speech!.Dialogue || SpeechProviders.Capabilities(snapshot.Engine, speech.Model).DialogueSpeakers < job.Episode.Speakers.Count || job.Episode.Speakers.Any(s => s.Speed != 1)))
                 throw new IOException("This saved dialogue block is incompatible with the provider capabilities.");
             return WriteHostedAsync(job, snapshot, unit.Text, output, checkpoint, ct, turns);
         }
-        if (turns.Count != 1) throw new IOException("Local providers require individual speaker turns.");
+        if (turns.Length != 1) throw new IOException("Local providers require individual speaker turns.");
         return local.SynthesizeAsync(job, snapshot, unit.Text, output, checkpoint, ct);
     }
     public async Task SynthesizeAuditionAsync(AuditionWriteJournal journal, NarrationSettings snapshot, string text, string output, Func<Task> checkpoint, CancellationToken ct)

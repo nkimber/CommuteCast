@@ -60,7 +60,7 @@ async Task Run(string name, LocalVoiceOptions? recipe, bool podcast = false)
     NaturalChunker.ConfigureNew(job);
     if (job.Episode is null) job.Chunks = NaturalChunker.IsNatural(job) ? NaturalChunker.Split(job.Prepared.Script) : Chunker.Split(job.Prepared.Script, 450);
     var directory = workspace.JobDirectory(job.Id); Directory.CreateDirectory(directory); var clock = Stopwatch.StartNew();
-    foreach (var chunk in job.Chunks)
+    foreach (var chunk in job.Chunks.Where(chunk => chunk.HasSpeech))
     {
         var settings = snapshot;
         if (job.Episode is not null) { var speaker = job.Episode.Speakers.Single(s => s.Name == chunk.Turns![0].Speaker); settings = snapshot with { Voice = speaker.Voice, LocalVoice = PodcastScript.LocalDelivery(speaker, snapshot) }; }
@@ -75,7 +75,7 @@ async Task Run(string name, LocalVoiceOptions? recipe, bool podcast = false)
     if (loudness.ExitCode != 0) throw new IOException("Trial loudness analysis failed.");
     var start = loudness.Error.LastIndexOf('{'); var end = loudness.Error.LastIndexOf('}');
     var measurement = JsonSerializer.Deserialize<JsonElement>(loudness.Error[start..(end + 1)]);
-    var result = new { name, engine, voice, fingerprint, recipe, chunks = job.Chunks.Count, normalizedPcmSha256 = job.Receipts.OrderBy(r => r.Index).Select(r => r.Hash).ToArray(), words = NarrationEstimate.CountWords(job.Prepared.Script), durationSeconds = finalInfo.Duration,
+    var result = new { name, engine, voice, fingerprint, recipe, chunks = job.SpeechChunkCount, normalizedPcmSha256 = job.Receipts.OrderBy(r => r.Index).Select(r => r.Hash).ToArray(), words = NarrationEstimate.CountWords(job.Prepared.Script), durationSeconds = finalInfo.Duration,
         synthesisSeconds, realTimeFactor = synthesisSeconds / finalInfo.Duration, totalSeconds = clock.Elapsed.TotalSeconds, sha256 = await Workspace.HashFileAsync(target, ct), file = Path.GetFileName(target), loudness = measurement };
     results.Add(result); await File.WriteAllTextAsync(Path.Combine(folder, "comparison.json"), JsonSerializer.Serialize(new { endpoint = endpoint.ToString(), results, listeningApproval = "pending" }, new JsonSerializerOptions { WriteIndented = true }), ct);
     Console.WriteLine($"{name}: {finalInfo.Duration:F1}s audio; synthesis {synthesisSeconds:F1}s; validated MP3 {target}");

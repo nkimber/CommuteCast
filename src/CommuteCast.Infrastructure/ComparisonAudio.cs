@@ -21,7 +21,7 @@ public sealed partial class AuditionGenerator
             else if (char.IsLowSurrogate(spokenText[i])) throw new ArgumentException("Choose complete Unicode characters for comparison.");
         }
         var natural = settings.LocalVoice?.NaturalPhrasing == true;
-        var chunks = natural ? NaturalChunker.Split(spokenText) : Chunker.Split(spokenText, 450);
+        var chunks = (natural ? NaturalChunker.Split(spokenText) : Chunker.Split(spokenText, 450)).Where(chunk => chunk.HasSpeech).ToArray();
         // Validate complete Unicode and settings before acquiring speech or creating a file.
         foreach (var chunk in chunks) AuditionRequest.ApprovedExcerpt(chunk.Text, settings);
         await inferenceGate.WaitAsync(ct).ConfigureAwait(false);
@@ -32,9 +32,10 @@ public sealed partial class AuditionGenerator
             var pcm = new List<AuditionAudio>();
             NarrationSettings? captured = null;
             var pipeline = new AudioPipeline(new() { Ffmpeg = ffmpeg });
-            foreach (var chunk in chunks)
+            for (var i = 0; i < chunks.Length; i++)
             {
-                ct.ThrowIfCancellationRequested(); progress?.Invoke($"Rendering segment {chunk.Index + 1} of {chunks.Count}");
+                var chunk = chunks[i];
+                ct.ThrowIfCancellationRequested(); progress?.Invoke($"Rendering segment {i + 1} of {chunks.Length}");
                 var raw = await GenerateCoreAsync(AuditionRequest.ApprovedExcerpt(chunk.Text, settings), ct, true).ConfigureAwait(false);
                 owned.Add(raw);
                 if (captured is not null && (captured.ProviderFingerprint != raw.Settings.ProviderFingerprint || captured.ProviderImageId != raw.Settings.ProviderImageId))
@@ -55,9 +56,13 @@ public sealed partial class AuditionGenerator
             progress?.Invoke("Joining segments and matching listening volume");
             var paths = new List<string>();
             foreach (var clip in pcm) paths.Add(await VerifiedPreviewPathAsync(clip, ct).ConfigureAwait(false));
-            var gaps = chunks.Take(chunks.Count - 1).Select((chunk, i) => natural
-                ? NaturalAudio.AddedGapSamples(paths[i], paths[i + 1], NaturalChunker.PauseMilliseconds(chunk, settings.LocalVoice!))
-                : chunk.Text.TrimEnd().EndsWith('.') || chunk.Text.EndsWith('\n') ? 3600 : 0).ToArray();
+            var gaps = chunks.Take(chunks.Length - 1).Select((chunk, i) =>
+            {
+                var formattingBreak = Chunker.HasFormattingBreak(spokenText, chunk, chunks[i + 1]);
+                return natural
+                    ? NaturalAudio.AddedGapSamples(paths[i], paths[i + 1], NaturalChunker.PauseMilliseconds(chunk, settings.LocalVoice!, formattingBreak))
+                    : chunk.Text.TrimEnd().EndsWith('.') || chunk.Text.EndsWith('\n') || formattingBreak ? 3600 : 0;
+            }).ToArray();
             var samples = paths.Sum(path => WaveAudio.DataRegion(path).Length / 2) + gaps.Sum(g => (long)g);
             var joined = await WriteComparisonPreviewAsync(captured!, spokenText, async output =>
             {

@@ -17,9 +17,11 @@ public static class NaturalChunker
         {
             var length = Math.Min(maximum, script.Length - start); var hard = false;
             var section = script.Substring(start, length);
-            var paragraph = Regex.Match(section, @"\n[\t \r]*\n[\s]*", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-            if (paragraph.Success && paragraph.Index + paragraph.Length < section.Length)
-                length = paragraph.Index + paragraph.Length;
+            var contentStart = section.Length - section.AsSpan().TrimStart().Length;
+            var paragraph = Regex.Match(section[contentStart..], @"\n[\t \r]*\n[\s]*", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+            var paragraphEnd = contentStart + paragraph.Index + paragraph.Length;
+            if (paragraph.Success && paragraphEnd < section.Length)
+                length = paragraphEnd;
             else if (start + length < script.Length)
             {
                 var boundaries = Regex.Matches(section, @"[.!?](?:[""'’”\)\]]*)\s+", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
@@ -31,7 +33,7 @@ public static class NaturalChunker
                     var clause = Regex.Matches(section, @"[,;:]\s+", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)).LastOrDefault(m => m.Index >= length / 3);
                     var space = section.LastIndexOfAny([' ', '\t', '\n']);
                     if (clause is not null) length = clause.Index + clause.Length;
-                    else if (space >= length / 3) length = space + 1;
+                    else if (space >= length / 3 && space >= contentStart) length = space + 1;
                     else if (char.IsHighSurrogate(script[start + length - 1])) length--;
                 }
             }
@@ -46,8 +48,9 @@ public static class NaturalChunker
         var token = section[start..(punctuation + 1)];
         return !Abbreviations.Contains(token) && !Regex.IsMatch(token, @"^(?:[A-Za-z]\.)+$", RegexOptions.CultureInvariant);
     }
-    public static int PauseMilliseconds(TextChunk chunk, LocalVoiceOptions options)
+    public static int PauseMilliseconds(TextChunk chunk, LocalVoiceOptions options, bool formattingBreak = false)
     {
+        if (formattingBreak) return options.ParagraphPauseMs;
         if (chunk.HardSplit) return 0;
         if (Regex.IsMatch(chunk.Text, @"\n[\t \r]*\n\s*$", RegexOptions.CultureInvariant)) return options.ParagraphPauseMs;
         var end = chunk.Text.TrimEnd().TrimEnd('"', '\'', '’', '”', ')', ']');

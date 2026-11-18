@@ -37,6 +37,45 @@ public class HostedSpeechTests
         if (engine == "elevenlabs") Assert.Contains("text-to-dialogue", spec.Path); else { Assert.Contains("speech_metadata", body); Assert.Contains("interactions", spec.Path); }
     }
     [Fact]
+    public async Task SavedJointPodcastBlockOmitsFormattingOnlyTurnsFromTheProviderRequest()
+    {
+        using var test = new TestWorkspace();
+        const string source = "Alex: First paragraph.\nCasey: Second paragraph.";
+        var episode = PodcastTests.Episode();
+        var settings = PodcastTests.Settings("elevenlabs");
+        var prepared = PodcastScript.Prepare(source, episode, settings);
+        var unit = Assert.Single(prepared.Units);
+        string blank = "\n\n";
+        var text = blank + unit.Text;
+        var job = new Job
+        {
+            Source = source, Episode = episode, Settings = settings,
+            ChunkingVersion = PodcastScript.ChunkVersion, AudioContractVersion = PodcastScript.AudioVersion,
+            Prepared = prepared.Prepared with
+            {
+                Script = text,
+                Spans = prepared.Prepared.Spans.Select((span, i) => i == 0 ? span with { Narration = blank + span.Narration } : span).ToArray()
+            },
+            Chunks = [unit with { Text = text, Length = text.Length, Turns = [new("Casey", blank), .. unit.Turns!] }]
+        };
+        var handler = new Handler(async request =>
+        {
+            Assert.Contains("text-to-dialogue", request.RequestUri!.AbsolutePath);
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            var inputs = body.RootElement.GetProperty("inputs").EnumerateArray().ToArray();
+            Assert.Equal(new[] { "First paragraph.", "Second paragraph." }, inputs.Select(input => input.GetProperty("text").GetString()!.Trim()));
+            Assert.Equal(episode.Speakers.Select(speaker => speaker.Voice), inputs.Select(input => input.GetProperty("voice_id").GetString()));
+            return new(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[48000]) };
+        });
+        using var http = new HttpClient(handler);
+        using var provider = new SpeechProviderService(test.Workspace, new(), secrets: new Secrets(), http: http);
+        var directory = test.Workspace.JobDirectory(job.Id);
+        Directory.CreateDirectory(directory);
+        await provider.SynthesizeUnitAsync(job, job.Chunks[0], Path.Combine(directory, "raw.wav"), () => Task.CompletedTask, default);
+        Assert.Equal(1, handler.Posts);
+        Assert.Equal(0, Assert.Single(job.SpeechAttempts!).UnitIndex);
+    }
+    [Fact]
     public async Task CloudTimeoutRecordsUncertainAttemptWithoutAutomaticDuplicatePost()
     {
         var handler = new Handler(_ => throw new HttpRequestException("Interrupted connection")); using var http = new HttpClient(handler); using var provider = new HostedSpeechProvider(new Secrets(), http);

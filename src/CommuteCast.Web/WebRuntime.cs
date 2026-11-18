@@ -105,7 +105,7 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
         jobs = Queue.Snapshot().OrderByDescending(j => j.CreatedUtc).Select(j => new
         {
             j.Id, j.Title, j.CreatedUtc, stage = j.Stage.ToString(), j.Settings.Engine, j.Settings.Voice, j.Settings.Speed,
-            j.DurationSeconds, j.CompletedChunks, chunks = j.Chunks.Count, j.Error, j.ExportCommitted,
+            j.DurationSeconds, completedChunks = j.CompletedSpeechChunkCount, chunks = j.SpeechChunkCount, j.Error, j.ExportCommitted,
             progress = JobProgress.Describe(j, Queue.Paused), publication = publications.GetValueOrDefault(j.Id),
             words = j.Source.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length,
             position = j.QueuePosition, timing = j.Activity.Read().Timing

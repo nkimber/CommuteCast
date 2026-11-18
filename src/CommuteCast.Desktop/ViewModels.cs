@@ -124,11 +124,11 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
             return live.Running || live.Timing.ProcessingMilliseconds > 0 || live.Timing.AssemblyMilliseconds is not null ? live.Timing : Job.RunTiming;
         }
     }
-    public double Progress => Job.Stage == JobStage.Assembling ? CurrentTiming?.JoinedSegments ?? 0 : Job.CompletedChunks;
-    public double ChunkTotal => Math.Max(1, Job.Chunks.Count);
+    public double Progress => Job.Stage == JobStage.Assembling ? CurrentTiming?.JoinedSegments ?? 0 : Job.CompletedSpeechChunkCount;
+    public double ChunkTotal => Math.Max(1, Job.SpeechChunkCount);
     public string ProgressSummary => Job.Stage == JobStage.Assembling
-        ? $"{CurrentTiming?.JoinedSegments ?? 0} of {Job.Chunks.Count} segments joined · MP3 assembly"
-        : $"{Job.CompletedChunks} of {Job.Chunks.Count} segments completed and validated";
+        ? $"{CurrentTiming?.JoinedSegments ?? 0} of {Job.SpeechChunkCount} segments joined · MP3 assembly"
+        : $"{Job.CompletedSpeechChunkCount} of {Job.SpeechChunkCount} segments completed and validated";
     public string ActivityNotice => IsWorking && Job.Activity.Read().Notice is { Length: > 0 } notice ? notice : Job.Stage switch
     {
         JobStage.Failed => "Stopped. Completed segments are retained for retry.",
@@ -172,7 +172,7 @@ public sealed class JobView(Job job, Workspace workspace, bool paused = false) :
         + (Job.Settings.Speech is { } speech ? $"\nHosted model: {speech.Model}" : "")
         + (Job.Episode is { } episode ? "\n" + episode.Format.Name + "\n" + string.Join("\n", episode.Speakers.Select(s => $"{s.Name} ({s.Role}): {s.Voice} · {s.Speed:0.00}×")) : "")
         + (Job.SpeechAttempts is { Count: > 0 } attempts ? $"\nHosted requests: {attempts.Count} · uncertain: {attempts.Count(a => a.State is "uncertain" or "started")}. Provider charges may apply.\n" + string.Join("\n", attempts.TakeLast(10).Select(a => $"{a.StartedUtc:MMM d HH:mm} · block {a.UnitIndex + 1} · {a.State} · request {a.RequestId ?? "ID unavailable"}")) : "");
-    public string Details => VersionSummary + (Job.Version is { } version ? $"\nOriginal job ID: {version.RootJobId}\nParent job ID: {version.ParentJobId}" : "") + "\n" + TechnicalDetails + $"\n{Job.CompletedChunks}/{Job.Chunks.Count} validated chunks" + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
+    public string Details => VersionSummary + (Job.Version is { } version ? $"\nOriginal job ID: {version.RootJobId}\nParent job ID: {version.ParentJobId}" : "") + "\n" + TechnicalDetails + $"\n{Job.CompletedSpeechChunkCount}/{Job.SpeechChunkCount} validated chunks" + (Job.DurationSeconds > 0 ? "\n" + TimeSpan.FromSeconds(Job.DurationSeconds).ToString(@"hh\:mm\:ss") + " audio" : "");
     public string Error => string.Join(Environment.NewLine, new[] { Job.Error,
         string.IsNullOrWhiteSpace(Job.ExportNotice) || Job.Error.Contains(Job.ExportNotice, StringComparison.Ordinal) ? "" : Job.ExportNotice,
         Job.PrivateStorageNotice }.Where(s => !string.IsNullOrWhiteSpace(s)));

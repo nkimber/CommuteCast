@@ -8,14 +8,16 @@ namespace CommuteCast.Infrastructure;
 public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
 {
     public const string ContractVersion = "pcm24k-s16le-mono-mp3128-gap150-v1";
-    private static void ValidateManifest(Job job)
+    private static TextChunk[] ValidateManifest(Job job)
     {
         if (job.PrivateArtifacts.Any(r => r.PromotionIdentity is not null || r.CreationIdentity is not null)) throw new IOException("An interrupted private audio write or rename must be reconciled before assembly or validation.");
         if (job.Episode is not null) PodcastScript.ValidateManifest(job);
         else if (!NaturalChunker.IsNatural(job) && (job.AudioContractVersion != ContractVersion || job.ChunkingVersion != "chunk450-v1")) throw new IOException("Unsupported audio/chunk contract. Publication is blocked.");
         Chunker.ValidateManifest(job.Chunks, job.Prepared.Script, NaturalChunker.IsNatural(job) ? 900 : job.Episode is not null ? 1800 : 450);
-        if (job.Receipts.Count != job.Chunks.Count || !job.Receipts.OrderBy(r => r.Index).Select(r => r.Index).SequenceEqual(Enumerable.Range(0, job.Chunks.Count)) ||
+        var speechChunks = job.Chunks.Where(chunk => chunk.HasSpeech).ToArray();
+        if (speechChunks.Length == 0 || !job.Receipts.OrderBy(r => r.Index).Select(r => r.Index).SequenceEqual(speechChunks.Select(chunk => chunk.Index)) ||
             job.Receipts.Any(r => r.Fingerprint != job.Fingerprint || !double.IsFinite(r.Duration) || r.Duration <= 0)) throw new IOException("Validated receipt sequence or contract is incompatible. Publication is blocked.");
+        return speechChunks;
     }
     public Task NormalizeAsync(string input, string output, CancellationToken ct) =>
         NormalizeAsync(new Job(), input, output, () => Task.CompletedTask, ct);
@@ -58,20 +60,21 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
     public Task AssembleAsync(Job job, string directory, CancellationToken ct) => AssembleAsync(job, directory, ct, null);
     public async Task AssembleAsync(Job job, string directory, CancellationToken ct, Func<Task>? checkpoint)
     {
-        ValidateManifest(job);
-        job.Activity.StartAssembly(job.Chunks.Count);
+        var speechChunks = ValidateManifest(job);
+        job.Activity.StartAssembly(speechChunks.Length);
         var assembled = Path.Combine(directory, "assembled.wav");
         var samples = job.Receipts.Sum(r => (long)Math.Round(r.Duration * 24000));
         // New profiles top up native silence; legacy jobs keep their captured fixed gaps.
-        var gaps = JoinGaps(job, directory);
+        var gaps = JoinGaps(job, speechChunks, directory);
         var total = samples + gaps.Sum(g => (long)g);
         if (total * 2 > uint.MaxValue - 36) throw new IOException("This narration exceeds the supported WAV size. Split it into separate submissions.");
         var comment = Mp3Comments.CreateFrame(Mp3Comments.Describe(job));
         await PrivateJobFiles.WriteRecordedAsync(job, directory, "assembled.wav", async output =>
         {
             WaveAudio.WriteHeader(output, total);
-            foreach (var chunk in job.Chunks)
+            for (var i = 0; i < speechChunks.Length; i++)
             {
+                var chunk = speechChunks[i];
                 ct.ThrowIfCancellationRequested();
                 var path = Path.Combine(directory, $"chunk-{chunk.Index:D5}.wav");
                 await using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
@@ -88,13 +91,13 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
                     await output.WriteAsync(buffer.AsMemory(0, read), ct);
                     length -= read;
                 }
-                if (chunk.Index < gaps.Length) await output.WriteAsync(new byte[gaps[chunk.Index] * 2], ct);
+                if (i < gaps.Length) await output.WriteAsync(new byte[gaps[i] * 2], ct);
                 job.Activity.SegmentJoined();
             }
         }, checkpoint ?? (() => Task.CompletedTask), ct);
-        job.Activity.Update($"All {job.Chunks.Count} segments joined · preparing MP3 encoding");
+        job.Activity.Update($"All {speechChunks.Length} segments joined · preparing MP3 encoding");
         var loudness = NaturalChunker.IsNatural(job) ? await NaturalAudio.LoudnessFilterAsync(settings.Ffmpeg, assembled, ct) : null;
-        job.Activity.Update($"All {job.Chunks.Count} segments joined · encoding the MP3");
+        job.Activity.Update($"All {speechChunks.Length} segments joined · encoding the MP3");
         await PrivateJobFiles.WriteRecordedAsync(job, directory, "encoded.partial.mp3", async output =>
         {
             var arguments = new List<string> { "-v", "error", "-nostdin", "-n", "-protocol_whitelist", "file,pipe,fd", "-f", "wav", "-i", assembled };
@@ -112,33 +115,36 @@ public sealed class AudioPipeline(AppSettings settings) : IAudioPipeline
 
     public async Task<AudioInfo> ValidateFinalAsync(Job job, string path, CancellationToken ct)
     {
-        ValidateManifest(job);
+        var speechChunks = ValidateManifest(job);
         var probe = await ProcessRunner.RunAsync(settings.Ffprobe, ["-v", "error", "-protocol_whitelist", "file,pipe", "-f", "mp3", "-select_streams", "a:0", "-show_entries", "stream=codec_name,sample_rate,channels,duration", "-of", "json", path], TimeSpan.FromSeconds(30), ct);
         if (probe.ExitCode != 0) throw new IOException("The finished MP3 could not be probed. Export is blocked.");
         using var json = JsonDocument.Parse(probe.Output);
         var stream = json.RootElement.GetProperty("streams")[0];
         var duration = double.Parse(stream.GetProperty("duration").GetString()!, CultureInfo.InvariantCulture);
         if (stream.GetProperty("codec_name").GetString() != "mp3" || stream.GetProperty("sample_rate").GetString() != "24000" || stream.GetProperty("channels").GetInt32() != 1) throw new IOException("Finished MP3 has an unexpected format.");
-        var gaps = JoinGaps(job, Path.GetDirectoryName(Path.GetFullPath(path))!).Sum() / 24000.0;
+        var gaps = JoinGaps(job, speechChunks, Path.GetDirectoryName(Path.GetFullPath(path))!).Sum() / 24000.0;
         var expected = job.Receipts.Sum(r => r.Duration) + gaps;
         if (Math.Abs(expected - duration) > .3) throw new IOException("Finished MP3 duration does not match the complete ordered chunk sequence.");
         var decode = await ProcessRunner.RunAsync(settings.Ffmpeg, ["-v", "error", "-xerror", "-nostdin", "-protocol_whitelist", "file,pipe", "-f", "mp3", "-i", path, "-f", "null", "-"], TimeSpan.FromMinutes(10), ct);
         if (decode.ExitCode != 0) throw new IOException("Finished MP3 failed full decoding. Export is blocked.");
         return new(duration, 24000, 1, (long)(duration * 24000), 0, 0);
     }
-    private static int GapSamples(Job job, TextChunk unit) => job.Episode is null
-        ? unit.Text.TrimEnd().EndsWith('.') || unit.Text.EndsWith('\n') ? 3600 : 0
-        : unit.Index + 1 < job.Chunks.Count && unit.Turns![^1].Speaker != job.Chunks[unit.Index + 1].Turns![0].Speaker ? 1920 : 0;
-    private static int RequestedPause(Job job, TextChunk unit)
+    private static PodcastTurn LastSpokenTurn(TextChunk unit) => unit.Turns!.Last(t => !string.IsNullOrWhiteSpace(t.Text));
+    private static bool SpeakerChanges(TextChunk unit, TextChunk next) => LastSpokenTurn(unit).Speaker != next.Turns!.First(t => !string.IsNullOrWhiteSpace(t.Text)).Speaker;
+    internal static int FixedGapSamples(Job job, TextChunk unit, TextChunk next) => job.Episode is null
+        ? unit.Text.TrimEnd().EndsWith('.') || unit.Text.EndsWith('\n') || Chunker.HasFormattingBreak(job.Prepared.Script, unit, next) ? 3600 : 0
+        : SpeakerChanges(unit, next) ? 1920 : 0;
+    private static int RequestedPause(Job job, TextChunk unit, TextChunk next)
     {
-        if (job.Episode is null) return NaturalChunker.PauseMilliseconds(unit, job.Settings.LocalVoice!);
-        var speaker = job.Episode.Speakers.Single(s => s.Name == unit.Turns![^1].Speaker);
+        var formattingBreak = Chunker.HasFormattingBreak(job.Prepared.Script, unit, next);
+        if (job.Episode is null) return NaturalChunker.PauseMilliseconds(unit, job.Settings.LocalVoice!, formattingBreak);
+        var speaker = job.Episode.Speakers.Single(s => s.Name == LastSpokenTurn(unit).Speaker);
         var local = PodcastScript.LocalDelivery(speaker, job.Settings)!;
-        return unit.Turns![^1].Speaker != job.Chunks[unit.Index + 1].Turns![0].Speaker ? local.TurnPauseMs : NaturalChunker.PauseMilliseconds(unit, local);
+        return SpeakerChanges(unit, next) ? local.TurnPauseMs : NaturalChunker.PauseMilliseconds(unit, local, formattingBreak);
     }
-    private static int[] JoinGaps(Job job, string directory) => job.Chunks.Take(job.Chunks.Count - 1).Select(c => NaturalChunker.IsNatural(job)
-        ? NaturalAudio.AddedGapSamples(Path.Combine(directory, $"chunk-{c.Index:D5}.wav"), Path.Combine(directory, $"chunk-{c.Index + 1:D5}.wav"), RequestedPause(job, c))
-        : GapSamples(job, c)).ToArray();
+    private static int[] JoinGaps(Job job, TextChunk[] speechChunks, string directory) => speechChunks.Zip(speechChunks.Skip(1), (unit, next) => NaturalChunker.IsNatural(job)
+        ? NaturalAudio.AddedGapSamples(Path.Combine(directory, $"chunk-{unit.Index:D5}.wav"), Path.Combine(directory, $"chunk-{next.Index:D5}.wav"), RequestedPause(job, unit, next))
+        : FixedGapSamples(job, unit, next)).ToArray();
 }
 
 public static class WaveAudio

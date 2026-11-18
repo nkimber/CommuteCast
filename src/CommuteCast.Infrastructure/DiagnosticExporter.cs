@@ -19,7 +19,7 @@ public sealed class DiagnosticExporter(Workspace workspace, SqliteJobStore store
             jobs = jobs.Select(j => new
             {
                 jobId = j.Id.Length == 32 && j.Id.All(Uri.IsHexDigit) ? j.Id : "invalid",
-                stage = j.Stage.ToString(), j.CompletedChunks, chunks = j.Chunks.Count, j.DurationSeconds, j.Attempts,
+                stage = j.Stage.ToString(), CompletedChunks = j.CompletedSpeechChunkCount, chunks = j.SpeechChunkCount, j.DurationSeconds, j.Attempts,
                 failedStage = j.FailedStage?.ToString(), failureCategory = j.FailureCategory.ToString(),
                 engine = SpeechProviders.IsKnown(j.Settings.Engine) ? j.Settings.Engine : "unrecognized",
                 provider = Regex.IsMatch(j.Settings.ProviderFingerprint, "^((kokoro|piper):contract-v1|(openai|elevenlabs|cartesia|gemini):hosted-v1):[a-fA-F0-9]{64}$", RegexOptions.CultureInvariant) ? j.Settings.ProviderFingerprint : "unverified",

@@ -12,7 +12,10 @@ public record DiagnosticEvent(string JobId, JobStage Stage, DateTimeOffset Times
 public record SourceSpan(int Start, int Length, string Kind, string Original, string Narration);
 public record PreparedText(string Script, IReadOnlyList<SourceSpan> Spans, string Version = "prepare-v1", PronunciationReview? ProfileReview = null);
 public record TextChunk(int Index, int Start, int Length, string Text, bool HardSplit,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<PodcastTurn>? Turns = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<PodcastTurn>? Turns = null)
+{
+    [JsonIgnore] public bool HasSpeech => !string.IsNullOrWhiteSpace(Text);
+}
 public record NarrationSettings(string Engine, string Voice, double Speed, bool ExcludeCode, string Pronunciation, string ProviderFingerprint, PronunciationProfile? Profile = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProviderImageId = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SpeechConfiguration? Speech = null,
@@ -48,6 +51,9 @@ public sealed class Job
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public DateTimeOffset? HostedRetryAuthorizedUtc { get; set; }
     public string PrivateStorageNotice { get; set; } = "";
     public int CompletedChunks { get; set; }
+    [JsonIgnore] public int SpeechChunkCount => Chunks.Count(chunk => chunk.HasSpeech);
+    [JsonIgnore] public int CompletedSpeechChunkCount => Math.Max(0, CompletedChunks - Receipts.Count(receipt => IsFormattingChunk(receipt.Index)));
+    public bool IsFormattingChunk(int index) => index >= 0 && index < Chunks.Count && Chunks[index].Index == index && !Chunks[index].HasSpeech;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public JobRunTiming? RunTiming { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public long? SpeechReadinessMilliseconds { get; set; }
     [JsonIgnore] public JobActivity Activity { get; private set; } = new();

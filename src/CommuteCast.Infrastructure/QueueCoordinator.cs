@@ -153,6 +153,7 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
     }
     private static bool HasUnresolvedHostedRequest(Job job) => job.SpeechAttempts?.Any(a =>
         a.StartedUtc > (job.HostedRetryAuthorizedUtc ?? DateTimeOffset.MinValue) && a.State is "started" or "uncertain" or "received" &&
+        !(a.UnitIndex is { } index && job.IsFormattingChunk(index)) &&
         (a.UnitIndex is null || !job.Receipts.Any(r => r.Index == a.UnitIndex && r.Fingerprint == job.Fingerprint))) == true;
     private async Task CheckStorageBudgetAsync(IReadOnlyList<Job> snapshots, string? addedScript, CancellationToken ct)
     {
@@ -328,7 +329,7 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
         job.Stage = stage;
         job.Activity.Update(JobProgress.Describe(job).Guidance);
         await CheckpointAsync(job, ct);
-        Log.Information("Job {JobId} stage {Stage}; completed {CompletedChunks} of {ChunkCount} chunks", job.Id, stage, job.CompletedChunks, job.Chunks.Count);
+        Log.Information("Job {JobId} stage {Stage}; completed {CompletedChunks} of {ChunkCount} chunks", job.Id, stage, job.CompletedSpeechChunkCount, job.SpeechChunkCount);
         Notify();
     }
     private Task CheckpointAsync(Job job, CancellationToken ct)
@@ -350,10 +351,17 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
         if (job.Episode is null && !natural && (job.ChunkingVersion != "chunk450-v1" || job.AudioContractVersion != AudioPipeline.ContractVersion)) throw new IOException("This job uses an unsupported chunk/audio contract. Restore its application version or submit a new narration.");
         Chunker.ValidateManifest(job.Chunks, job.Prepared.Script, job.Episode is not null ? 1800 : natural ? 900 : 450);
         ValidateConfiguration(job);
+        // Formatting spans stay in the saved manifest so existing spoken chunk indices remain valid.
+        var speechChunks = job.Chunks.Where(chunk => chunk.HasSpeech).ToArray();
+        if (speechChunks.Length == 0) throw new IOException("The saved narration contains no spoken content.");
+        var omittedPriorAudio = job.Receipts.Any(receipt => job.IsFormattingChunk(receipt.Index));
         PrivateJobFiles.RetainReceipts(job);
-        await StageAsync(job, JobStage.Preparing, ct);
         var valid = new List<ChunkReceipt>();
-        foreach (var chunk in job.Chunks)
+        // A prior build could have accepted an audible response to a blank request.
+        // Invalidate that complete MP3 before saving the speaking-only receipts.
+        if (omittedPriorAudio) job.FinalHash = "";
+        await StageAsync(job, JobStage.Preparing, ct);
+        foreach (var chunk in speechChunks)
         {
             var receipt = job.Receipts.FirstOrDefault(r => r.Index == chunk.Index && r.Fingerprint == job.Fingerprint);
             var file = workspace.ChunkPath(job, chunk.Index);
@@ -373,11 +381,11 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
         if (HasUnresolvedHostedRequest(job))
             throw new IOException("Previously requested hosted audio is missing or invalid and may have been billed. Inspect provider usage, then explicitly Retry / resume to authorize regeneration.");
         var final = workspace.FinalPath(job);
-        var finalValid = valid.Count == job.Chunks.Count && job.FinalHash.Length > 0 && File.Exists(final) && await Workspace.HashFileAsync(final, ct) == job.FinalHash;
+        var finalValid = valid.Count == speechChunks.Length && job.FinalHash.Length > 0 && File.Exists(final) && await Workspace.HashFileAsync(final, ct) == job.FinalHash;
         if (!finalValid)
         {
             job.FinalHash = "";
-            if (valid.Count != job.Chunks.Count)
+            if (valid.Count != speechChunks.Length)
             {
                 if (job.Remote is { FallbackReason: not null, AllowHostedFallback: false } && SpeechProviders.IsHosted(job.Settings.Engine))
                     throw new ArgumentException(RemoteRenderPlanner.HostedFallbackConsentRequired);
@@ -393,11 +401,12 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
                     if (info.Fingerprint != job.Settings.ProviderFingerprint || job.Settings.ProviderImageId is not null && info.ImageId != job.Settings.ProviderImageId)
                         throw new IOException("The speech model or image changed since submission. Restore it or submit a new job to avoid mixed audio.");
                     if (job.Episode is { } episode && episode.Speakers.Any(s => !info.Voices.Contains(s.Voice))) throw new IOException("A captured podcast voice is unavailable. Existing segments are preserved. Restore that voice or create a new draft with a revised cast.");
-                    foreach (var chunk in job.Chunks)
+                    for (var segment = 0; segment < speechChunks.Length; segment++)
                     {
+                        var chunk = speechChunks[segment];
                         ct.ThrowIfCancellationRequested();
                         if (valid.Any(r => r.Index == chunk.Index)) continue;
-                        job.Activity.Segment(chunk.Index + 1);
+                        job.Activity.Segment(segment + 1);
                         await StageAsync(job, JobStage.Synthesizing, ct);
                         var raw = Path.Combine(directory, "inference.partial.wav");
                         var normalized = Path.Combine(directory, "normalized.partial.wav");
@@ -425,7 +434,7 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
                                 if (!job.Receipts.Any(r => r.Index == chunk.Index)) job.Receipts.Add(new(chunk.Index, hash, job.Fingerprint, checkedAudio.Duration));
                                 job.CompletedChunks = job.Receipts.Count;
                             }
-                            job.Activity.CompleteSegment(job.CompletedChunks, job.Chunks.Count);
+                            job.Activity.CompleteSegment(job.CompletedChunks, speechChunks.Length);
                             await CheckpointAsync(job, ct);
                         }, ct, preserveChangedChunk: true);
                         Notify();
@@ -435,7 +444,7 @@ public sealed partial class QueueCoordinator(Workspace workspace, IJobStore stor
                 }
                 finally { InferenceGate.Release(); }
             }
-            if (job.Receipts.Count != job.Chunks.Count || job.Receipts.Select(r => r.Index).Distinct().Count() != job.Chunks.Count) throw new IOException("The chunk sequence is incomplete. Publication is blocked.");
+            if (job.Receipts.Count != speechChunks.Length || job.Receipts.Select(r => r.Index).Distinct().Count() != speechChunks.Length) throw new IOException("The chunk sequence is incomplete. Publication is blocked.");
             await StageAsync(job, JobStage.Assembling, ct);
             await audio.AssembleAsync(job, directory, ct, () => CheckpointAsync(job, ct));
         }

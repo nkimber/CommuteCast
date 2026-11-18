@@ -114,6 +114,14 @@ public static partial class TextPreparation
 
 public static class Chunker
 {
+    // An extended blank region may need its own manifest spans to respect size limits.
+    // Keep one paragraph break between the adjacent rendered chunks in that case.
+    public static bool HasFormattingBreak(string script, TextChunk chunk, TextChunk next)
+    {
+        var end = chunk.Start + chunk.Length;
+        return next.Start > end && script.AsSpan(end, next.Start - end).IndexOfAny('\r', '\n') >= 0;
+    }
+
     public static void ValidateManifest(IReadOnlyList<TextChunk> chunks, string script, int maximum = 450)
     {
         if (script.Length == 0 || chunks.Count == 0) throw new IOException("The narration manifest is empty. Publication is blocked.");
@@ -141,14 +149,15 @@ public static class Chunker
             if (start + length < script.Length)
             {
                 var segment = script.Substring(start, length);
+                var contentStart = segment.Length - segment.AsSpan().TrimStart().Length;
                 var boundaries = Regex.Matches(segment, @"\n\s*\n|[.!?](?:[\""')\]]*)\s+|\n");
-                var boundary = boundaries.LastOrDefault(m => m.Index + m.Length >= length / 3);
+                var boundary = boundaries.LastOrDefault(m => m.Index + m.Length >= length / 3 && m.Index + m.Length > contentStart);
                 if (boundary is not null) length = boundary.Index + boundary.Length;
                 else
                 {
                     hard = true;
                     var space = segment.LastIndexOfAny([' ', '\t']);
-                    if (space >= length / 3) length = space + 1;
+                    if (space >= length / 3 && space >= contentStart) length = space + 1;
                     else
                     {
                         hard = true;

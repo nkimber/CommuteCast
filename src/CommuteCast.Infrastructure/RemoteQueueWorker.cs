@@ -194,8 +194,8 @@ public sealed class RemoteQueueWorker(string workerId, string name, RemoteQueueF
     {
         var remote = job.Remote!;
         var estimated = job.Activity.Read().Timing.EstimatedRemainingMilliseconds;
-        return new(job.Id, workerId, clock.GetUtcNow(), state, remote.RequestedVoice, remote.ActualVoice, job.CompletedChunks,
-            job.Chunks.Count, EstimatedSecondsRemaining: state == RemoteJobState.Generating && estimated is { } ms ? ms / 1000 : null,
+        return new(job.Id, workerId, clock.GetUtcNow(), state, remote.RequestedVoice, remote.ActualVoice, job.CompletedSpeechChunkCount,
+            job.SpeechChunkCount, EstimatedSecondsRemaining: state == RemoteJobState.Generating && estimated is { } ms ? ms / 1000 : null,
             FallbackReason: remote.FallbackReason);
     }
 
