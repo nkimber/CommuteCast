@@ -1,57 +1,32 @@
-using CommuteCast.Core;
 using CommuteCast.Infrastructure;
 
 namespace CommuteCast.Tests;
 
-public sealed class OneDriveFoldersTests : IDisposable
+public sealed class OneDriveFoldersTests
 {
-    private readonly string root = Path.Combine(Path.GetTempPath(), "CommuteCast-folders-" + Guid.NewGuid().ToString("N"));
-
     [Fact]
-    public void NewDesktopSettingsUseThePersonalSharedRootAndItsListeningFolder()
+    public void PreviouslyImpliedFolderRequiresConfirmationForThatPath()
     {
-        var workspace = new Workspace(Path.Combine(root, "private"));
-        var personal = Directory.CreateDirectory(Path.Combine(root, "Personal OneDrive")).FullName;
-        var settings = new AppSettings();
+        var previous = Path.Combine(Path.GetTempPath(), "Personal OneDrive", "CommuteCast");
+        var custom = Path.Combine(Path.GetTempPath(), "Work OneDrive", "CommuteCast");
 
-        Assert.True(OneDriveFolders.ApplyDesktopDefaults(settings, workspace, personal));
-        var remote = Assert.IsType<RemoteQueueSettings>(settings.RemoteQueue);
-        Assert.Equal(Path.Combine(personal, "CommuteCast"), remote.Folder);
-        Assert.False(remote.EnableWorker);
-        Assert.Equal(new RemoteQueueFolder(remote.Folder, workspace).OutputFolder, settings.Destination);
-        Assert.True(Directory.Exists(settings.Destination));
-        Assert.False(OneDriveFolders.ApplyDesktopDefaults(settings, workspace, personal));
+        Assert.True(OneDriveFolders.NeedsConfirmation(previous, null, previous));
+        Assert.True(OneDriveFolders.NeedsConfirmation(previous, custom, previous));
+        Assert.False(OneDriveFolders.NeedsConfirmation(previous, previous + Path.DirectorySeparatorChar, previous));
+        Assert.False(OneDriveFolders.NeedsConfirmation(custom, null, previous));
+        Assert.False(OneDriveFolders.NeedsConfirmation("", null, previous));
     }
 
     [Fact]
-    public void ExplicitFolderOverridesRemainEffective()
+    public void AdminShowsBothFolderChoicesSeparately()
     {
-        var workspace = new Workspace(Path.Combine(root, "private"));
-        var personal = Directory.CreateDirectory(Path.Combine(root, "Personal OneDrive")).FullName;
-        var custom = Directory.CreateDirectory(Path.Combine(root, "Already shared")).FullName;
-        var remote = new RemoteQueueSettings(custom, true, "Worker", Guid.NewGuid().ToString("N"), []);
-        var settings = new AppSettings { RemoteQueue = remote };
+        var workspace = Path.Combine(Path.GetTempPath(), "private");
+        var shared = Path.Combine(Path.GetTempPath(), "shared");
+        var exports = Path.Combine(Path.GetTempPath(), "mp3s");
+        var locations = OneDriveFolders.Describe(shared, exports, workspace, Path.Combine(workspace, "logs"));
 
-        Assert.True(OneDriveFolders.ApplyDesktopDefaults(settings, workspace, personal));
-        Assert.Same(remote, settings.RemoteQueue);
-        Assert.Equal(Path.Combine(custom, "Ready to Listen"), settings.Destination);
-        Assert.False(Directory.Exists(Path.Combine(personal, "CommuteCast")));
-        Assert.Contains(OneDriveFolders.Describe(custom, settings.Destination, workspace.Root, Path.Combine(workspace.Root, "logs")),
-            row => row.Label == "Job status" && row.Path == Path.Combine(custom, "Status"));
-    }
-
-    [Fact]
-    public void DefaultRequiresAnAvailablePersonalSyncRoot()
-    {
-        var workspace = new Workspace(Path.Combine(root, "private"));
-        var settings = new AppSettings();
-        Assert.False(OneDriveFolders.ApplyDesktopDefaults(settings, workspace, Path.Combine(root, "Unavailable")));
-        Assert.Null(settings.RemoteQueue);
-        Assert.Empty(settings.Destination);
-    }
-
-    public void Dispose()
-    {
-        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        Assert.Contains(locations, row => row.Label == "Job status" && row.Path == Path.Combine(shared, "Status"));
+        Assert.Contains(locations, row => row.Label == "Remote worker MP3s" && row.Path == Path.Combine(shared, "Ready to Listen"));
+        Assert.Contains(locations, row => row.Label == "Local generation MP3 exports" && row.Path == exports);
     }
 }

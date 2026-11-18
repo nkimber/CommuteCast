@@ -31,7 +31,9 @@ public partial class RemoteQueueWindow : Window
         AllowHosted.IsChecked = config?.AllowHosted == true;
         FallbackInput.Text = string.Join(Environment.NewLine, config?.FallbackPresets ?? []);
         PresetHint.Text = "Saved presets: " + string.Join(", ", model.RemotePresets.Select(p => p.Name));
-        SettingsPanel.IsExpanded = config is null;
+        SettingsPanel.IsExpanded = config is null || model.RemoteFolderNeedsConfirmation;
+        if (model.RemoteFolderNeedsConfirmation)
+            Feedback.Text = "Check the OneDrive account for this shared folder and choose Save remote settings before sending a narration.";
         refreshTimer.Tick += async (_, _) => await RefreshAsync();
     }
 

@@ -94,25 +94,15 @@ public partial class App : Application
         var database = Path.Combine(workspace.Root, "queue.db");
         await StartupAsync(StartupPhase.QueueValidation, "Validating the saved narration library", async () =>
         { if (installation is null && File.Exists(database)) await SqliteSchema.ValidateDatabaseAsync(database, startupCancellation.Token); });
-        var settings = await StartupAsync(StartupPhase.SettingsLoad, "Loading application settings", async () =>
-        {
-            var saved = await workspace.LoadSettingsAsync();
-            try
-            {
-                if (OneDriveFolders.ApplyDesktopDefaults(saved, workspace, OneDriveFolders.PersonalSyncRoot()))
-                    await workspace.SaveSettingsAsync(saved);
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
-            {
-                AppLogging.Failure("OneDriveFolderDefaults", error);
-                return await workspace.LoadSettingsAsync();
-            }
-            return saved;
-        });
+        var settings = await StartupAsync(StartupPhase.SettingsLoad, "Loading application settings", workspace.LoadSettingsAsync);
         startupCancellation.Token.ThrowIfCancellationRequested();
         startupWindow?.Report("Opening your listening library");
         MainWindow window;
-        using (var trace = new StartupStepTrace(StartupPhase.EditorConstruction)) { window = new MainWindow(new MainViewModel(settings, workspace)); trace.Complete(); }
+        using (var trace = new StartupStepTrace(StartupPhase.EditorConstruction))
+        {
+            window = new MainWindow(new MainViewModel(settings, workspace, previousPersonalFolders: OneDriveFolders.DiscoverPreviousDesktopDefault()));
+            trace.Complete();
+        }
         MainWindow = window;
         using (var trace = new StartupStepTrace(StartupPhase.EditorShow)) { window.Show(); trace.Complete(); }
     }

@@ -103,6 +103,9 @@ public sealed class AppSettings
     public LocalVoiceOptions? LocalVoice { get; set; } = new();
     public NarrationOptions? NarrationDefaults { get; set; }
     public Dictionary<string, string> DefaultVoices { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? ConfirmedDestination { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? UnconfirmedDestination { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? ConfirmedRemoteQueueFolder { get; set; }
     public List<NarrationPreset>? NarrationPresets { get; set; }
     public string Pronunciation { get; set; } = "";
     public PronunciationProfile PronunciationProfile { get; set; } = new();

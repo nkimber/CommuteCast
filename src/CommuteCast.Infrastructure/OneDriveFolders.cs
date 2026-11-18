@@ -1,4 +1,3 @@
-using CommuteCast.Core;
 using Microsoft.Win32;
 
 namespace CommuteCast.Infrastructure;
@@ -7,7 +6,6 @@ public sealed record FolderLocation(string Label, string Path);
 
 public sealed record OneDriveFolders(string Root)
 {
-    public const string RootName = "CommuteCast";
     public const string InboxName = "Inbox";
     public const string WorkersName = "Workers";
     public const string StatusName = "Status";
@@ -38,47 +36,36 @@ public sealed record OneDriveFolders(string Root)
         return folders;
     }
 
-    public static string? PersonalSyncRoot()
+    // Compare saved paths with the old automatic choice without creating a folder or changing settings.
+    public static OneDriveFolders? DiscoverPreviousDesktopDefault()
     {
+        string? personalRoot = null;
         if (OperatingSystem.IsWindows())
         {
-            using var account = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\OneDrive\Accounts\Personal");
-            var registered = account?.GetValue("UserFolder") as string;
-            if (Directory.Exists(registered)) return registered;
+            try
+            {
+                using var account = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\OneDrive\Accounts\Personal");
+                personalRoot = account?.GetValue("UserFolder") as string;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException) { }
         }
-        var consumer = Environment.GetEnvironmentVariable("OneDriveConsumer");
-        return Directory.Exists(consumer) ? consumer : null;
+        if (string.IsNullOrWhiteSpace(personalRoot)) personalRoot = Environment.GetEnvironmentVariable("OneDriveConsumer");
+        return string.IsNullOrWhiteSpace(personalRoot) || !Path.IsPathFullyQualified(personalRoot)
+            ? null : new(Path.Combine(Path.GetFullPath(personalRoot), "CommuteCast"));
     }
 
-    public static OneDriveFolders? PrepareDefault(Workspace workspace, string? personalSyncRoot)
-    {
-        if (string.IsNullOrWhiteSpace(personalSyncRoot) || !Path.IsPathFullyQualified(personalSyncRoot) ||
-            personalSyncRoot.StartsWith(@"\\", StringComparison.Ordinal) || !Directory.Exists(personalSyncRoot))
-            return null;
-        var folders = new OneDriveFolders(Path.Combine(Path.GetFullPath(personalSyncRoot), RootName));
-        if (Workspace.IsWithin(workspace.Root, folders.Root) || Workspace.IsWithin(folders.Root, workspace.Root))
-            throw new IOException("The shared OneDrive folder must be separate from the private workspace.");
-        CloudFileSync.GuardPath(folders.Listening);
-        Directory.CreateDirectory(folders.Listening);
-        return folders;
-    }
+    public static bool NeedsConfirmation(string? selected, string? confirmed, string? previousDefault) =>
+        SameLocalPath(selected, previousDefault) && !SameLocalPath(selected, confirmed);
 
-    public static bool ApplyDesktopDefaults(AppSettings settings, Workspace workspace, string? personalSyncRoot)
+    private static bool SameLocalPath(string? first, string? second)
     {
-        if (settings.RemoteQueue is not null && !string.IsNullOrWhiteSpace(settings.Destination)) return false;
-        var folders = settings.RemoteQueue is { } configured
-            ? new OneDriveFolders(new RemoteQueueFolder(configured.Folder, workspace).Root)
-            : PrepareDefault(workspace, personalSyncRoot);
-        if (folders is null) return false;
-
-        settings.RemoteQueue ??= new(folders.Root, false, Environment.MachineName, "", []);
-        if (string.IsNullOrWhiteSpace(settings.Destination))
+        if (string.IsNullOrWhiteSpace(first) || string.IsNullOrWhiteSpace(second) ||
+            !Path.IsPathFullyQualified(first) || !Path.IsPathFullyQualified(second)) return false;
+        try
         {
-            CloudFileSync.GuardPath(folders.Listening);
-            Directory.CreateDirectory(folders.Listening);
-            workspace.GuardLocalDestination(folders.Listening);
-            settings.Destination = folders.Listening;
+            return string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(first)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(second)), StringComparison.OrdinalIgnoreCase);
         }
-        return true;
+        catch (ArgumentException) { return false; }
     }
 }

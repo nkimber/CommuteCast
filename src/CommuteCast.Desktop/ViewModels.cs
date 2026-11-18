@@ -233,6 +233,7 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public string LibraryResultSummary => $"Showing {LibraryJobs.Count} of {Jobs.Count} narrations";
     public ObservableCollection<SpeechVoiceChoice> Voices { get; private set; } = [];
     private readonly NarrationPreferences narrationPreferences;
+    private readonly OneDriveFolders? previousPersonalFolders;
     public string[] Engines { get; } = SpeechProviders.All.Select(p => p.Id).ToArray();
     public event Action? DraftQueued;
     public string PageHeading => page switch { "library" => "Your listening library", "settings" => "Settle in. Set it up.", "admin" => "Admin", "codex" => "Write something worth hearing.", "prompt" => "Start with a good question.", _ => "Make time to listen." };
@@ -295,7 +296,11 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private PronunciationProfile CaptureProfile() { var profile = Profile; profile.Validate(Engine); return profile; }
     public string Ffmpeg { get => settings.Ffmpeg; set { settings.Ffmpeg = value; Raise(); } }
     public string Ffprobe { get => settings.Ffprobe; set { settings.Ffprobe = value; Raise(); } }
-    public string DestinationDisplay => settings.Destination.Length == 0 ? "Choose your local OneDrive folder" : settings.Destination;
+    private bool DestinationNeedsConfirmation => OneDriveFolders.NeedsConfirmation(settings.Destination,
+        settings.ConfirmedDestination, settings.UnconfirmedDestination);
+    public string DestinationDisplay => settings.Destination.Length == 0 ? "Choose an MP3 output folder" : DestinationNeedsConfirmation
+        ? settings.Destination + " · Choose folder to confirm before creating an MP3."
+        : settings.Destination;
     public string StorageDetails => $"Private data: {Workspace.Root}\n{storageSummary}\nSource, history, finished MP3s, active artifacts and retryable chunks are retained. Delete narrations to remove those files. Local migration backups and recovered draft copies are retained separately.";
     public int CacheQuotaMiB { get => settings.CacheQuotaMiB; set { settings.CacheQuotaMiB = value; Raise(); } }
     public int ScratchRetentionDays { get => settings.ScratchRetentionDays; set { settings.ScratchRetentionDays = value; Raise(); } }
@@ -377,9 +382,15 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     public ICommand MeasureStorageCommand { get; }
     public ICommand CleanCacheCommand { get; }
 
-    public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null, IPlaybackOutput? playbackOutput = null, IPowerEvents? powerEvents = null, IUserNotifications? notifications = null, Action<string>? copyText = null)
+    public MainViewModel(AppSettings saved, Workspace? workspace = null, LocalSpeechProvider? speechProvider = null, ISetupRuntime? setupInspection = null, IPlaybackOutput? playbackOutput = null, IPowerEvents? powerEvents = null, IUserNotifications? notifications = null, Action<string>? copyText = null, OneDriveFolders? previousPersonalFolders = null)
     {
         settings = saved; narrationPreferences = new(settings); Workspace = workspace ?? new();
+        this.previousPersonalFolders = previousPersonalFolders;
+        var previousRemoteListeningFolder = saved.RemoteQueue?.Folder is { Length: > 0 } savedRemoteRoot
+            ? new OneDriveFolders(savedRemoteRoot).Listening : null;
+        if (OneDriveFolders.NeedsConfirmation(saved.Destination, saved.ConfirmedDestination, previousPersonalFolders?.Listening) ||
+            OneDriveFolders.NeedsConfirmation(saved.Destination, saved.ConfirmedDestination, previousRemoteListeningFolder))
+            saved.UnconfirmedDestination = saved.Destination;
         writeClipboard = copyText ?? Clipboard.SetText;
         Playback = new(playbackOutput ?? new WpfPlaybackOutput(player));
         Playback.Failed += () => ReportError("Playback failed. Check that the local audio exists and is decodable.");
@@ -427,13 +438,23 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         ReviewCommand = Command(async _ => { var text = Source; var snapshot = CapturePreviewSettings(); var episode = PodcastMode ? CaptureEpisode() : null; var prepared = await Task.Run(() => episode is null ? TextPreparation.Prepare(text, snapshot.ExcludeCode, snapshot.Pronunciation, snapshot.Profile, shutdown.Token) : PodcastScript.Prepare(text, episode, snapshot).Prepared, shutdown.Token); ShowPreparation(prepared, text, snapshot, episode); });
         ChooseFolderCommand = Command(async _ =>
         {
-            var path = ChooseFolder();
+            var path = ChooseFolder(settings.Destination);
             if (path is null) return;
             await publisher.TestDestinationAsync(path);
             var previous = settings.Destination;
+            var previousConfirmation = settings.ConfirmedDestination;
+            var previousUnconfirmed = settings.UnconfirmedDestination;
             settings.Destination = path;
+            settings.ConfirmedDestination = path;
+            settings.UnconfirmedDestination = null;
             try { await SaveSettingsAsync(); }
-            catch { settings.Destination = previous; throw; }
+            catch
+            {
+                settings.Destination = previous;
+                settings.ConfirmedDestination = previousConfirmation;
+                settings.UnconfirmedDestination = previousUnconfirmed;
+                throw;
+            }
             Raise(nameof(DestinationDisplay)); Raise(nameof(AdminFolders));
             StatusMessage = "Output folder saved. Only completed MP3s will be exported here.";
         });
@@ -805,6 +826,8 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
     private async Task SubmitAsync()
     {
         if (!queueLoaded) throw new IOException("Local queue records have not loaded. Repair storage or restore a verified compatible backup before submitting. Your draft is retained.");
+        if (DestinationNeedsConfirmation || string.IsNullOrWhiteSpace(settings.Destination))
+            throw new ArgumentException("Use Choose folder to select or confirm your MP3 output folder before creating an MP3. For OneDrive, choose a folder in the intended account. Your draft is retained.");
         var text = Source; var title = DraftTitle.Trim(); var choices = narrationPreferences.Current;
         var versionDraftSnapshot = draftVersion;
         var suggestedTitle = versionDraftSnapshot is null ? null : SuggestedVersionTitle(versionDraftSnapshot);
@@ -917,9 +940,10 @@ public sealed partial class MainViewModel : Observable, IAsyncDisposable
         ProviderDetails += "\n" + encoderVersion;
         StatusMessage = "FFmpeg and FFprobe are available. Full audio validation runs for each narration.";
     }
-    private static string? ChooseFolder()
+    private static string? ChooseFolder(string? current = null)
     {
-        var dialog = new OpenFolderDialog { Title = "Choose your existing local corporate OneDrive output folder", Multiselect = false };
+        var dialog = new OpenFolderDialog { Title = "Choose an MP3 output folder in the intended account", Multiselect = false };
+        if (Directory.Exists(current)) dialog.InitialDirectory = current;
         return dialog.ShowDialog(Application.Current.MainWindow) == true ? dialog.FolderName : null;
     }
     private void ShowPreparation(PreparedText prepared, string source, NarrationSettings snapshot, PodcastEpisode? episode = null) =>

@@ -607,6 +607,11 @@ function renderJobs() {
 }
 function folderLinks() {
   const p = state.publishing;
+  const exports = state.folders?.find(folder => folder.label === "Local generation MP3 exports");
+  $("compose-export-folder").textContent = exports?.path || "See Admin for the Studio export folder.";
+  $("compose-publish-status").textContent = p.configured && p.autoPublish
+    ? "Also publishes to " + (p.folderName || "the Microsoft 365 folder in Settings") + "."
+    : "Automatic Microsoft 365 publishing is off.";
   for (const id of ["sidebar-folder", "compose-folder"]) {
     const a = $(id);
     a.href = p.folderUrl || "#settings";

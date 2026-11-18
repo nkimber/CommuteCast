@@ -40,12 +40,13 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
             Settings.NarrationDefaults = narrationDefaults;
             foreach (var (engine, info) in Settings.Providers) providerCatalog[engine] = info;
             if (File.Exists(ConfigPath)) WebSettings = JsonSerializer.Deserialize<WebSettings>(await File.ReadAllTextAsync(ConfigPath, ct)) ?? WebSettings.Empty;
-            var queueOverride = configuration["RemoteQueue:Folder"];
-            SharedQueueRoot = queueOverride is null ? DefaultSharedQueueRoot()
-                : string.IsNullOrWhiteSpace(queueOverride) ? null : queueOverride;
+            var sharedQueue = configuration["RemoteQueue:Folder"];
+            SharedQueueRoot = string.IsNullOrWhiteSpace(sharedQueue) ? null : sharedQueue;
             // Server-managed local exports are never in wwwroot and never exposed through HTTP.
-            Settings.Destination = Path.GetFullPath(configuration["CommuteCast:Exports"] ?? SharedListeningFolder()
-                ?? Workspace.Root.TrimEnd(Path.DirectorySeparatorChar) + "-exports");
+            var exports = configuration["CommuteCast:Exports"];
+            Settings.Destination = Path.GetFullPath(string.IsNullOrWhiteSpace(exports)
+                ? Workspace.Root.TrimEnd(Path.DirectorySeparatorChar) + "-exports"
+                : exports);
             Directory.CreateDirectory(Settings.Destination);
             Workspace.GuardLocalDestination(Settings.Destination);
             var store = new SqliteJobStore(Workspace);
@@ -73,33 +74,6 @@ public sealed class WebRuntime(IConfiguration configuration, IM365Publisher publ
             if (Queue is not null) await Queue.DisposeAsync(); Speech?.Dispose(); lease.Dispose();
             lock (stopSync) stopping = Task.CompletedTask;
             throw;
-        }
-    }
-
-    private string? DefaultSharedQueueRoot()
-    {
-        try { return OneDriveFolders.PrepareDefault(Workspace, OneDriveFolders.PersonalSyncRoot())?.Root; }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
-        {
-            logger.LogWarning("The default personal OneDrive queue is unavailable.");
-            return null;
-        }
-    }
-
-    private string? SharedListeningFolder()
-    {
-        if (SharedQueueRoot is null || !Directory.Exists(SharedQueueRoot)) return null;
-        try
-        {
-            var path = new RemoteQueueFolder(SharedQueueRoot, Workspace).OutputFolder;
-            Directory.CreateDirectory(path);
-            Workspace.GuardLocalDestination(path);
-            return path;
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
-        {
-            logger.LogWarning("The shared listening folder is unavailable for Studio exports.");
-            return null;
         }
     }
 

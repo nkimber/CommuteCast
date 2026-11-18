@@ -13,6 +13,8 @@ public sealed partial class MainViewModel
     private bool changingRemoteSettings;
 
     internal RemoteQueueSettings? RemoteSettings => settings.RemoteQueue;
+    internal bool RemoteFolderNeedsConfirmation => OneDriveFolders.NeedsConfirmation(RemoteSettings?.Folder,
+        settings.ConfirmedRemoteQueueFolder, previousPersonalFolders?.Root);
     internal IReadOnlyList<NarrationPreset> RemotePresets => presetLibrary.Items;
     internal bool CanSubmitRemote => !PodcastMode && !string.IsNullOrWhiteSpace(Source);
     public string RemoteQueueLabel => remoteNotices.Count > 0 ? "Remote queue · setup needs attention" : "Remote queue";
@@ -23,6 +25,7 @@ public sealed partial class MainViewModel
         path = path.Trim(); name = name.Trim();
         if (name.Length is 0 or > 120 || name.Any(char.IsControl)) throw new ArgumentException("Enter a worker name of 1–120 characters.");
         var previous = settings.RemoteQueue;
+        var previousConfirmation = settings.ConfirmedRemoteQueueFolder;
         var folder = new RemoteQueueFolder(path, Workspace);
         foreach (var fallback in fallbackNames)
         {
@@ -37,8 +40,9 @@ public sealed partial class MainViewModel
         try
         {
             settings.RemoteQueue = new(folder.Root, enabled, name, registration, fallbackNames, allowHosted);
+            settings.ConfirmedRemoteQueueFolder = folder.Root;
             try { await SaveSettingsAsync(); }
-            catch { settings.RemoteQueue = previous; throw; }
+            catch { settings.RemoteQueue = previous; settings.ConfirmedRemoteQueueFolder = previousConfirmation; throw; }
             Raise(nameof(AdminFolders));
             await StopRemoteWorkerAsync(disable: previous?.EnableWorker == true && !enabled);
         }
@@ -104,6 +108,8 @@ public sealed partial class MainViewModel
     internal async Task<string> SubmitRemoteDraftAsync(string workerId, CancellationToken ct)
     {
         if (!CanSubmitRemote) throw new ArgumentException("Paste a narration in New narration before sending it to a worker. Podcast dialogue uses local creation.");
+        if (RemoteFolderNeedsConfirmation)
+            throw new ArgumentException("Review the OneDrive account and choose Save remote settings to confirm this shared folder before sending a narration.");
         var folder = OpenRemoteFolder() ?? throw new ArgumentException("Choose the shared remote queue folder first.");
         var source = Source;
         var title = string.IsNullOrWhiteSpace(DraftTitle) ? TextPreparation.SuggestTitle(source) : DraftTitle.Trim();

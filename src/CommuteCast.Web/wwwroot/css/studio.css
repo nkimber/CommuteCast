@@ -712,6 +712,7 @@ input[type="range"] {
   font-size: 11px;
   color: #7c896a;
   line-height: 1.8;
+  overflow-wrap: anywhere;
 }
 .destination-card > a {
   display: block;
